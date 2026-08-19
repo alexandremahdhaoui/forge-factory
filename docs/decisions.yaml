@@ -1,0 +1,41 @@
+decisions:
+  - title: Generated dependency files are never committed
+    date: 2026-08-19
+    decision: >-
+      Every file forge-factory writes is added to the owning repo's gitignore.
+    because: >-
+      A version committed in a repo is a version written twice, and bumping it
+      then costs a pull request per repo.
+
+  - title: A repo is never cloned and built alone
+    date: 2026-08-19
+    decision: >-
+      Work happens in a synced workspace. forge-factory is the only repo that
+      must build from a lone checkout.
+    because: >-
+      Generated dependency files cannot exist if a lone clone has to work, and
+      forge-factory is what materialises them.
+
+  - title: Manifests are generated whole, not in marked blocks
+    date: 2026-08-19
+    decision: >-
+      package.json and pyproject.toml are written in full. No npm scripts.
+    because: >-
+      A marked block invites hand edits beside it. Scripts would duplicate forge
+      stages, which is a second way to run the same thing.
+
+  - title: forge-factory and forge-ci share a contract, not a dependency
+    date: 2026-08-19
+    decision: >-
+      Both speak the transport in forge-revision-spec. Neither imports the other.
+    because: >-
+      Either tool has to work alone, and swapping the state engine has to move
+      both without a release of either.
+
+  - title: Branch based compositions are dropped
+    date: 2026-08-19
+    decision: >-
+      Members are worked on from main. forge-cu is archived.
+    because: >-
+      A second repo carrying its own branch state, for one person, is overhead
+      with no reader.

@@ -1,0 +1,51 @@
+all: false
+template: testify
+template-data:
+  unroll-variadic: true
+filename: "zz_generated.{{.InterfaceName}}.go"
+formatter: goimports
+
+packages:
+  github.com/alexandremahdhaoui/forge-factory/internal/adapter/gitadapter:
+    config:
+      dir: internal/mocks/gitadaptermock
+      pkgname: gitadaptermock
+    interfaces:
+      Git:
+
+  github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter:
+    config:
+      dir: internal/mocks/execadaptermock
+      pkgname: execadaptermock
+    interfaces:
+      Runner:
+
+  github.com/alexandremahdhaoui/forge-factory/internal/adapter/engineadapter:
+    config:
+      dir: internal/mocks/engineadaptermock
+      pkgname: engineadaptermock
+    interfaces:
+      Caller:
+
+  github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter:
+    config:
+      dir: internal/mocks/fsadaptermock
+      pkgname: fsadaptermock
+    interfaces:
+      FS:
+
+  github.com/alexandremahdhaoui/forge-factory/internal/adapter/repoadapter:
+    config:
+      dir: internal/mocks/repoadaptermock
+      pkgname: repoadaptermock
+    interfaces:
+      Reader:
+
+  github.com/alexandremahdhaoui/forge-factory/internal/driver/clidriver:
+    config:
+      dir: internal/mocks/clidrivermock
+      pkgname: clidrivermock
+    interfaces:
+      Syncer:
+      Reviser:
+      Stater:

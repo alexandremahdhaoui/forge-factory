@@ -1,0 +1,118 @@
+name: forge-factory
+
+artifactStorePath: .forge/artifact-store.yaml
+
+build:
+  - name: gen-factory-lang-go
+    src: ./cmd/factory-lang-go
+    engine: go://forge-dev
+
+  - name: gen-factory-lang-rust
+    src: ./cmd/factory-lang-rust
+    engine: go://forge-dev
+
+  - name: gen-factory-lang-python
+    src: ./cmd/factory-lang-python
+    engine: go://forge-dev
+
+  - name: gen-factory-lang-typescript
+    src: ./cmd/factory-lang-typescript
+    engine: go://forge-dev
+
+  - name: generate-mocks
+    src: .
+    engine: go://generic-builder
+    spec:
+      command: mockery
+
+  - name: generate-docs
+    src: .
+    engine: go://generic-builder
+    spec:
+      command: go
+      args: ["run", "./cmd/docgen"]
+
+  - name: format-code
+    src: .
+    engine: go://go-format
+
+  - name: forge-factory
+    src: ./cmd/forge-factory
+    dest: ./build/bin
+    engine: go://go-build
+
+  - name: factory-lang-go
+    src: ./cmd/factory-lang-go
+    dest: ./build/bin
+    engine: go://go-build
+
+  - name: factory-lang-rust
+    src: ./cmd/factory-lang-rust
+    dest: ./build/bin
+    engine: go://go-build
+
+  - name: factory-lang-python
+    src: ./cmd/factory-lang-python
+    dest: ./build/bin
+    engine: go://go-build
+
+  - name: factory-lang-typescript
+    src: ./cmd/factory-lang-typescript
+    dest: ./build/bin
+    engine: go://go-build
+
+test:
+  - name: lint
+    runner: go://go-lint
+
+  - name: standalone
+    runner: go://generic-test-runner
+    spec:
+      command: sh
+      args: ["hack/standalone.sh"]
+
+  - name: unwired
+    runner: go://generic-test-runner
+    spec:
+      command: sh
+      args: ["hack/unwired.sh"]
+
+  - name: architecture
+    runner: go://generic-test-runner
+    spec:
+      command: sh
+      args: ["hack/architecture.sh"]
+
+  - name: engine-docs
+    runner: go://generic-test-runner
+    spec:
+      command: sh
+      args: ["hack/engine-docs.sh"]
+
+  - name: docs
+    runner: go://generic-test-runner
+    spec:
+      command: sh
+      args: ["hack/docs-check.sh"]
+
+  - name: unit
+    runner: go://go-test
+
+  - name: integration
+    runner: go://go-test
+    spec:
+      tags: [integration]
+      packages: [./test/integration/...]
+
+  - name: e2e
+    runner: go://go-test
+    spec:
+      tags: [e2e]
+      packages: [./test/e2e/...]
+      timeout: "15m"
+
+  - name: coverage
+    runner: go://generic-test-runner
+    spec:
+      command: sh
+      args: ["hack/coverage.sh", "95"]

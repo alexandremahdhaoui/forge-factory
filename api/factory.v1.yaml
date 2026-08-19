@@ -1,0 +1,97 @@
+openapi: 3.0.3
+
+info:
+  title: forge-factory language engine contract
+  version: 1.0.0
+  description: >-
+    What a language engine is asked and what it answers. forge-factory resolves
+    the workspace, then asks one engine per language what files to write. The
+    engine knows a toolchain. forge-factory knows none.
+
+components:
+  schemas:
+    Spec:
+      type: object
+      description: Engine specific configuration. No language engine needs any today.
+
+    Repo:
+      type: object
+      description: One member of the workspace.
+      required: [name, path]
+      properties:
+        name:
+          type: string
+          description: Directory name under the workspace root.
+        path:
+          type: string
+          description: Absolute path to the repo.
+        languages:
+          type: array
+          items:
+            type: string
+          description: Languages this repo is written in.
+        identity:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            What the repo declares about itself in its forge.yaml factory
+            block. Keys are the engine's business. forge-factory copies them
+            through without reading any of them.
+
+    RenderInput:
+      type: object
+      description: Everything an engine needs to decide what to write.
+      required: [root, repos]
+      properties:
+        root:
+          type: string
+          description: The workspace root, where cross repo files live.
+        repos:
+          type: array
+          items:
+            $ref: '#/components/schemas/Repo'
+          description: Every member, including those in other languages.
+        dependencies:
+          type: object
+          additionalProperties:
+            type: string
+          description: Dependency name to version, for this engine's language only.
+        spec:
+          $ref: '#/components/schemas/Spec'
+
+    File:
+      type: object
+      description: One file an engine wants written.
+      required: [path, content]
+      properties:
+        path:
+          type: string
+          description: Absolute path.
+        content:
+          type: string
+          description: The whole file. Engines render whole files, never fragments.
+        gitignore:
+          type: string
+          description: >-
+            The repo whose .gitignore must carry this path, relative to that
+            repo. Empty when the file is not generated into a repo.
+
+    RenderOutput:
+      type: object
+      description: What an engine decided to write.
+      required: [files]
+      properties:
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/File'
+
+    LanguageOutput:
+      type: object
+      description: Which language an engine speaks, so forge-factory can route to it.
+      required: [language]
+      properties:
+        language:
+          type: string
+          description: The language name matched against a repo's languages list.

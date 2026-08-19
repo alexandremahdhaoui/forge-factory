@@ -1,0 +1,75 @@
+tool: forge-factory
+summary: >-
+  forge-factory owns what a workspace is made of and what version everything
+  agrees on. It generates the files that name both, so a version is written in
+  one place and nowhere else.
+
+verbs:
+  - name: sync
+    summary: Materialise every generated file from the factory plus each repo's forge.yaml
+  - name: add
+    args: <name> <url> <language...>
+    summary: Add a member, then sync
+  - name: bump
+    args: <dependency> <version>
+    summary: Rewrite one version line, then sync
+  - name: checkout
+    args: <revision>
+    summary: Read a revision from the state engine, put every member on its SHA, then sync
+  - name: status
+    summary: Report what on disk disagrees with the factory
+  - name: validate
+    summary: Parse the factory and print what it declares
+
+concepts:
+  - name: The factory file
+    summary: >-
+      forge-factory.yaml declares members, shared dependency versions, a language
+      engine per language, and optionally a state engine.
+    detail: >-
+      Membership was declared five times before this and none of the five agreed.
+      One file is the source and every other list is generated from it.
+
+  - name: Generated files are gitignored
+    summary: >-
+      go.work, the root Cargo.toml, pnpm-workspace.yaml, every go.mod,
+      package.json and pyproject.toml are output.
+    detail: >-
+      A committed version file is a version written twice. Bumping a dependency
+      then needs a pull request in every repo, which is the whole problem this
+      tool exists to remove. Nothing generated is committed, so drift is
+      impossible rather than detected.
+    seeAlso: [No lone clones]
+
+  - name: No lone clones
+    summary: >-
+      A repo is built through the toolchain, never on its own.
+    detail: >-
+      That is what makes generated dependency files possible at all. forge-factory
+      itself is the exception, because it is what materialises the files
+      everything else needs.
+
+  - name: Language engines
+    summary: >-
+      One MCP engine per language answers what to write for that language.
+    detail: >-
+      forge-factory knows nothing about cargo, pnpm or uv. It asks an engine,
+      writes what comes back, and keeps the gitignore in step. A new language is
+      a new engine and no change here.
+
+  - name: Per-repo identity
+    summary: >-
+      The module path, package name and entry point come from that repo's
+      forge.yaml factory block.
+    detail: >-
+      forge ignores keys it does not know, so the block costs that repo nothing
+      and no new per-repo file exists.
+
+  - name: The state engine
+    summary: >-
+      A revision is a tuple of repo commits that a pipeline proved. checkout puts
+      every member on the SHAs that revision names.
+    detail: >-
+      forge-factory speaks the transport in forge-revision-spec and imports
+      forge-ci nowhere. Either tool works alone, and swapping the state engine
+      moves both.
