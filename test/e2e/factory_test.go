@@ -207,11 +207,37 @@ func TestOneBumpMovesEveryGoMemberWithNoCommitInAny(t *testing.T) {
 	mustRun(t, root, "sync")
 	require.Contains(t, read(t, filepath.Join(root, "sample-go", "go.mod")), "sigs.k8s.io/yaml v1.6.0")
 
-	out := mustRun(t, root, "bump", "go:sigs.k8s.io/yaml", "v1.7.0")
-	assert.Contains(t, out, "now sigs.k8s.io/yaml: v1.7.0")
+	// Both versions exist. A version nobody can resolve is its own test below,
+	// because the tidy fails and the sync must say so.
+	out := mustRun(t, root, "bump", "go:sigs.k8s.io/yaml", "v1.5.0")
+	assert.Contains(t, out, "now sigs.k8s.io/yaml: v1.5.0")
 
-	assert.Contains(t, read(t, filepath.Join(root, "sample-go", "go.mod")), "sigs.k8s.io/yaml v1.7.0")
-	assert.Contains(t, read(t, filepath.Join(root, "forge-factory.yaml")), "sigs.k8s.io/yaml: v1.7.0")
+	assert.Contains(t, read(t, filepath.Join(root, "sample-go", "go.mod")), "sigs.k8s.io/yaml v1.5.0")
+	assert.Contains(t, read(t, filepath.Join(root, "forge-factory.yaml")), "sigs.k8s.io/yaml: v1.5.0")
+}
+
+// A sync that writes a version nothing can resolve leaves every member
+// unbuildable. It used to report that and exit zero, which is a lie.
+func TestABumpToAVersionNobodyCanResolveFails(t *testing.T) {
+	root := workspace(t)
+
+	mustRun(t, root, "sync")
+
+	out, err := run(t, root, "bump", "go:sigs.k8s.io/yaml", "v1.99.0")
+	require.Error(t, err, out)
+	assert.Contains(t, out, "which a build will need")
+
+	assert.Contains(t, out, "unknown revision",
+		"the reason the build cannot be settled is on the report")
+}
+
+func TestOfflineAcceptsASyncThatCouldNotSettle(t *testing.T) {
+	root := workspace(t)
+
+	mustRun(t, root, "sync")
+	mustRun(t, root, "bump", "--offline", "go:sigs.k8s.io/yaml", "v1.99.0")
+
+	assert.Contains(t, read(t, filepath.Join(root, "forge-factory.yaml")), "v1.99.0")
 }
 
 func TestAddPutsANewMemberInEveryMembershipList(t *testing.T) {

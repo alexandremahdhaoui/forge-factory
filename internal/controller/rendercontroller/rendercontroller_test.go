@@ -314,6 +314,8 @@ func TestGoAsksForATidyPerMember(t *testing.T) {
 
 	assert.Equal(t, "/w", out.Settle[1].Dir)
 	assert.Equal(t, []string{"work", "sync"}, out.Settle[1].Args)
+	assert.Equal(t, map[string]string{"GOWORK": "/w/go.work"}, out.Settle[1].Env,
+		"GOWORK=off in the caller makes go work sync deny the file this sync wrote")
 }
 
 func TestNoOtherLanguageNeedsSettling(t *testing.T) {

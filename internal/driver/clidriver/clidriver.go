@@ -25,14 +25,17 @@ var (
 		"usage: forge-factory <sync|add|bump|checkout|status|validate> [args] " +
 			"[--config path] [--root dir]")
 	ErrDrift = errors.New("the workspace disagrees with the factory")
+
+	ErrUnsettled = errors.New("the files were written and the workspace does not build")
 )
 
 type Driver struct {
-	out    io.Writer
-	fs     fsadapter.FS
-	sync   synccontroller.Syncer
-	revise revisioncontroller.Reviser
-	state  statuscontroller.Stater
+	offline bool
+	out     io.Writer
+	fs      fsadapter.FS
+	sync    synccontroller.Syncer
+	revise  revisioncontroller.Reviser
+	state   statuscontroller.Stater
 }
 
 func New(
@@ -81,7 +84,18 @@ func (d *Driver) runSync(ctx context.Context, f config.Factory, root string) err
 		return err
 	}
 
-	return d.write(renderSync(report))
+	if err := d.write(renderSync(report)); err != nil {
+		return err
+	}
+
+	// A sync that writes a version nothing can resolve leaves every member
+	// unbuildable. Reporting that and exiting zero is a lie, so it is an error
+	// unless the caller says it is offline on purpose.
+	if len(report.Unsettled) > 0 && !d.offline {
+		return fmt.Errorf("%w: %s", ErrUnsettled, report.Unsettled[0])
+	}
+
+	return nil
 }
 
 func (d *Driver) runStatus(ctx context.Context, f config.Factory, root string) error {
@@ -207,10 +221,14 @@ func (d *Driver) load(
 
 	path := fs.String("config", DefaultPath, "path to the factory file")
 	root := fs.String("root", "", "directory holding the repos, defaults to the factory file's parent")
+	offline := fs.Bool("offline", false,
+		"do not fail when a command that needs the network could not run")
 
 	if err := fs.Parse(args); err != nil {
 		return config.Factory{}, "", "", nil, fmt.Errorf("parsing flags: %w", err)
 	}
+
+	d.offline = *offline
 
 	raw, err := d.fs.ReadFile(*path)
 	if err != nil {

@@ -165,10 +165,14 @@ func tidy(root string, repos []rendertypes.Repo) []rendertypes.Command {
 		})
 	}
 
+	// GOWORK is named rather than inherited. A caller running with GOWORK=off
+	// makes go work sync report that no go.work exists, one line after this
+	// same sync wrote it.
 	return append(out, rendertypes.Command{
 		Dir:      root,
 		Command:  "go",
 		Args:     []string{"work", "sync"},
+		Env:      map[string]string{"GOWORK": filepath.Join(root, "go.work")},
 		Optional: true,
 	})
 }
