@@ -18,12 +18,12 @@ func NewHandlers() Handlers {
 			return &LanguageOutput{Language: renderer.Language()}, nil
 		},
 		Render: func(_ context.Context, in RenderInput) (*RenderOutput, error) {
-			files, err := renderer.Render(toInput(in))
+			out, err := renderer.Render(toInput(in))
 			if err != nil {
 				return nil, err
 			}
 
-			return &RenderOutput{Files: fromFiles(files)}, nil
+			return &RenderOutput{Files: fromFiles(out.Files), Settle: fromSettle(out.Settle)}, nil
 		},
 	}
 }
@@ -43,11 +43,32 @@ func toInput(in RenderInput) rendertypes.Input {
 	return rendertypes.Input{Root: in.Root, Repos: repos, Dependencies: in.Dependencies}
 }
 
+func fromSettle(commands []rendertypes.Command) []Command {
+	out := make([]Command, 0, len(commands))
+
+	for _, c := range commands {
+		out = append(out, Command{
+			Dir:      c.Dir,
+			Command:  c.Command,
+			Args:     c.Args,
+			Env:      c.Env,
+			Optional: c.Optional,
+		})
+	}
+
+	return out
+}
+
 func fromFiles(files []rendertypes.File) []File {
 	out := make([]File, 0, len(files))
 
 	for _, f := range files {
-		out = append(out, File{Path: f.Path, Content: f.Content, Gitignore: f.Gitignore})
+		out = append(out, File{
+			Path:       f.Path,
+			Content:    f.Content,
+			Gitignore:  f.Gitignore,
+			AlsoIgnore: f.AlsoIgnore,
+		})
 	}
 
 	return out

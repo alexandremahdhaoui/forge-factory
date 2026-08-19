@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
-	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/specadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/docscontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/types/docstypes"
 	"sigs.k8s.io/yaml"
@@ -77,8 +76,9 @@ func read(fs fsadapter.FS, path string, into any) error {
 	return nil
 }
 
-// engineDocs renders usage and schema for every engine, from its forge-dev.yaml
-// and the OpenAPI document it generates its types from.
+// engineDocs renders the usage page for every engine from its forge-dev.yaml.
+// forge-dev owns schema.md, generated from the same OpenAPI document, so this
+// does not write one.
 func engineDocs(fs fsadapter.FS) ([]docstypes.File, error) {
 	dirs, err := filepath.Glob(filepath.Join("cmd", "factory-lang-*"))
 	if err != nil {
@@ -98,22 +98,12 @@ func engineDocs(fs fsadapter.FS) ([]docstypes.File, error) {
 			return nil, err
 		}
 
-		schemas, err := specadapter.Read(fs, filepath.Join(dir, engine.OpenAPI.SpecPath))
-		if err != nil {
-			return nil, err
-		}
-
 		usage, err := docscontroller.RenderUsage(dir, engine)
 		if err != nil {
 			return nil, err
 		}
 
-		schema, err := docscontroller.RenderSchema(dir, engine, schemas)
-		if err != nil {
-			return nil, err
-		}
-
-		out = append(out, usage, schema)
+		out = append(out, usage)
 	}
 
 	return out, nil

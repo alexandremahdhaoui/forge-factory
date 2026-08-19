@@ -18,8 +18,11 @@ for f in docs/concepts.md docs/decisions.md; do
     fi
 done
 
-for f in cmd/factory-lang-*/docs/usage.md cmd/factory-lang-*/docs/schema.md; do
-    if ! grep -q "generated" "$f"; then
+# usage.md comes from docgen, schema.md and list.yaml from forge-dev. Two
+# generators, and neither writes what the other owns. forge-dev marks list.yaml
+# and not schema.md, so schema.md is held current by the diff check above.
+for f in cmd/factory-lang-*/docs/usage.md cmd/factory-lang-*/docs/list.yaml; do
+    if ! grep -q "Code generated" "$f"; then
         echo "$f is not marked generated, so nothing stops a human editing it" >&2
         fail=1
     fi

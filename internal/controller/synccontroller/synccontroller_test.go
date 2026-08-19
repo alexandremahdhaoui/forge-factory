@@ -3,10 +3,13 @@ package synccontroller_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/engineadaptermock"
+	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/execadaptermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/fsadaptermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/repoadaptermock"
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
@@ -42,6 +45,7 @@ type harness struct {
 	caller *engineadaptermock.MockCaller
 	fs     *fsadaptermock.MockFS
 	repos  *repoadaptermock.MockReader
+	runner *execadaptermock.MockRunner
 	c      *synccontroller.Controller
 	wrote  map[string]string
 }
@@ -53,10 +57,11 @@ func newHarness(t *testing.T) *harness {
 		caller: engineadaptermock.NewMockCaller(t),
 		fs:     fsadaptermock.NewMockFS(t),
 		repos:  repoadaptermock.NewMockReader(t),
+		runner: execadaptermock.NewMockRunner(t),
 		wrote:  map[string]string{},
 	}
 
-	h.c = synccontroller.New(h.caller, h.fs, h.repos)
+	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner)
 
 	return h
 }
@@ -299,4 +304,128 @@ func TestTheLanguageProbeNeverSendsNull(t *testing.T) {
 
 	assert.NotContains(t, string(raw), "null",
 		"a nil slice or map travels as null and the engine's own schema refuses it")
+}
+
+func TestSyncRunsWhatAnEngineAsksForAfterTheFilesLand(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("go://example.com/lang-go", "render", map[string]any{
+		"files": []map[string]any{{"path": "/w/golden-go/go.mod", "content": "x"}},
+		"settle": []map[string]any{{
+			"dir": "/w/golden-go", "command": "go", "args": []string{"mod", "tidy"},
+			"env": map[string]string{"GOWORK": "off"}, "optional": true,
+		}},
+	})
+	h.recordWrites()
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", map[string]string{"GOWORK": "off"},
+		"go", "mod", "tidy").Return(execadapter.Result{}, nil).Once()
+
+	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"go mod tidy in /w/golden-go"}, report.Settled)
+	assert.Empty(t, report.Unsettled)
+}
+
+func TestAnOptionalCommandThatFailsIsReportedAndTheSyncStillPasses(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("go://example.com/lang-go", "render", map[string]any{
+		"files": []any{},
+		"settle": []map[string]any{
+			{"dir": "/w/golden-go", "command": "go", "args": []string{"mod", "tidy"}, "optional": true},
+		},
+	})
+	h.runner.EXPECT().RunEnv(mock.Anything, mock.Anything, mock.Anything, "go", "mod", "tidy").
+		Return(execadapter.Result{}, assert.AnError).Once()
+
+	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	require.NoError(t, err, "a tidy needs the network and a sync must work offline")
+	require.Len(t, report.Unsettled, 1)
+	assert.Contains(t, report.Unsettled[0], "go mod tidy in /w/golden-go")
+}
+
+func TestACommandThatIsNotOptionalStopsTheSync(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("go://example.com/lang-go", "render", map[string]any{
+		"files":  []any{},
+		"settle": []map[string]any{{"dir": "/w", "command": "false"}},
+	})
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "false").
+		Return(execadapter.Result{}, assert.AnError).Once()
+
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Contains(t, err.Error(), "running false")
+}
+
+func TestACommandThatExitsNonZeroCountsAsAFailure(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("go://example.com/lang-go", "render", map[string]any{
+		"files":  []any{},
+		"settle": []map[string]any{{"dir": "/w", "command": "go", "args": []string{"mod", "tidy"}}},
+	})
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "go", "mod", "tidy").
+		Return(execadapter.Result{ExitCode: 1, Stderr: "unknown directive: #"}, nil).Once()
+
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	require.ErrorIs(t, err, synccontroller.ErrCommand,
+		"a non zero exit comes back with no error, so reading only the error passes every failure")
+	assert.Contains(t, err.Error(), "unknown directive")
+}
+
+func TestALongFailureIsTrimmedToItsReason(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("go://example.com/lang-go", "render", map[string]any{
+		"files":  []any{},
+		"settle": []map[string]any{{"dir": "/w", "command": "go"}},
+	})
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "go").
+		Return(execadapter.Result{
+			ExitCode: 2,
+			Stderr:   strings.Repeat("x", 600) + "the reason",
+		}, nil).Once()
+
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the reason")
+	assert.Less(t, len(err.Error()), 600)
+}
+
+func TestAFileCanNameMoreThanItselfToIgnore(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("go://example.com/lang-go", "render", map[string]any{"files": []map[string]any{{
+		"path": "/w/golden-go/go.mod", "content": "x",
+		"gitignore": "golden-go", "alsoIgnore": []string{"go.sum"},
+	}}})
+	h.fs.EXPECT().Exists("/w/golden-go/.gitignore").Return(false, nil).Once()
+	h.recordWrites()
+
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	require.NoError(t, err)
+
+	got := h.wrote["/w/golden-go/.gitignore"]
+	assert.Contains(t, got, "/go.mod")
+	assert.Contains(t, got, "/go.sum")
 }

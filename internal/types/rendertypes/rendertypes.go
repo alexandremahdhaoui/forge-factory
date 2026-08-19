@@ -15,11 +15,28 @@ type Input struct {
 	Dependencies map[string]string
 }
 
+// Command is what to run after the files land. A generated go.mod names only
+// the direct requires, so a tidy is what puts the indirect ones back.
+type Command struct {
+	Dir      string
+	Command  string
+	Args     []string
+	Env      map[string]string
+	Optional bool
+}
+
+// Output is everything a renderer decided.
+type Output struct {
+	Files  []File
+	Settle []Command
+}
+
 // File is one file a renderer wants written.
 type File struct {
-	Path      string
-	Content   string
-	Gitignore string
+	Path       string
+	Content    string
+	Gitignore  string
+	AlsoIgnore []string
 }
 
 // Speaks reports whether a repo is written in a language.

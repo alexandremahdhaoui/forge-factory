@@ -99,8 +99,30 @@ func workspace(t *testing.T) string {
 		write(t, filepath.Join(root, name, "forge.yaml"), forge)
 	}
 
+	// A tidy drops a require nothing imports, so the member has to use the
+	// dependency the factory names or the bump has nothing to prove.
+	write(t, filepath.Join(root, "sample-go", "main.go"), goSource)
+
 	return root
 }
+
+const goSource = `package main
+
+import (
+	"fmt"
+
+	"sigs.k8s.io/yaml"
+)
+
+func main() {
+	out, err := yaml.Marshal(map[string]string{"a": "b"})
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Print(string(out))
+}
+`
 
 func write(t *testing.T, path, content string) {
 	t.Helper()
@@ -291,4 +313,34 @@ func gitInit(t *testing.T, dir string) {
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, string(out))
 	}
+}
+
+// TestAGeneratedGoModBuilds is the point of the whole tool. A member carries no
+// go.mod of its own, forge-factory writes one from the shared versions, and the
+// package compiles against a dependency the factory alone named.
+//
+// The tidy runs with GOWORK=off. In workspace mode a tidy writes no per module
+// sums, so the member would carry a go.mod naming versions and nothing proving
+// them.
+func TestAGeneratedGoModBuilds(t *testing.T) {
+	root := workspace(t)
+
+	out := mustRun(t, root, "sync")
+	require.Contains(t, out, "ran go mod tidy", out)
+
+	mod := read(t, filepath.Join(root, "sample-go", "go.mod"))
+	assert.Contains(t, mod, "sigs.k8s.io/yaml v1.6.0")
+
+	_, err := os.Stat(filepath.Join(root, "sample-go", "go.sum"))
+	require.NoError(t, err,
+		"the tidy runs with GOWORK=off, so the member gets the sums a build needs")
+
+	assert.Contains(t, read(t, filepath.Join(root, "sample-go", ".gitignore")), "/go.sum",
+		"a derived file is never committed either")
+
+	build := exec.Command("go", "build", "-o", filepath.Join(t.TempDir(), "out"), ".")
+	build.Dir = filepath.Join(root, "sample-go")
+
+	logs, err := build.CombinedOutput()
+	require.NoError(t, err, string(logs))
 }

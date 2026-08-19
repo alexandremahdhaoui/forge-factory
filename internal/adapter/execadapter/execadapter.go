@@ -17,6 +17,7 @@ type Result struct {
 
 type Runner interface {
 	Run(ctx context.Context, dir, name string, args ...string) (Result, error)
+	RunEnv(ctx context.Context, dir string, env map[string]string, name string, args ...string) (Result, error)
 }
 
 type OS struct{}
@@ -27,10 +28,26 @@ func New() OS {
 	return OS{}
 }
 
-func (OS) Run(ctx context.Context, dir, name string, args ...string) (Result, error) {
+func (o OS) Run(ctx context.Context, dir, name string, args ...string) (Result, error) {
+	return o.RunEnv(ctx, dir, nil, name, args...)
+}
+
+// RunEnv adds to the inherited environment rather than replacing it, so a
+// command still finds its toolchain on PATH.
+func (OS) RunEnv(
+	ctx context.Context,
+	dir string,
+	env map[string]string,
+	name string,
+	args ...string,
+) (Result, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Env = os.Environ()
+
+	for key, value := range env {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
 
 	var stdout, stderr strings.Builder
 

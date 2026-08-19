@@ -128,3 +128,100 @@ func (_c *MockRunner_Run_Call) RunAndReturn(run func(ctx context.Context, dir st
 	_c.Call.Return(run)
 	return _c
 }
+
+// RunEnv provides a mock function for the type MockRunner
+func (_mock *MockRunner) RunEnv(ctx context.Context, dir string, env map[string]string, name string, args ...string) (execadapter.Result, error) {
+	// string
+	_va := make([]any, len(args))
+	for _i := range args {
+		_va[_i] = args[_i]
+	}
+	var _ca []any
+	_ca = append(_ca, ctx, dir, env, name)
+	_ca = append(_ca, _va...)
+	ret := _mock.Called(_ca...)
+
+	if len(ret) == 0 {
+		panic("no return value specified for RunEnv")
+	}
+
+	var r0 execadapter.Result
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, map[string]string, string, ...string) (execadapter.Result, error)); ok {
+		return returnFunc(ctx, dir, env, name, args...)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, map[string]string, string, ...string) execadapter.Result); ok {
+		r0 = returnFunc(ctx, dir, env, name, args...)
+	} else {
+		r0 = ret.Get(0).(execadapter.Result)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, string, map[string]string, string, ...string) error); ok {
+		r1 = returnFunc(ctx, dir, env, name, args...)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockRunner_RunEnv_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'RunEnv'
+type MockRunner_RunEnv_Call struct {
+	*mock.Call
+}
+
+// RunEnv is a helper method to define mock.On call
+//   - ctx context.Context
+//   - dir string
+//   - env map[string]string
+//   - name string
+//   - args ...string
+func (_e *MockRunner_Expecter) RunEnv(ctx any, dir any, env any, name any, args ...any) *MockRunner_RunEnv_Call {
+	return &MockRunner_RunEnv_Call{Call: _e.mock.On("RunEnv",
+		append([]any{ctx, dir, env, name}, args...)...)}
+}
+
+func (_c *MockRunner_RunEnv_Call) Run(run func(ctx context.Context, dir string, env map[string]string, name string, args ...string)) *MockRunner_RunEnv_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 map[string]string
+		if args[2] != nil {
+			arg2 = args[2].(map[string]string)
+		}
+		var arg3 string
+		if args[3] != nil {
+			arg3 = args[3].(string)
+		}
+		var arg4 []string
+		variadicArgs := make([]string, len(args)-4)
+		for i, a := range args[4:] {
+			if a != nil {
+				variadicArgs[i] = a.(string)
+			}
+		}
+		arg4 = variadicArgs
+		run(
+			arg0,
+			arg1,
+			arg2,
+			arg3,
+			arg4...,
+		)
+	})
+	return _c
+}
+
+func (_c *MockRunner_RunEnv_Call) Return(result execadapter.Result, err error) *MockRunner_RunEnv_Call {
+	_c.Call.Return(result, err)
+	return _c
+}
+
+func (_c *MockRunner_RunEnv_Call) RunAndReturn(run func(ctx context.Context, dir string, env map[string]string, name string, args ...string) (execadapter.Result, error)) *MockRunner_RunEnv_Call {
+	_c.Call.Return(run)
+	return _c
+}

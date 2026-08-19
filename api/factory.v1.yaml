@@ -76,6 +76,13 @@ components:
           description: >-
             The repo whose .gitignore must carry this path, relative to that
             repo. Empty when the file is not generated into a repo.
+        alsoIgnore:
+          type: array
+          items:
+            type: string
+          description: >-
+            More names to ignore in the same repo. A tidy writes go.sum beside
+            the generated go.mod, and a derived file is never committed either.
 
     RenderOutput:
       type: object
@@ -86,6 +93,43 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/File'
+        settle:
+          type: array
+          items:
+            $ref: '#/components/schemas/Command'
+          description: >-
+            What to run after the files are written, in order. A generated go.mod
+            names only the direct requires the factory declares, so a tidy is
+            what puts the indirect ones and the sums back.
+
+    Command:
+      type: object
+      description: One command to run after a render, from the directory it names.
+      required: [dir, command]
+      properties:
+        dir:
+          type: string
+          description: Where to run it. Absolute, as the engine received the paths.
+        command:
+          type: string
+          description: The executable name, resolved on PATH.
+        args:
+          type: array
+          items:
+            type: string
+          description: Its arguments.
+        env:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            Environment variables set for this command only. A go tidy needs
+            GOWORK=off, because in workspace mode it writes no per module sums.
+        optional:
+          type: boolean
+          description: >-
+            When true a failure is reported and the sync still succeeds. A tidy
+            needs the network, and a sync must work offline.
 
     LanguageOutput:
       type: object

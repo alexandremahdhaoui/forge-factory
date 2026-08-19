@@ -39,7 +39,7 @@ func run(ctx context.Context, args []string) error {
 	driver := clidriver.New(
 		os.Stdout,
 		fs,
-		synccontroller.New(caller, fs, repoadapter.New(fs)),
+		synccontroller.New(caller, fs, repoadapter.New(fs), execadapter.New()),
 		revisioncontroller.New(caller, git),
 		statuscontroller.New(fs, git),
 	)

@@ -275,6 +275,14 @@ func renderSync(report synccontroller.Report) string {
 		fmt.Fprintf(&b, "  ignored in %s\n", relative(report.Root, path))
 	}
 
+	for _, what := range report.Settled {
+		fmt.Fprintf(&b, "  ran %s\n", what)
+	}
+
+	for _, what := range report.Unsettled {
+		fmt.Fprintf(&b, "  could not run %s, which a build will need\n", what)
+	}
+
 	return b.String()
 }
 

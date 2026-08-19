@@ -42,16 +42,16 @@ func input() rendertypes.Input {
 	}
 }
 
-func find(t *testing.T, files []rendertypes.File, suffix string) rendertypes.File {
+func find(t *testing.T, out rendertypes.Output, suffix string) rendertypes.File {
 	t.Helper()
 
-	for _, f := range files {
+	for _, f := range out.Files {
 		if strings.HasSuffix(f.Path, suffix) {
 			return f
 		}
 	}
 
-	t.Fatalf("no file ending in %q among %d files", suffix, len(files))
+	t.Fatalf("no file ending in %q among %d files", suffix, len(out.Files))
 
 	return rendertypes.File{}
 }
@@ -65,18 +65,21 @@ func TestGoRender(t *testing.T) {
 		"github.com/stretchr/testify": "v1.12.0",
 	}
 
-	files, err := rendercontroller.Go{}.Render(in)
+	out, err := rendercontroller.Go{}.Render(in)
 	require.NoError(t, err)
-	require.Len(t, files, 2)
+	require.Len(t, out.Files, 2)
 
-	mod := find(t, files, "go.mod")
+	mod := find(t, out, "go.mod")
 	assert.Equal(t, "/w/alpha-go/go.mod", mod.Path)
 	assert.Equal(t, "alpha-go", mod.Gitignore)
+	assert.Equal(t, []string{"go.sum"}, mod.AlsoIgnore, "a derived file is never committed either")
+	assert.True(t, strings.HasPrefix(mod.Content, "//"),
+		"a # line in go.mod is an unknown directive and every go command refuses the file")
 	assert.Contains(t, mod.Content, "module example.com/alpha")
 	assert.Contains(t, mod.Content, "go 1.26")
 	assert.Contains(t, mod.Content, "\tgithub.com/stretchr/testify v1.12.0\n\tsigs.k8s.io/yaml v1.6.0\n")
 
-	work := find(t, files, "go.work")
+	work := find(t, out, "go.work")
 	assert.Equal(t, "/w/go.work", work.Path)
 	assert.Empty(t, work.Gitignore, "the root is not a git repo, so nothing ignores it")
 	assert.Contains(t, work.Content, "./alpha-go")
@@ -96,10 +99,10 @@ func TestGoWorkTakesTheNewestMemberVersion(t *testing.T) {
 		},
 	}}
 
-	files, err := rendercontroller.Go{}.Render(in)
+	out, err := rendercontroller.Go{}.Render(in)
 	require.NoError(t, err)
 
-	assert.Contains(t, find(t, files, "go.work").Content, "go 1.26.5")
+	assert.Contains(t, find(t, out, "go.work").Content, "go 1.26.5")
 }
 
 func TestGoWorkIgnoresAnUnreadableVersion(t *testing.T) {
@@ -112,10 +115,10 @@ func TestGoWorkIgnoresAnUnreadableVersion(t *testing.T) {
 		},
 	}}
 
-	files, err := rendercontroller.Go{}.Render(in)
+	out, err := rendercontroller.Go{}.Render(in)
 	require.NoError(t, err)
 
-	assert.Contains(t, find(t, files, "go.work").Content, "go 1.25")
+	assert.Contains(t, find(t, out, "go.work").Content, "go 1.25")
 }
 
 func TestGoRefusesARepoWithNoModulePath(t *testing.T) {
@@ -143,9 +146,9 @@ func TestARendererWritesNothingWhenNobodySpeaksItsLanguage(t *testing.T) {
 		rendercontroller.Python{},
 		rendercontroller.TypeScript{},
 	} {
-		files, err := r.Render(in)
+		out, err := r.Render(in)
 		require.NoError(t, err, r.Language())
-		assert.Empty(t, files, r.Language())
+		assert.Empty(t, out.Files, r.Language())
 	}
 }
 
@@ -164,14 +167,14 @@ func TestRustRendersOnlyMembership(t *testing.T) {
 	in := input()
 	in.Dependencies = map[string]string{"serde": `"1"`, "thiserror": `"2"`}
 
-	files, err := rendercontroller.Rust{}.Render(in)
+	out, err := rendercontroller.Rust{}.Render(in)
 	require.NoError(t, err)
-	require.Len(t, files, 1, "cargo centralises versions, so nothing is written inside a repo")
+	require.Len(t, out.Files, 1, "cargo centralises versions, so nothing is written inside a repo")
 
-	assert.Equal(t, "/w/Cargo.toml", files[0].Path)
-	assert.Contains(t, files[0].Content, `    "beta-rust",`)
-	assert.Contains(t, files[0].Content, `    "beta-rust/inner",`)
-	assert.Contains(t, files[0].Content, "[workspace.dependencies]\nserde = \"1\"\nthiserror = \"2\"\n")
+	assert.Equal(t, "/w/Cargo.toml", out.Files[0].Path)
+	assert.Contains(t, out.Files[0].Content, `    "beta-rust",`)
+	assert.Contains(t, out.Files[0].Content, `    "beta-rust/inner",`)
+	assert.Contains(t, out.Files[0].Content, "[workspace.dependencies]\nserde = \"1\"\nthiserror = \"2\"\n")
 }
 
 func TestPythonRendersAWholeProject(t *testing.T) {
@@ -180,16 +183,16 @@ func TestPythonRendersAWholeProject(t *testing.T) {
 	in := input()
 	in.Dependencies = map[string]string{"pytest": ">=8"}
 
-	files, err := rendercontroller.Python{}.Render(in)
+	out, err := rendercontroller.Python{}.Render(in)
 	require.NoError(t, err)
-	require.Len(t, files, 1)
+	require.Len(t, out.Files, 1)
 
-	assert.Equal(t, "/w/gamma-py/pyproject.toml", files[0].Path)
-	assert.Equal(t, "gamma-py", files[0].Gitignore)
-	assert.Contains(t, files[0].Content, `name = "gamma-py"`)
-	assert.Contains(t, files[0].Content, `requires-python = ">=3.12"`)
-	assert.Contains(t, files[0].Content, `    "pytest>=8",`)
-	assert.Contains(t, files[0].Content, `packages = ["src/gamma"]`)
+	assert.Equal(t, "/w/gamma-py/pyproject.toml", out.Files[0].Path)
+	assert.Equal(t, "gamma-py", out.Files[0].Gitignore)
+	assert.Contains(t, out.Files[0].Content, `name = "gamma-py"`)
+	assert.Contains(t, out.Files[0].Content, `requires-python = ">=3.12"`)
+	assert.Contains(t, out.Files[0].Content, `    "pytest>=8",`)
+	assert.Contains(t, out.Files[0].Content, `packages = ["src/gamma"]`)
 }
 
 func TestPythonRefusesARepoWithNoPackage(t *testing.T) {
@@ -212,10 +215,10 @@ func TestPythonTakesTheVersionAndPythonAMemberDeclares(t *testing.T) {
 		}},
 	}}
 
-	files, err := rendercontroller.Python{}.Render(in)
+	out, err := rendercontroller.Python{}.Render(in)
 	require.NoError(t, err)
-	assert.Contains(t, files[0].Content, `version = "2.3.4"`)
-	assert.Contains(t, files[0].Content, `requires-python = ">=3.13"`)
+	assert.Contains(t, out.Files[0].Content, `version = "2.3.4"`)
+	assert.Contains(t, out.Files[0].Content, `requires-python = ">=3.13"`)
 }
 
 func TestTypeScriptRendersNoScripts(t *testing.T) {
@@ -224,17 +227,17 @@ func TestTypeScriptRendersNoScripts(t *testing.T) {
 	in := input()
 	in.Dependencies = map[string]string{"neverthrow": "^8", "vitest": "^3"}
 
-	files, err := rendercontroller.TypeScript{}.Render(in)
+	out, err := rendercontroller.TypeScript{}.Render(in)
 	require.NoError(t, err)
-	require.Len(t, files, 2)
+	require.Len(t, out.Files, 2)
 
-	pkg := find(t, files, "package.json")
+	pkg := find(t, out, "package.json")
 	assert.Equal(t, "delta-ts", pkg.Gitignore)
 	assert.NotContains(t, pkg.Content, `"scripts"`, "scripts duplicate forge stages")
 	assert.Contains(t, pkg.Content, `"bin": { "delta-ts": "dist/cmd/delta.js" }`)
 	assert.Contains(t, pkg.Content, "\"neverthrow\": \"^8\",\n    \"vitest\": \"^3\"\n")
 
-	ws := find(t, files, "pnpm-workspace.yaml")
+	ws := find(t, out, "pnpm-workspace.yaml")
 	assert.Contains(t, ws.Content, `  - "delta-ts"`)
 }
 
@@ -245,9 +248,9 @@ func TestTypeScriptOmitsBinWhenNoRepoDeclaresOne(t *testing.T) {
 		{Name: "a", Path: "/w/a", Languages: []string{"typescript"}},
 	}}
 
-	files, err := rendercontroller.TypeScript{}.Render(in)
+	out, err := rendercontroller.TypeScript{}.Render(in)
 	require.NoError(t, err)
-	assert.NotContains(t, find(t, files, "package.json").Content, `"bin"`)
+	assert.NotContains(t, find(t, out, "package.json").Content, `"bin"`)
 }
 
 func TestEveryGeneratedFileSaysItIsGenerated(t *testing.T) {
@@ -261,10 +264,10 @@ func TestEveryGeneratedFileSaysItIsGenerated(t *testing.T) {
 		rendercontroller.Python{},
 		rendercontroller.TypeScript{},
 	} {
-		files, err := r.Render(in)
+		out, err := r.Render(in)
 		require.NoError(t, err)
 
-		for _, f := range files {
+		for _, f := range out.Files {
 			assert.Contains(t, strings.ToLower(f.Content), "do not edit", f.Path)
 		}
 	}
@@ -289,7 +292,39 @@ func TestGoWorkPrefersALongerVersionOverItsOwnPrefix(t *testing.T) {
 		},
 	}}
 
-	files, err := rendercontroller.Go{}.Render(in)
+	out, err := rendercontroller.Go{}.Render(in)
 	require.NoError(t, err)
-	assert.Contains(t, find(t, files, "go.work").Content, "go 1.25.1")
+	assert.Contains(t, find(t, out, "go.work").Content, "go 1.25.1")
+}
+
+func TestGoAsksForATidyPerMember(t *testing.T) {
+	t.Parallel()
+
+	out, err := rendercontroller.Go{}.Render(input())
+	require.NoError(t, err)
+	require.Len(t, out.Settle, 2)
+
+	assert.Equal(t, "/w/alpha-go", out.Settle[0].Dir)
+	assert.Equal(t, "go", out.Settle[0].Command)
+	assert.Equal(t, []string{"mod", "tidy"}, out.Settle[0].Args)
+	assert.Equal(t, map[string]string{"GOWORK": "off"}, out.Settle[0].Env,
+		"in workspace mode a tidy writes no per module sums")
+	assert.True(t, out.Settle[0].Optional, "a sync must still work offline")
+
+	assert.Equal(t, "/w", out.Settle[1].Dir)
+	assert.Equal(t, []string{"work", "sync"}, out.Settle[1].Args)
+}
+
+func TestNoOtherLanguageNeedsSettling(t *testing.T) {
+	t.Parallel()
+
+	for _, r := range []rendercontroller.Renderer{
+		rendercontroller.Rust{},
+		rendercontroller.Python{},
+		rendercontroller.TypeScript{},
+	} {
+		out, err := r.Render(input())
+		require.NoError(t, err)
+		assert.Empty(t, out.Settle, r.Language())
+	}
 }

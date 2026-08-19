@@ -57,16 +57,3 @@ type Engine struct {
 		SpecPath string `json:"specPath"`
 	} `json:"openapi"`
 }
-
-type Property struct {
-	Name        string
-	Type        string
-	Required    bool
-	Description string
-}
-
-type Schema struct {
-	Name        string
-	Description string
-	Properties  []Property
-}

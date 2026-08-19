@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/engineadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/repoadapter"
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
@@ -21,13 +22,28 @@ const (
 	gitignoreHeader = "# forge-factory materialises these. A version is written in forge-factory.yaml."
 )
 
-var ErrLanguage = errors.New("an engine speaks a different language than its alias claims")
+var (
+	ErrLanguage = errors.New("an engine speaks a different language than its alias claims")
+	ErrCommand  = errors.New("a command an engine asked for failed")
+)
+
+// tail keeps the end of a command's stderr, which is where the reason is.
+func tail(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > 400 {
+		return "..." + s[len(s)-400:]
+	}
+
+	return s
+}
 
 // Report is what a sync did, so a caller can print it and a test can assert it.
 type Report struct {
-	Root    string   `json:"root"`
-	Written []string `json:"written"`
-	Ignored []string `json:"ignored"`
+	Root      string   `json:"root"`
+	Written   []string `json:"written"`
+	Ignored   []string `json:"ignored"`
+	Settled   []string `json:"settled"`
+	Unsettled []string `json:"unsettled"`
 }
 
 type repoWire struct {
@@ -44,13 +60,23 @@ type renderInput struct {
 }
 
 type fileWire struct {
-	Path      string `json:"path"`
-	Content   string `json:"content"`
-	Gitignore string `json:"gitignore,omitempty"`
+	Path       string   `json:"path"`
+	Content    string   `json:"content"`
+	Gitignore  string   `json:"gitignore,omitempty"`
+	AlsoIgnore []string `json:"alsoIgnore,omitempty"`
+}
+
+type commandWire struct {
+	Dir      string            `json:"dir"`
+	Command  string            `json:"command"`
+	Args     []string          `json:"args,omitempty"`
+	Env      map[string]string `json:"env,omitempty"`
+	Optional bool              `json:"optional,omitempty"`
 }
 
 type renderOutput struct {
-	Files []fileWire `json:"files"`
+	Files  []fileWire    `json:"files"`
+	Settle []commandWire `json:"settle,omitempty"`
 }
 
 type languageOutput struct {
@@ -61,10 +87,16 @@ type Controller struct {
 	caller engineadapter.Caller
 	fs     fsadapter.FS
 	repos  repoadapter.Reader
+	runner execadapter.Runner
 }
 
-func New(caller engineadapter.Caller, fs fsadapter.FS, repos repoadapter.Reader) *Controller {
-	return &Controller{caller: caller, fs: fs, repos: repos}
+func New(
+	caller engineadapter.Caller,
+	fs fsadapter.FS,
+	repos repoadapter.Reader,
+	runner execadapter.Runner,
+) *Controller {
+	return &Controller{caller: caller, fs: fs, repos: repos, runner: runner}
 }
 
 // Sync asks every language engine what to write, writes it, and keeps each
@@ -76,9 +108,17 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root string) (R
 		return Report{}, err
 	}
 
-	report := Report{Root: root, Written: []string{}, Ignored: []string{}}
+	report := Report{
+		Root:      root,
+		Written:   []string{},
+		Ignored:   []string{},
+		Settled:   []string{},
+		Unsettled: []string{},
+	}
 
 	ignores := map[string][]string{}
+
+	var settle []commandWire
 
 	for _, language := range f.Languages() {
 		uri, ok := f.EngineFor(language)
@@ -106,9 +146,13 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root string) (R
 			report.Written = append(report.Written, file.Path)
 
 			if file.Gitignore != "" {
-				ignores[file.Gitignore] = append(ignores[file.Gitignore], filepath.Base(file.Path))
+				ignores[file.Gitignore] = append(
+					ignores[file.Gitignore],
+					append([]string{filepath.Base(file.Path)}, file.AlsoIgnore...)...)
 			}
 		}
+
+		settle = append(settle, out.Settle...)
 	}
 
 	sort.Strings(report.Written)
@@ -126,7 +170,44 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root string) (R
 		}
 	}
 
+	if err := c.settle(ctx, settle, &report); err != nil {
+		return Report{}, err
+	}
+
 	return report, nil
+}
+
+// settle runs what each engine asked for after its files landed. A generated
+// go.mod names only the direct requires, so the tidy is what puts the indirect
+// ones and the sums back. An optional command that fails is reported and the
+// sync still succeeds, because a tidy needs the network and a sync must work
+// offline.
+func (c *Controller) settle(ctx context.Context, commands []commandWire, report *Report) error {
+	for _, cmd := range commands {
+		what := cmd.Command + " " + strings.Join(cmd.Args, " ") + " in " + cmd.Dir
+
+		result, err := c.runner.RunEnv(ctx, cmd.Dir, cmd.Env, cmd.Command, cmd.Args...)
+
+		// A command that exits non zero comes back with no error and an exit
+		// code. Reading only the error passes every failure.
+		if err == nil && result.ExitCode != 0 {
+			err = fmt.Errorf("%w: exit %d: %s", ErrCommand, result.ExitCode, tail(result.Stderr))
+		}
+
+		if err != nil {
+			if !cmd.Optional {
+				return fmt.Errorf("running %s: %w", what, err)
+			}
+
+			report.Unsettled = append(report.Unsettled, what+": "+err.Error())
+
+			continue
+		}
+
+		report.Settled = append(report.Settled, what)
+	}
+
+	return nil
 }
 
 // checkLanguage refuses an engine registered under the wrong alias, because a
