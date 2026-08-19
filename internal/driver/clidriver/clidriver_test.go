@@ -11,8 +11,10 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/driver/clidriver"
-	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/clidrivermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/fsadaptermock"
+	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/revisioncontrollermock"
+	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/statuscontrollermock"
+	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/synccontrollermock"
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -36,9 +38,9 @@ dependencies:
 type harness struct {
 	out    *bytes.Buffer
 	fs     *fsadaptermock.MockFS
-	sync   *clidrivermock.MockSyncer
-	revise *clidrivermock.MockReviser
-	state  *clidrivermock.MockStater
+	sync   *synccontrollermock.MockSyncer
+	revise *revisioncontrollermock.MockReviser
+	state  *statuscontrollermock.MockStater
 	driver *clidriver.Driver
 	wrote  map[string]string
 }
@@ -49,9 +51,9 @@ func newHarness(t *testing.T) *harness {
 	h := &harness{
 		out:    &bytes.Buffer{},
 		fs:     fsadaptermock.NewMockFS(t),
-		sync:   clidrivermock.NewMockSyncer(t),
-		revise: clidrivermock.NewMockReviser(t),
-		state:  clidrivermock.NewMockStater(t),
+		sync:   synccontrollermock.NewMockSyncer(t),
+		revise: revisioncontrollermock.NewMockReviser(t),
+		state:  statuscontrollermock.NewMockStater(t),
 		wrote:  map[string]string{},
 	}
 
@@ -380,7 +382,7 @@ func TestAReportThatCannotBePrintedIsAnError(t *testing.T) {
 	fs.EXPECT().ReadFile("forge-factory.yaml").Return([]byte(factory), nil).Once()
 
 	driver := clidriver.New(brokenWriter{}, fs,
-		clidrivermock.NewMockSyncer(t), clidrivermock.NewMockReviser(t), clidrivermock.NewMockStater(t))
+		synccontrollermock.NewMockSyncer(t), revisioncontrollermock.NewMockReviser(t), statuscontrollermock.NewMockStater(t))
 
 	err := driver.Run(t.Context(), []string{"validate"})
 	require.ErrorIs(t, err, assert.AnError)

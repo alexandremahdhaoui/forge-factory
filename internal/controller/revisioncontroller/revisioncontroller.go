@@ -62,10 +62,17 @@ type Result struct {
 	Repos    map[string]string `json:"repos"`
 }
 
+// Reviser is what a driver accepts, declared in the package that implements it.
+type Reviser interface {
+	Checkout(ctx context.Context, f config.Factory, root, id string) (Result, error)
+}
+
 type Controller struct {
 	caller engineadapter.Caller
 	git    gitadapter.Git
 }
+
+var _ Reviser = (*Controller)(nil)
 
 func New(caller engineadapter.Caller, git gitadapter.Git) *Controller {
 	return &Controller{caller: caller, git: git}

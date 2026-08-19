@@ -83,12 +83,20 @@ type languageOutput struct {
 	Language string `json:"language"`
 }
 
+// Syncer is what a driver accepts. It is declared here, in the package that
+// implements it, as golden-go does.
+type Syncer interface {
+	Sync(ctx context.Context, f config.Factory, root string) (Report, error)
+}
+
 type Controller struct {
 	caller engineadapter.Caller
 	fs     fsadapter.FS
 	repos  repoadapter.Reader
 	runner execadapter.Runner
 }
+
+var _ Syncer = (*Controller)(nil)
 
 func New(
 	caller engineadapter.Caller,

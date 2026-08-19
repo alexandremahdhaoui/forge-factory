@@ -41,11 +41,23 @@ packages:
     interfaces:
       Reader:
 
-  github.com/alexandremahdhaoui/forge-factory/internal/driver/clidriver:
+  github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller:
     config:
-      dir: internal/mocks/clidrivermock
-      pkgname: clidrivermock
+      dir: internal/mocks/synccontrollermock
+      pkgname: synccontrollermock
     interfaces:
       Syncer:
+
+  github.com/alexandremahdhaoui/forge-factory/internal/controller/revisioncontroller:
+    config:
+      dir: internal/mocks/revisioncontrollermock
+      pkgname: revisioncontrollermock
+    interfaces:
       Reviser:
+
+  github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller:
+    config:
+      dir: internal/mocks/statuscontrollermock
+      pkgname: statuscontrollermock
+    interfaces:
       Stater:

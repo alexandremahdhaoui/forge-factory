@@ -27,27 +27,21 @@ var (
 	ErrDrift = errors.New("the workspace disagrees with the factory")
 )
 
-type Syncer interface {
-	Sync(context.Context, config.Factory, string) (synccontroller.Report, error)
-}
-
-type Reviser interface {
-	Checkout(context.Context, config.Factory, string, string) (revisioncontroller.Result, error)
-}
-
-type Stater interface {
-	Status(context.Context, config.Factory, string) (statuscontroller.Report, error)
-}
-
 type Driver struct {
 	out    io.Writer
 	fs     fsadapter.FS
-	sync   Syncer
-	revise Reviser
-	state  Stater
+	sync   synccontroller.Syncer
+	revise revisioncontroller.Reviser
+	state  statuscontroller.Stater
 }
 
-func New(out io.Writer, fs fsadapter.FS, sync Syncer, revise Reviser, state Stater) *Driver {
+func New(
+	out io.Writer,
+	fs fsadapter.FS,
+	sync synccontroller.Syncer,
+	revise revisioncontroller.Reviser,
+	state statuscontroller.Stater,
+) *Driver {
 	return &Driver{out: out, fs: fs, sync: sync, revise: revise, state: state}
 }
 

@@ -41,10 +41,17 @@ func (r Report) Agrees() bool {
 	return true
 }
 
+// Stater is what a driver accepts, declared in the package that implements it.
+type Stater interface {
+	Status(ctx context.Context, f config.Factory, root string) (Report, error)
+}
+
 type Controller struct {
 	fs  fsadapter.FS
 	git gitadapter.Git
 }
+
+var _ Stater = (*Controller)(nil)
 
 func New(fs fsadapter.FS, git gitadapter.Git) *Controller {
 	return &Controller{fs: fs, git: git}

@@ -2,7 +2,7 @@
 // github.com/vektra/mockery
 // template: testify
 
-package clidrivermock
+package revisioncontrollermock
 
 import (
 	"context"
@@ -40,8 +40,8 @@ func (_m *MockReviser) EXPECT() *MockReviser_Expecter {
 }
 
 // Checkout provides a mock function for the type MockReviser
-func (_mock *MockReviser) Checkout(context1 context.Context, factory config.Factory, s string, s1 string) (revisioncontroller.Result, error) {
-	ret := _mock.Called(context1, factory, s, s1)
+func (_mock *MockReviser) Checkout(ctx context.Context, f config.Factory, root string, id string) (revisioncontroller.Result, error) {
+	ret := _mock.Called(ctx, f, root, id)
 
 	if len(ret) == 0 {
 		panic("no return value specified for Checkout")
@@ -50,15 +50,15 @@ func (_mock *MockReviser) Checkout(context1 context.Context, factory config.Fact
 	var r0 revisioncontroller.Result
 	var r1 error
 	if returnFunc, ok := ret.Get(0).(func(context.Context, config.Factory, string, string) (revisioncontroller.Result, error)); ok {
-		return returnFunc(context1, factory, s, s1)
+		return returnFunc(ctx, f, root, id)
 	}
 	if returnFunc, ok := ret.Get(0).(func(context.Context, config.Factory, string, string) revisioncontroller.Result); ok {
-		r0 = returnFunc(context1, factory, s, s1)
+		r0 = returnFunc(ctx, f, root, id)
 	} else {
 		r0 = ret.Get(0).(revisioncontroller.Result)
 	}
 	if returnFunc, ok := ret.Get(1).(func(context.Context, config.Factory, string, string) error); ok {
-		r1 = returnFunc(context1, factory, s, s1)
+		r1 = returnFunc(ctx, f, root, id)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -71,15 +71,15 @@ type MockReviser_Checkout_Call struct {
 }
 
 // Checkout is a helper method to define mock.On call
-//   - context1 context.Context
-//   - factory config.Factory
-//   - s string
-//   - s1 string
-func (_e *MockReviser_Expecter) Checkout(context1 any, factory any, s any, s1 any) *MockReviser_Checkout_Call {
-	return &MockReviser_Checkout_Call{Call: _e.mock.On("Checkout", context1, factory, s, s1)}
+//   - ctx context.Context
+//   - f config.Factory
+//   - root string
+//   - id string
+func (_e *MockReviser_Expecter) Checkout(ctx any, f any, root any, id any) *MockReviser_Checkout_Call {
+	return &MockReviser_Checkout_Call{Call: _e.mock.On("Checkout", ctx, f, root, id)}
 }
 
-func (_c *MockReviser_Checkout_Call) Run(run func(context1 context.Context, factory config.Factory, s string, s1 string)) *MockReviser_Checkout_Call {
+func (_c *MockReviser_Checkout_Call) Run(run func(ctx context.Context, f config.Factory, root string, id string)) *MockReviser_Checkout_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
@@ -112,7 +112,7 @@ func (_c *MockReviser_Checkout_Call) Return(result revisioncontroller.Result, er
 	return _c
 }
 
-func (_c *MockReviser_Checkout_Call) RunAndReturn(run func(context1 context.Context, factory config.Factory, s string, s1 string) (revisioncontroller.Result, error)) *MockReviser_Checkout_Call {
+func (_c *MockReviser_Checkout_Call) RunAndReturn(run func(ctx context.Context, f config.Factory, root string, id string) (revisioncontroller.Result, error)) *MockReviser_Checkout_Call {
 	_c.Call.Return(run)
 	return _c
 }

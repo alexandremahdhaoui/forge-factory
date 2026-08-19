@@ -2,7 +2,7 @@
 // github.com/vektra/mockery
 // template: testify
 
-package clidrivermock
+package statuscontrollermock
 
 import (
 	"context"
@@ -40,8 +40,8 @@ func (_m *MockStater) EXPECT() *MockStater_Expecter {
 }
 
 // Status provides a mock function for the type MockStater
-func (_mock *MockStater) Status(context1 context.Context, factory config.Factory, s string) (statuscontroller.Report, error) {
-	ret := _mock.Called(context1, factory, s)
+func (_mock *MockStater) Status(ctx context.Context, f config.Factory, root string) (statuscontroller.Report, error) {
+	ret := _mock.Called(ctx, f, root)
 
 	if len(ret) == 0 {
 		panic("no return value specified for Status")
@@ -50,15 +50,15 @@ func (_mock *MockStater) Status(context1 context.Context, factory config.Factory
 	var r0 statuscontroller.Report
 	var r1 error
 	if returnFunc, ok := ret.Get(0).(func(context.Context, config.Factory, string) (statuscontroller.Report, error)); ok {
-		return returnFunc(context1, factory, s)
+		return returnFunc(ctx, f, root)
 	}
 	if returnFunc, ok := ret.Get(0).(func(context.Context, config.Factory, string) statuscontroller.Report); ok {
-		r0 = returnFunc(context1, factory, s)
+		r0 = returnFunc(ctx, f, root)
 	} else {
 		r0 = ret.Get(0).(statuscontroller.Report)
 	}
 	if returnFunc, ok := ret.Get(1).(func(context.Context, config.Factory, string) error); ok {
-		r1 = returnFunc(context1, factory, s)
+		r1 = returnFunc(ctx, f, root)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -71,14 +71,14 @@ type MockStater_Status_Call struct {
 }
 
 // Status is a helper method to define mock.On call
-//   - context1 context.Context
-//   - factory config.Factory
-//   - s string
-func (_e *MockStater_Expecter) Status(context1 any, factory any, s any) *MockStater_Status_Call {
-	return &MockStater_Status_Call{Call: _e.mock.On("Status", context1, factory, s)}
+//   - ctx context.Context
+//   - f config.Factory
+//   - root string
+func (_e *MockStater_Expecter) Status(ctx any, f any, root any) *MockStater_Status_Call {
+	return &MockStater_Status_Call{Call: _e.mock.On("Status", ctx, f, root)}
 }
 
-func (_c *MockStater_Status_Call) Run(run func(context1 context.Context, factory config.Factory, s string)) *MockStater_Status_Call {
+func (_c *MockStater_Status_Call) Run(run func(ctx context.Context, f config.Factory, root string)) *MockStater_Status_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
@@ -106,7 +106,7 @@ func (_c *MockStater_Status_Call) Return(report statuscontroller.Report, err err
 	return _c
 }
 
-func (_c *MockStater_Status_Call) RunAndReturn(run func(context1 context.Context, factory config.Factory, s string) (statuscontroller.Report, error)) *MockStater_Status_Call {
+func (_c *MockStater_Status_Call) RunAndReturn(run func(ctx context.Context, f config.Factory, root string) (statuscontroller.Report, error)) *MockStater_Status_Call {
 	_c.Call.Return(run)
 	return _c
 }
