@@ -1,5 +1,7 @@
 github.com/alexandremahdhaoui/forge v0.43.0 h1:P0jyvGIBYKDcW7NzmFCANn2Y8QroHC3ARrCUVQN6S9k=
 github.com/alexandremahdhaoui/forge v0.43.0/go.mod h1:c9PnYitwa6l8XlH0yxwhDrbkYAUnIVgDqDgn3neC8Cc=
+github.com/alexandremahdhaoui/forge-revision-spec v0.2.0 h1:2vMeF27OrSz/3d81NCV50WplF/A0zWoqY8/neTMnmlc=
+github.com/alexandremahdhaoui/forge-revision-spec v0.2.0/go.mod h1:J/43RYdyF91Ah0u2MIvj/0ueuK7+ObZSAysABJvCyNM=
 github.com/golang-jwt/jwt/v5 v5.3.0 h1:pv4AsKCKKZuqlgs5sUmn4x8UlGa0kEVt/puTpKx9vvo=
 github.com/golang-jwt/jwt/v5 v5.3.0/go.mod h1:fxCRLWMO43lRc8nhHWY6LGqRcf+1gQWArsqaEUEa5bE=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=

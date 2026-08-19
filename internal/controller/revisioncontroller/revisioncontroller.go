@@ -11,6 +11,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/engineadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/gitadapter"
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
+	"github.com/alexandremahdhaoui/forge-revision-spec/pkg/revisiontypes"
 )
 
 const (
@@ -48,13 +49,9 @@ type getOutput struct {
 	Payload string `json:"payload,omitempty"`
 }
 
-// revisionWire is the Revision schema from forge-revision-spec. It is mapped
-// into the internal shape at this boundary.
-type revisionWire struct {
-	ID    string            `json:"id"`
-	Repos map[string]string `json:"repos"`
-	Dirty []string          `json:"dirty"`
-}
+// The wire type is generated from forge-revision-spec's schema, so a change to
+// the contract is a compile error here rather than a silent misread. It is
+// mapped into the internal shape at this boundary and goes no further.
 
 // Result is what a checkout did, so a caller can print it.
 type Result struct {
@@ -117,21 +114,25 @@ func decode(id, payload string) (Revision, error) {
 		return rev, nil
 	}
 
-	var wire revisionWire
+	var wire revisiontypes.Revision
 
 	if err := json.Unmarshal([]byte(payload), &wire); err != nil {
 		return Revision{}, fmt.Errorf("the payload is not a revision: %w", err)
 	}
 
-	if wire.ID != "" {
-		rev.ID = wire.ID
+	if wire.Id != "" {
+		rev.ID = wire.Id
 	}
 
-	for name, sha := range wire.Repos {
-		rev.Repos[name] = sha
+	if wire.Repos != nil {
+		for name, sha := range *wire.Repos {
+			rev.Repos[name] = sha
+		}
 	}
 
-	rev.Dirty = append(rev.Dirty, wire.Dirty...)
+	if wire.Dirty != nil {
+		rev.Dirty = append(rev.Dirty, *wire.Dirty...)
+	}
 	sort.Strings(rev.Dirty)
 
 	return rev, nil
