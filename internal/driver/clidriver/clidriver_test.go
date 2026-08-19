@@ -428,3 +428,23 @@ func TestOfflineAllowsASyncThatCouldNotReachTheNetwork(t *testing.T) {
 
 	require.NoError(t, h.driver.Run(t.Context(), []string{"sync", "--offline"}))
 }
+
+func TestStatusNamesAPinThatFellBehind(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.state.EXPECT().Status(mock.Anything, mock.Anything, mock.Anything).Return(
+		statuscontroller.Report{
+			Root: "/w",
+			Modules: []statuscontroller.ModuleStatus{
+				{Path: "github.com/x/spec", Pinned: "v0.1.0", Latest: "v0.3.0"},
+				{Path: "github.com/x/other", Pinned: "v1.0.0", Latest: "v1.0.0"},
+			},
+		}, nil).Once()
+
+	err := h.driver.Run(t.Context(), []string{"status"})
+	require.ErrorIs(t, err, clidriver.ErrDrift)
+	assert.Contains(t, h.out.String(), "github.com/x/spec is pinned at v0.1.0 and the checkout carries v0.3.0")
+	assert.NotContains(t, h.out.String(), "github.com/x/other")
+}

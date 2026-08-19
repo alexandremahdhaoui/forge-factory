@@ -224,3 +224,38 @@ func TestFetch(t *testing.T) {
 
 	require.NoError(t, gitadapter.New(runner).Fetch(t.Context(), "/w/a"))
 }
+
+func TestLatestTagTakesTheHighestSemver(t *testing.T) {
+	t.Parallel()
+
+	runner := execadaptermock.NewMockRunner(t)
+	runner.EXPECT().Run(mock.Anything, "/w/a", "git", "tag", "--sort=-v:refname").
+		Return(execadapter.Result{Stdout: "v0.3.0\nv0.2.0\nv0.1.0\n"}, nil).Once()
+
+	got, err := gitadapter.New(runner).LatestTag(t.Context(), "/w/a")
+	require.NoError(t, err)
+	require.Equal(t, "v0.3.0", got)
+}
+
+func TestARepoWithNoTagAnswersEmpty(t *testing.T) {
+	t.Parallel()
+
+	runner := execadaptermock.NewMockRunner(t)
+	runner.EXPECT().Run(mock.Anything, mock.Anything, "git", "tag", "--sort=-v:refname").
+		Return(execadapter.Result{Stdout: "\n"}, nil).Once()
+
+	got, err := gitadapter.New(runner).LatestTag(t.Context(), "/w/a")
+	require.NoError(t, err)
+	require.Empty(t, got, "most members never carry a tag")
+}
+
+func TestLatestTagReportsAFailure(t *testing.T) {
+	t.Parallel()
+
+	runner := execadaptermock.NewMockRunner(t)
+	runner.EXPECT().Run(mock.Anything, mock.Anything, "git", "tag", "--sort=-v:refname").
+		Return(execadapter.Result{}, errFake).Once()
+
+	_, err := gitadapter.New(runner).LatestTag(t.Context(), "/w/a")
+	require.Error(t, err)
+}

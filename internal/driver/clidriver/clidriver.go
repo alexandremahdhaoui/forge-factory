@@ -326,6 +326,13 @@ func renderStatus(report statuscontroller.Report) string {
 		fmt.Fprintf(&b, "  %s is a repo the factory does not declare\n", name)
 	}
 
+	for _, m := range report.Modules {
+		if m.Behind() {
+			fmt.Fprintf(&b, "  %s is pinned at %s and the checkout carries %s\n",
+				m.Path, m.Pinned, m.Latest)
+		}
+	}
+
 	return b.String()
 }
 
