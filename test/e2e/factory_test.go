@@ -218,15 +218,23 @@ func TestAddPutsANewMemberInEveryMembershipList(t *testing.T) {
 	root := workspace(t)
 
 	mustRun(t, root, "sync")
-	require.NotContains(t, read(t, filepath.Join(root, "go.work")), "sample-two")
+
+	for _, list := range []string{"go.work", "Cargo.toml", "pnpm-workspace.yaml"} {
+		require.NotContains(t, read(t, filepath.Join(root, list)), "sample-two", list)
+	}
 
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "sample-two"), 0o755))
 	write(t, filepath.Join(root, "sample-two", "forge.yaml"),
 		"name: sample-two\nfactory:\n  module: example.com/two\n")
 
-	mustRun(t, root, "add", "sample-two", "git@github.com:x/sample-two.git", "go")
+	mustRun(t, root, "add", "sample-two",
+		"git@github.com:x/sample-two.git", "go", "rust", "typescript")
 
+	// One add, and all three membership lists move together. That is the whole
+	// point: membership used to be declared five times and no two agreed.
 	assert.Contains(t, read(t, filepath.Join(root, "go.work")), "./sample-two")
+	assert.Contains(t, read(t, filepath.Join(root, "Cargo.toml")), `"sample-two"`)
+	assert.Contains(t, read(t, filepath.Join(root, "pnpm-workspace.yaml")), `- "sample-two"`)
 	assert.Contains(t, read(t, filepath.Join(root, "sample-two", "go.mod")), "module example.com/two")
 }
 
