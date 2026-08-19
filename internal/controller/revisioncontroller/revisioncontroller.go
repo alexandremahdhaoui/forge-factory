@@ -2,6 +2,7 @@ package revisioncontroller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -40,8 +41,19 @@ type getInput struct {
 }
 
 type getOutput struct {
-	Found   bool           `json:"found"`
-	Payload map[string]any `json:"payload,omitempty"`
+	Found bool `json:"found"`
+
+	// The contract carries a payload as a JSON document in a string, not as an
+	// object. Reading it as a map fails against every conforming engine.
+	Payload string `json:"payload,omitempty"`
+}
+
+// revisionWire is the Revision schema from forge-revision-spec. It is mapped
+// into the internal shape at this boundary.
+type revisionWire struct {
+	ID    string            `json:"id"`
+	Repos map[string]string `json:"repos"`
+	Dirty []string          `json:"dirty"`
 }
 
 // Result is what a checkout did, so a caller can print it.
@@ -83,35 +95,39 @@ func (c *Controller) Get(ctx context.Context, f config.Factory, id string) (Revi
 		return Revision{}, fmt.Errorf("reading revision %q: %w", id, ErrNotFound)
 	}
 
-	return decode(id, out.Payload), nil
+	rev, err := decode(id, out.Payload)
+	if err != nil {
+		return Revision{}, fmt.Errorf("reading revision %q: %w", id, err)
+	}
+
+	return rev, nil
 }
 
-func decode(id string, payload map[string]any) Revision {
+func decode(id, payload string) (Revision, error) {
 	rev := Revision{ID: id, Repos: map[string]string{}}
 
-	if got, ok := payload["id"].(string); ok && got != "" {
-		rev.ID = got
+	if payload == "" {
+		return rev, nil
 	}
 
-	if repos, ok := payload["repos"].(map[string]any); ok {
-		for name, sha := range repos {
-			if s, ok := sha.(string); ok {
-				rev.Repos[name] = s
-			}
-		}
+	var wire revisionWire
+
+	if err := json.Unmarshal([]byte(payload), &wire); err != nil {
+		return Revision{}, fmt.Errorf("the payload is not a revision: %w", err)
 	}
 
-	if dirty, ok := payload["dirty"].([]any); ok {
-		for _, d := range dirty {
-			if s, ok := d.(string); ok {
-				rev.Dirty = append(rev.Dirty, s)
-			}
-		}
-
-		sort.Strings(rev.Dirty)
+	if wire.ID != "" {
+		rev.ID = wire.ID
 	}
 
-	return rev
+	for name, sha := range wire.Repos {
+		rev.Repos[name] = sha
+	}
+
+	rev.Dirty = append(rev.Dirty, wire.Dirty...)
+	sort.Strings(rev.Dirty)
+
+	return rev, nil
 }
 
 // Checkout puts every member on the SHA the revision proved. A repo the

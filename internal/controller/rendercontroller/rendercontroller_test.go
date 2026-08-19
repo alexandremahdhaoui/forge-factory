@@ -328,3 +328,103 @@ func TestNoOtherLanguageNeedsSettling(t *testing.T) {
 		assert.Empty(t, out.Settle, r.Language())
 	}
 }
+
+func ownManifest() rendertypes.Input {
+	in := input()
+
+	for i := range in.Repos {
+		in.Repos[i].Identity["manifest"] = rendercontroller.OwnManifest
+	}
+
+	return in
+}
+
+func TestARepoThatKeepsItsOwnManifestStillGetsMembership(t *testing.T) {
+	t.Parallel()
+
+	in := ownManifest()
+
+	out, err := rendercontroller.Go{}.Render(in)
+	require.NoError(t, err)
+	require.Len(t, out.Files, 1)
+	assert.Equal(t, "/w/go.work", out.Files[0].Path)
+	require.Len(t, out.Settle, 1)
+	assert.Equal(t, []string{"work", "sync"}, out.Settle[0].Args,
+		"nothing to tidy, and the workspace still needs syncing")
+
+	out, err = rendercontroller.TypeScript{}.Render(in)
+	require.NoError(t, err)
+	require.Len(t, out.Files, 1)
+	assert.Equal(t, "/w/pnpm-workspace.yaml", out.Files[0].Path)
+	assert.Contains(t, out.Files[0].Content, "delta-ts")
+
+	out, err = rendercontroller.Python{}.Render(in)
+	require.NoError(t, err)
+	assert.Empty(t, out.Files, "python has no membership file, so nothing is written at all")
+}
+
+func TestARepoThatKeepsItsOwnManifestNeedsNoIdentity(t *testing.T) {
+	t.Parallel()
+
+	in := rendertypes.Input{Root: "/w", Repos: []rendertypes.Repo{
+		{
+			Name: "a", Path: "/w/a", Languages: []string{"go", "python"},
+			Identity: map[string]string{"manifest": rendercontroller.OwnManifest},
+		},
+	}}
+
+	_, err := rendercontroller.Go{}.Render(in)
+	require.NoError(t, err, "the module path is only needed to write a go.mod")
+
+	_, err = rendercontroller.Python{}.Render(in)
+	require.NoError(t, err)
+}
+
+func TestRustTakesAVersionWithFeaturesVerbatim(t *testing.T) {
+	t.Parallel()
+
+	in := input()
+	in.Dependencies = map[string]string{
+		"serde":  `{ version = "1", features = ["derive"] }`,
+		"anyhow": "1",
+		"empty":  "",
+	}
+
+	out, err := rendercontroller.Rust{}.Render(in)
+	require.NoError(t, err)
+
+	got := out.Files[0].Content
+	assert.Contains(t, got, `serde = { version = "1", features = ["derive"] }`)
+	assert.Contains(t, got, `anyhow = "1"`)
+	assert.Contains(t, got, `empty = ""`)
+}
+
+func TestTypeScriptCollectsWhatEveryMemberNeedsBuilt(t *testing.T) {
+	t.Parallel()
+
+	in := rendertypes.Input{Root: "/w", Repos: []rendertypes.Repo{
+		{
+			Name: "a", Path: "/w/a", Languages: []string{"typescript"},
+			Identity: map[string]string{"allowBuilds": "esbuild, sharp"},
+		},
+		{
+			Name: "b", Path: "/w/b", Languages: []string{"typescript"},
+			Identity: map[string]string{"allowBuilds": "esbuild"},
+		},
+	}}
+
+	out, err := rendercontroller.TypeScript{}.Render(in)
+	require.NoError(t, err)
+
+	ws := find(t, out, "pnpm-workspace.yaml").Content
+	assert.Contains(t, ws, "allowBuilds:\n  esbuild: true\n  sharp: true\n",
+		"pnpm blocks a build script by default and the list is per workspace")
+}
+
+func TestNoAllowBuildsSectionWhenNobodyNeedsOne(t *testing.T) {
+	t.Parallel()
+
+	out, err := rendercontroller.TypeScript{}.Render(input())
+	require.NoError(t, err)
+	assert.NotContains(t, find(t, out, "pnpm-workspace.yaml").Content, "allowBuilds")
+}

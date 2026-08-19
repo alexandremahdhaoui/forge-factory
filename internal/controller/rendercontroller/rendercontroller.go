@@ -43,6 +43,16 @@ func reposFor(in rendertypes.Input, language string) []rendertypes.Repo {
 	return out
 }
 
+// OwnManifest is what a repo declares in its forge.yaml when it keeps its own
+// manifest. Membership is still generated for it. A pyproject.toml carries
+// pytest, ruff and coverage settings that no factory declares, so taking it
+// over would throw them away.
+const OwnManifest = "own"
+
+func ownsItsManifest(repo rendertypes.Repo) bool {
+	return repo.Identity["manifest"] == OwnManifest
+}
+
 func identity(repo rendertypes.Repo, key string) (string, error) {
 	value, ok := repo.Identity[key]
 	if !ok || strings.TrimSpace(value) == "" {
@@ -79,6 +89,10 @@ func (g Go) Render(in rendertypes.Input) (rendertypes.Output, error) {
 	files := make([]rendertypes.File, 0, len(repos)+1)
 
 	for _, r := range repos {
+		if ownsItsManifest(r) {
+			continue
+		}
+
 		module, err := identity(r, "module")
 		if err != nil {
 			return rendertypes.Output{}, err
@@ -138,6 +152,10 @@ func tidy(root string, repos []rendertypes.Repo) []rendertypes.Command {
 	out := make([]rendertypes.Command, 0, len(repos)+1)
 
 	for _, r := range repos {
+		if ownsItsManifest(r) {
+			continue
+		}
+
 		out = append(out, rendertypes.Command{
 			Dir:      r.Path,
 			Command:  "go",
@@ -247,7 +265,7 @@ func (r Rust) Render(in rendertypes.Input) (rendertypes.Output, error) {
 		fmt.Fprintf(&b, "\n[workspace.dependencies]\n")
 
 		for _, name := range names {
-			fmt.Fprintf(&b, "%s = %s\n", name, in.Dependencies[name])
+			fmt.Fprintf(&b, "%s = %s\n", name, tomlValue(in.Dependencies[name]))
 		}
 	}
 
@@ -255,6 +273,20 @@ func (r Rust) Render(in rendertypes.Input) (rendertypes.Output, error) {
 		Path:    filepath.Join(in.Root, "Cargo.toml"),
 		Content: b.String(),
 	}}}, nil
+}
+
+// tomlValue takes a version verbatim when it is already TOML, and quotes it
+// otherwise. A bare 1 is not a cargo version, and a dependency that needs
+// features is written as a whole inline table in the factory.
+func tomlValue(v string) string {
+	switch {
+	case v == "":
+		return `""`
+	case strings.HasPrefix(v, "{"), strings.HasPrefix(v, "["), strings.HasPrefix(v, `"`):
+		return v
+	default:
+		return `"` + v + `"`
+	}
 }
 
 // Python renders pyproject.toml for every Python member, whole, because the
@@ -270,6 +302,10 @@ func (p Python) Render(in rendertypes.Input) (rendertypes.Output, error) {
 	files := make([]rendertypes.File, 0, len(repos))
 
 	for _, r := range repos {
+		if ownsItsManifest(r) {
+			continue
+		}
+
 		pkg, err := identity(r, "package")
 		if err != nil {
 			return rendertypes.Output{}, err
@@ -317,6 +353,10 @@ func (t TypeScript) Render(in rendertypes.Input) (rendertypes.Output, error) {
 	files := make([]rendertypes.File, 0, len(repos)+1)
 
 	for _, r := range repos {
+		if ownsItsManifest(r) {
+			continue
+		}
+
 		var b strings.Builder
 
 		fmt.Fprintf(&b, "{\n  \"_generated\": \"by forge-factory from forge-factory.yaml. DO NOT EDIT.\",\n")
@@ -356,12 +396,44 @@ func (t TypeScript) Render(in rendertypes.Input) (rendertypes.Output, error) {
 		fmt.Fprintf(&ws, "  - %q\n", r.Name)
 	}
 
+	// pnpm blocks a dependency's build script by default. A package that needs
+	// its platform binary built has to be named, and the list is per workspace,
+	// so members contribute to it.
+	if allowed := allowBuilds(repos); len(allowed) > 0 {
+		fmt.Fprintf(&ws, "\nallowBuilds:\n")
+
+		for _, name := range allowed {
+			fmt.Fprintf(&ws, "  %s: true\n", name)
+		}
+	}
+
 	files = append(files, rendertypes.File{
 		Path:    filepath.Join(in.Root, "pnpm-workspace.yaml"),
 		Content: ws.String(),
 	})
 
 	return rendertypes.Output{Files: files}, nil
+}
+
+func allowBuilds(repos []rendertypes.Repo) []string {
+	seen := map[string]bool{}
+
+	for _, r := range repos {
+		for _, name := range strings.Split(r.Identity["allowBuilds"], ",") {
+			if trimmed := strings.TrimSpace(name); trimmed != "" {
+				seen[trimmed] = true
+			}
+		}
+	}
+
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+
+	sort.Strings(out)
+
+	return out
 }
 
 func orDefault(value, fallback string) string {

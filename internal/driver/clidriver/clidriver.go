@@ -259,7 +259,22 @@ func describe(f config.Factory) string {
 		fmt.Fprintf(&b, "  %s %s (%d dependencies)\n", l, uri, len(f.DependenciesFor(l)))
 	}
 
+	for _, path := range f.ModulePaths() {
+		m := f.Modules[path]
+		fmt.Fprintf(&b, "  module %s -> %s\n", path, orRemote(m))
+	}
+
 	return b.String()
+}
+
+// orRemote says where a spec comes from. A local checkout wins and the version
+// is the fallback, so a reader sees which one is in play.
+func orRemote(m config.Module) string {
+	if m.Path != "" {
+		return m.Path
+	}
+
+	return m.Version
 }
 
 func renderSync(report synccontroller.Report) string {

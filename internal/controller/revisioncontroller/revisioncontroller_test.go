@@ -55,15 +55,19 @@ func answers(t *testing.T, caller *engineadaptermock.MockCaller, payload any) {
 		}).Once()
 }
 
+// found builds what a conforming engine answers. The contract carries a payload
+// as a JSON document in a string, not as an object.
 func found(repos map[string]string, dirty []string) map[string]any {
-	return map[string]any{
-		"found": true,
-		"payload": map[string]any{
-			"id":    "abc123",
-			"repos": repos,
-			"dirty": dirty,
-		},
+	payload, err := json.Marshal(map[string]any{
+		"id":    "abc123",
+		"repos": repos,
+		"dirty": dirty,
+	})
+	if err != nil {
+		panic(err)
 	}
+
+	return map[string]any{"found": true, "payload": string(payload)}
 }
 
 func TestGetReadsARevisionThroughTheStateEngine(t *testing.T) {
@@ -122,7 +126,7 @@ func TestGetSendsAnEmptySpecRatherThanNull(t *testing.T) {
 			raw, _ := json.Marshal(in)
 			require.NoError(t, json.Unmarshal(raw, &seen))
 
-			return json.Unmarshal([]byte(`{"found":true,"payload":{}}`), out)
+			return json.Unmarshal([]byte(`{"found":true}`), out)
 		}).Once()
 
 	f := parse(t, factory)
@@ -162,13 +166,24 @@ func TestGetFailsWhenTheEngineFails(t *testing.T) {
 	require.ErrorIs(t, err, assert.AnError)
 }
 
-func TestGetSurvivesAPayloadOfTheWrongShape(t *testing.T) {
+func TestGetReportsAPayloadThatIsNotARevision(t *testing.T) {
 	t.Parallel()
 
 	caller := engineadaptermock.NewMockCaller(t)
-	answers(t, caller, map[string]any{"found": true, "payload": map[string]any{
-		"id": 7, "repos": "not a map", "dirty": []any{1, "golden-go"},
-	}})
+	answers(t, caller, map[string]any{"found": true, "payload": "not json at all"})
+
+	c := revisioncontroller.New(caller, gitadaptermock.NewMockGit(t))
+
+	_, err := c.Get(t.Context(), parse(t, factory), "abc")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a revision")
+}
+
+func TestGetTakesTheAskedForIDWhenThePayloadIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	caller := engineadaptermock.NewMockCaller(t)
+	answers(t, caller, map[string]any{"found": true})
 
 	c := revisioncontroller.New(caller, gitadaptermock.NewMockGit(t))
 
@@ -176,7 +191,19 @@ func TestGetSurvivesAPayloadOfTheWrongShape(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "abc", rev.ID)
 	assert.Empty(t, rev.Repos)
-	assert.Equal(t, []string{"golden-go"}, rev.Dirty)
+}
+
+func TestGetSortsTheDirtyList(t *testing.T) {
+	t.Parallel()
+
+	caller := engineadaptermock.NewMockCaller(t)
+	answers(t, caller, found(nil, []string{"golden-rust", "golden-go"}))
+
+	c := revisioncontroller.New(caller, gitadaptermock.NewMockGit(t))
+
+	rev, err := c.Get(t.Context(), parse(t, factory), "abc")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"golden-go", "golden-rust"}, rev.Dirty)
 }
 
 func TestCheckoutPutsEveryNamedMemberOnItsSHA(t *testing.T) {

@@ -107,7 +107,6 @@ state:
 		"name is required",
 		"name must be lowercase kebab-case",
 		"url is required",
-		"languages must name at least one language",
 		`language "Rust" must be lowercase kebab-case`,
 		"duplicate repo name",
 		"alias must be lowercase kebab-case",
@@ -139,4 +138,56 @@ func TestLanguagesAreSortedSoASyncIsDeterministic(t *testing.T) {
 	}}
 
 	assert.Equal(t, []string{"go", "rust", "typescript"}, f.Languages())
+}
+
+func TestAMemberMayCarryNoManifest(t *testing.T) {
+	t.Parallel()
+
+	f, err := config.Parse([]byte(`version: "1"
+name: golden
+repos:
+  - name: golden-spec
+    url: git@github.com:x/golden-spec.git
+engines:
+  - alias: go
+    engine: go://example.com/lang-go
+`))
+	require.NoError(t, err, "a spec repo is a member and nothing is generated into it")
+	assert.Empty(t, f.Languages())
+}
+
+func TestModulesResolveLocallyOrRemotely(t *testing.T) {
+	t.Parallel()
+
+	f, err := config.Parse([]byte(`version: "1"
+name: golden
+repos:
+  - name: a
+    url: u
+    languages: [go]
+engines:
+  - alias: go
+    engine: go://x
+modules:
+  github.com/alexandremahdhaoui/golden-spec:
+    path: ./golden-spec
+    version: v0.2.0
+    specs: [api/golden.v1.yaml]
+`))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"github.com/alexandremahdhaoui/golden-spec"}, f.ModulePaths())
+	assert.Equal(t, "./golden-spec", f.Modules["github.com/alexandremahdhaoui/golden-spec"].Path)
+}
+
+func TestAModuleNeedsSomewhereToResolveFrom(t *testing.T) {
+	t.Parallel()
+
+	err := config.Factory{
+		Name:    "x",
+		Repos:   []config.Repo{{Name: "a", URL: "u"}},
+		Engines: []config.Engine{{Alias: "go", Engine: "go://x"}},
+		Modules: map[string]config.Module{"example.com/m": {}},
+	}.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "needs a path, a version, or both")
 }

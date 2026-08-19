@@ -21,12 +21,25 @@ type Factory struct {
 	Dependencies map[string]map[string]string `json:"dependencies,omitempty"`
 	Engines      []Engine                     `json:"engines"`
 	State        *State                       `json:"state,omitempty"`
+	Modules      map[string]Module            `json:"modules,omitempty"`
 }
 
+// Module maps a module path to a sibling checkout so codegen resolves a spec
+// from the workspace instead of the network. A local checkout wins. The version
+// is the remote fallback when the path is absent.
+type Module struct {
+	Path    string   `json:"path"`
+	Version string   `json:"version,omitempty"`
+	Specs   []string `json:"specs,omitempty"`
+}
+
+// Repo is one member. A repo with no languages is a member that carries no
+// manifest, which is what a spec repo is: it is checked out and versioned and
+// nothing is generated into it.
 type Repo struct {
 	Name      string   `json:"name"`
 	URL       string   `json:"url"`
-	Languages []string `json:"languages"`
+	Languages []string `json:"languages,omitempty"`
 }
 
 type Engine struct {
@@ -80,10 +93,6 @@ func (f Factory) Validate() error {
 
 		if strings.TrimSpace(r.URL) == "" {
 			add("%s: url is required", where)
-		}
-
-		if len(r.Languages) == 0 {
-			add("%s: languages must name at least one language", where)
 		}
 
 		for _, l := range r.Languages {
@@ -141,6 +150,14 @@ func (f Factory) Validate() error {
 		add("state: engine must start with go:// or alias://")
 	}
 
+	for _, path := range sortedKeys(f.Modules) {
+		m := f.Modules[path]
+
+		if strings.TrimSpace(m.Path) == "" && strings.TrimSpace(m.Version) == "" {
+			add("modules[%s]: needs a path, a version, or both", path)
+		}
+	}
+
 	if len(errs) == 0 {
 		return nil
 	}
@@ -167,6 +184,11 @@ func (f Factory) EngineFor(language string) (string, bool) {
 	}
 
 	return "", false
+}
+
+// ModulePaths returns every declared module path, sorted.
+func (f Factory) ModulePaths() []string {
+	return sortedKeys(f.Modules)
 }
 
 // Languages returns every language any repo declares, sorted, so a sync is

@@ -8,7 +8,7 @@
 #              api/golden.v1.yaml .forge/spec-cache
 #
 # Resolution order:
-#   1. modules.<module>.path in workspace.yaml, if that directory exists
+#   1. modules.<module>.path in forge-factory.yaml, if that directory exists
 #   2. GitHub raw at modules.<module>.version tag
 #
 # Writes the spec to <dest-dir>/<basename> and records provenance in
@@ -22,12 +22,12 @@ DEST="${3:-.forge/spec-cache}"
 
 die() { echo "resolve-spec: $*" >&2; exit 1; }
 
-# --- locate workspace.yaml by walking up from the repo root ------------------
+# --- locate forge-factory.yaml by walking up from the repo root --------------
 find_workspace_file() {
     dir=$(pwd)
     while [ "$dir" != "/" ]; do
-        if [ -f "$dir/workspace.yaml" ]; then
-            printf '%s\n' "$dir/workspace.yaml"
+        if [ -f "$dir/forge-factory.yaml" ]; then
+            printf '%s\n' "$dir/forge-factory.yaml"
             return 0
         fi
         dir=$(dirname "$dir")
@@ -35,11 +35,12 @@ find_workspace_file() {
     return 1
 }
 
-WS_FILE=$(find_workspace_file) || die "no workspace.yaml found walking up from $(pwd)"
+WS_FILE=$(find_workspace_file) || die "no forge-factory.yaml found walking up from $(pwd). forge-factory owns it."
 WS_DIR=$(dirname "$WS_FILE")
 
 # --- read a scalar key from the module's block ------------------------------
-# Deliberately avoids a yq dependency: the file is ours and its shape is fixed.
+# Deliberately avoids a yq dependency: forge-factory owns the file and validates
+# its shape, so the block layout is fixed.
 ws_get() {
     key="$1"
     awk -v mod="$MODULE" -v key="$key" '
@@ -62,7 +63,7 @@ BASENAME=$(basename "$SPEC_REL")
 # --- 1. local workspace checkout --------------------------------------------
 if [ -n "$LOCAL_PATH" ] && [ -d "$WS_DIR/$LOCAL_PATH" ]; then
     SRC="$WS_DIR/$LOCAL_PATH/$SPEC_REL"
-    [ -f "$SRC" ] || die "workspace.yaml maps $MODULE to $LOCAL_PATH but $SRC does not exist"
+    [ -f "$SRC" ] || die "forge-factory.yaml maps $MODULE to $LOCAL_PATH but $SRC does not exist"
 
     cp "$SRC" "$DEST/$BASENAME"
     printf 'source=local\npath=%s\nresolved=%s\n' "$SRC" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -72,7 +73,7 @@ if [ -n "$LOCAL_PATH" ] && [ -d "$WS_DIR/$LOCAL_PATH" ]; then
 fi
 
 # --- 2. pinned remote tag ---------------------------------------------------
-[ -n "$VERSION" ] || die "$MODULE has no local path and no version tag in workspace.yaml"
+[ -n "$VERSION" ] || die "$MODULE has no local path and no version tag in forge-factory.yaml"
 
 OWNER_REPO=$(printf '%s\n' "$MODULE" | sed 's|^github.com/||')
 

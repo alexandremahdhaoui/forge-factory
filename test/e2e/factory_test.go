@@ -3,6 +3,7 @@
 package e2e_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -171,7 +172,8 @@ func TestSyncMaterialisesEveryLanguage(t *testing.T) {
 	assert.Contains(t, read(t, filepath.Join(root, "go.work")), "./sample-go")
 	assert.Contains(t, read(t, filepath.Join(root, "go.work")), "go 1.26")
 	assert.Contains(t, read(t, filepath.Join(root, "Cargo.toml")), `"sample-rust"`)
-	assert.Contains(t, read(t, filepath.Join(root, "Cargo.toml")), "serde = 1")
+	assert.Contains(t, read(t, filepath.Join(root, "Cargo.toml")), `serde = "1"`,
+		"a bare 1 is not a cargo version")
 	assert.Contains(t, read(t, filepath.Join(root, "sample-web", "package.json")), "neverthrow")
 	assert.Contains(t, read(t, filepath.Join(root, "pnpm-workspace.yaml")), `- "sample-web"`)
 }
@@ -343,4 +345,125 @@ func TestAGeneratedGoModBuilds(t *testing.T) {
 
 	logs, err := build.CombinedOutput()
 	require.NoError(t, err, string(logs))
+}
+
+// TestCheckoutPutsAMemberOnItsProvenSHA runs against a real state engine over
+// MCP. forge-factory speaks the transport in forge-revision-spec and imports
+// forge-ci nowhere, so any conforming engine works here.
+func TestCheckoutPutsAMemberOnItsProvenSHA(t *testing.T) {
+	engine, err := exec.LookPath("ci-state-git")
+	if err != nil {
+		t.Skip("no state engine on PATH, so the transport cannot be exercised")
+	}
+
+	root := workspace(t)
+	repo := filepath.Join(root, "sample-go")
+	gitInit(t, repo)
+
+	first := headSHA(t, repo)
+
+	write(t, filepath.Join(repo, "later.go"), "package main\n")
+	commitAll(t, repo)
+
+	require.NotEqual(t, first, headSHA(t, repo))
+
+	store := filepath.Join(root, "state")
+	writeRevision(t, store, "proven", first)
+
+	write(t, filepath.Join(root, "forge-factory.yaml"), factory+`
+state:
+  engine: go://`+filepath.Base(engine)+`
+  spec:
+    path: `+store+`
+`)
+
+	out := mustRun(t, root, "checkout", "proven")
+	assert.Contains(t, out, "revision proven")
+
+	assert.Equal(t, first, headSHA(t, repo), "the member sits on the SHA the revision proved")
+	assert.Contains(t, out, "wrote go.work", "a checkout syncs to match")
+}
+
+func TestCheckoutRefusesToDestroyUncommittedWork(t *testing.T) {
+	engine, err := exec.LookPath("ci-state-git")
+	if err != nil {
+		t.Skip("no state engine on PATH, so the transport cannot be exercised")
+	}
+
+	root := workspace(t)
+	repo := filepath.Join(root, "sample-go")
+	gitInit(t, repo)
+
+	first := headSHA(t, repo)
+
+	write(t, filepath.Join(repo, "later.go"), "package main\n")
+	commitAll(t, repo)
+	write(t, filepath.Join(repo, "main.go"), goSource+"\n// edited\n")
+
+	store := filepath.Join(root, "state")
+	writeRevision(t, store, "proven", first)
+
+	write(t, filepath.Join(root, "forge-factory.yaml"), factory+`
+state:
+  engine: go://`+filepath.Base(engine)+`
+  spec:
+    path: `+store+`
+`)
+
+	out, err := run(t, root, "checkout", "proven")
+	require.Error(t, err)
+	assert.Contains(t, out, "uncommitted changes")
+	assert.NotEqual(t, first, headSHA(t, repo), "nothing moved")
+}
+
+func TestCheckoutReportsARevisionNobodyMinted(t *testing.T) {
+	engine, err := exec.LookPath("ci-state-git")
+	if err != nil {
+		t.Skip("no state engine on PATH, so the transport cannot be exercised")
+	}
+
+	root := workspace(t)
+
+	write(t, filepath.Join(root, "forge-factory.yaml"), factory+`
+state:
+  engine: go://`+filepath.Base(engine)+`
+  spec:
+    path: `+filepath.Join(root, "state")+`
+`)
+
+	out, err := run(t, root, "checkout", "never-minted")
+	require.Error(t, err)
+	assert.Contains(t, out, "no such revision")
+}
+
+func writeRevision(t *testing.T, store, id, sha string) {
+	t.Helper()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "revisions"), 0o755))
+	write(t, filepath.Join(store, "revisions", id+".json"), fmt.Sprintf(
+		`{"id":%q,"createdAt":"2026-08-19T00:00:00Z","repos":{"sample-go":%q}}`, id, sha))
+}
+
+func headSHA(t *testing.T, dir string) string {
+	t.Helper()
+
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	return strings.TrimSpace(string(out))
+}
+
+func commitAll(t *testing.T, dir string) {
+	t.Helper()
+
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "--quiet", "-m", "more"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+	}
 }
