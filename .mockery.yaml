@@ -41,6 +41,13 @@ packages:
     interfaces:
       Reader:
 
+  github.com/alexandremahdhaoui/forge-factory/internal/controller/clonecontroller:
+    config:
+      dir: internal/mocks/clonecontrollermock
+      pkgname: clonecontrollermock
+    interfaces:
+      Cloner:
+
   github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller:
     config:
       dir: internal/mocks/synccontrollermock

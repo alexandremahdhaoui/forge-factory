@@ -1,0 +1,28 @@
+# Tell the workspace this repo moved. Nothing is built here.
+#
+# A lone checkout of this repo has no sibling repos, no workspace go.work or
+# root Cargo.toml, and no go.mod, because the manifests are generated and
+# gitignored. Building here is not possible and a workflow that tries is red
+# forever. The pipeline builds, in the workspace, from a synced checkout.
+
+name: notify
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tell the workspace to run the pipeline
+        env:
+          GH_TOKEN: ${{ secrets.WORKSPACE_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/alexandremahdhaoui/golden-factory/dispatches \
+            --field event_type=member-pushed \
+            --field 'client_payload[repo]=${{ github.repository }}' \
+            --field 'client_payload[sha]=${{ github.sha }}'

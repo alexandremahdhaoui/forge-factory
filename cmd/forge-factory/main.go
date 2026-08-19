@@ -11,6 +11,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/gitadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/repoadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/clonecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/revisioncontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
@@ -39,6 +40,7 @@ func run(ctx context.Context, args []string) error {
 	driver := clidriver.New(
 		os.Stdout,
 		fs,
+		clonecontroller.New(fs, git),
 		synccontroller.New(caller, fs, repoadapter.New(fs), execadapter.New()),
 		revisioncontroller.New(caller, git),
 		statuscontroller.New(fs, git),

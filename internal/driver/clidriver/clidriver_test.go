@@ -6,11 +6,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/clonecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/revisioncontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/speccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/driver/clidriver"
+	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/clonecontrollermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/fsadaptermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/revisioncontrollermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/statuscontrollermock"
@@ -38,6 +40,7 @@ dependencies:
 type harness struct {
 	out    *bytes.Buffer
 	fs     *fsadaptermock.MockFS
+	clone  *clonecontrollermock.MockCloner
 	sync   *synccontrollermock.MockSyncer
 	revise *revisioncontrollermock.MockReviser
 	state  *statuscontrollermock.MockStater
@@ -51,13 +54,14 @@ func newHarness(t *testing.T) *harness {
 	h := &harness{
 		out:    &bytes.Buffer{},
 		fs:     fsadaptermock.NewMockFS(t),
+		clone:  clonecontrollermock.NewMockCloner(t),
 		sync:   synccontrollermock.NewMockSyncer(t),
 		revise: revisioncontrollermock.NewMockReviser(t),
 		state:  statuscontrollermock.NewMockStater(t),
 		wrote:  map[string]string{},
 	}
 
-	h.driver = clidriver.New(h.out, h.fs, h.sync, h.revise, h.state)
+	h.driver = clidriver.New(h.out, h.fs, h.clone, h.sync, h.revise, h.state)
 
 	return h
 }
@@ -382,7 +386,9 @@ func TestAReportThatCannotBePrintedIsAnError(t *testing.T) {
 	fs.EXPECT().ReadFile("forge-factory.yaml").Return([]byte(factory), nil).Once()
 
 	driver := clidriver.New(brokenWriter{}, fs,
-		synccontrollermock.NewMockSyncer(t), revisioncontrollermock.NewMockReviser(t), statuscontrollermock.NewMockStater(t))
+		clonecontrollermock.NewMockCloner(t),
+		synccontrollermock.NewMockSyncer(t), revisioncontrollermock.NewMockReviser(t),
+		statuscontrollermock.NewMockStater(t))
 
 	err := driver.Run(t.Context(), []string{"validate"})
 	require.ErrorIs(t, err, assert.AnError)
@@ -447,4 +453,43 @@ func TestStatusNamesAPinThatFellBehind(t *testing.T) {
 	require.ErrorIs(t, err, clidriver.ErrDrift)
 	assert.Contains(t, h.out.String(), "github.com/x/spec is pinned at v0.1.0 and the checkout carries v0.3.0")
 	assert.NotContains(t, h.out.String(), "github.com/x/other")
+}
+
+func TestCloneFetchesTheMembersThenSyncs(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.clone.EXPECT().Clone(mock.Anything, mock.Anything, mock.Anything).Return(
+		clonecontroller.Report{Root: "/w", Cloned: []string{"golden-go"}}, nil).Once()
+	h.expectSync()
+
+	require.NoError(t, h.driver.Run(t.Context(), []string{"clone"}))
+	assert.Contains(t, h.out.String(), "cloned golden-go")
+	assert.Contains(t, h.out.String(), "wrote go.work",
+		"a member with no manifest is not yet something forge can build")
+}
+
+func TestCloneSaysSoWhenNothingWasMissing(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.clone.EXPECT().Clone(mock.Anything, mock.Anything, mock.Anything).Return(
+		clonecontroller.Report{Root: "/w", Present: []string{"golden-go"}}, nil).Once()
+	h.expectSync()
+
+	require.NoError(t, h.driver.Run(t.Context(), []string{"clone"}))
+	assert.Contains(t, h.out.String(), "every member was already there")
+}
+
+func TestCloneReportsAFailure(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.clone.EXPECT().Clone(mock.Anything, mock.Anything, mock.Anything).
+		Return(clonecontroller.Report{}, assert.AnError).Once()
+
+	require.ErrorIs(t, h.driver.Run(t.Context(), []string{"clone"}), assert.AnError)
 }

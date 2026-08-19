@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/clonecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/revisioncontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/speccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller"
@@ -22,8 +23,8 @@ const DefaultPath = "forge-factory.yaml"
 
 var (
 	ErrUsage = errors.New(
-		"usage: forge-factory <sync|add|bump|checkout|status|validate> [args] " +
-			"[--config path] [--root dir]")
+		"usage: forge-factory <clone|sync|add|bump|checkout|status|validate> [args] " +
+			"[--config path] [--root dir] [--offline]")
 	ErrDrift = errors.New("the workspace disagrees with the factory")
 
 	ErrUnsettled = errors.New("the files were written and the workspace does not build")
@@ -33,6 +34,7 @@ type Driver struct {
 	offline bool
 	out     io.Writer
 	fs      fsadapter.FS
+	clone   clonecontroller.Cloner
 	sync    synccontroller.Syncer
 	revise  revisioncontroller.Reviser
 	state   statuscontroller.Stater
@@ -41,11 +43,12 @@ type Driver struct {
 func New(
 	out io.Writer,
 	fs fsadapter.FS,
+	clone clonecontroller.Cloner,
 	sync synccontroller.Syncer,
 	revise revisioncontroller.Reviser,
 	state statuscontroller.Stater,
 ) *Driver {
-	return &Driver{out: out, fs: fs, sync: sync, revise: revise, state: state}
+	return &Driver{out: out, fs: fs, clone: clone, sync: sync, revise: revise, state: state}
 }
 
 func (d *Driver) Run(ctx context.Context, args []string) error {
@@ -63,6 +66,8 @@ func (d *Driver) Run(ctx context.Context, args []string) error {
 	switch verb {
 	case "validate":
 		return d.write(describe(f))
+	case "clone":
+		return d.runClone(ctx, f, root)
 	case "sync":
 		return d.runSync(ctx, f, root)
 	case "status":
@@ -76,6 +81,37 @@ func (d *Driver) Run(ctx context.Context, args []string) error {
 	default:
 		return fmt.Errorf("unknown subcommand %q: %w", verb, ErrUsage)
 	}
+}
+
+// runClone fetches what is missing and then syncs, because a member with no
+// manifest is not yet something forge can build.
+func (d *Driver) runClone(ctx context.Context, f config.Factory, root string) error {
+	report, err := d.clone.Clone(ctx, f, root)
+	if err != nil {
+		return err
+	}
+
+	if err := d.write(renderClone(report)); err != nil {
+		return err
+	}
+
+	return d.runSync(ctx, f, root)
+}
+
+func renderClone(report clonecontroller.Report) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "cloned into %s\n", report.Root)
+
+	for _, name := range report.Cloned {
+		fmt.Fprintf(&b, "  cloned %s\n", name)
+	}
+
+	if len(report.Cloned) == 0 {
+		fmt.Fprintf(&b, "  every member was already there\n")
+	}
+
+	return b.String()
 }
 
 func (d *Driver) runSync(ctx context.Context, f config.Factory, root string) error {

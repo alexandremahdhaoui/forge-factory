@@ -56,8 +56,25 @@ for dir in $(find internal/adapter -mindepth 1 -maxdepth 1 -type d); do
     done
 done
 
+# Types are plain data. A types package that reaches the filesystem, a socket,
+# a process or the clock stops being data and becomes an adapter nobody can
+# test without the world. Promoted from opends-core/hack/purity.sh, which
+# enforces the same rule one layer lower.
+BANNED='"os"|"net"|"net/http"|"os/exec"|"io/ioutil"|time\.Now|os\.Getenv'
+
+for dir in $(find internal/types -mindepth 1 -maxdepth 1 -type d 2>/dev/null); do
+    files=$(find "$dir" -maxdepth 1 -name '*.go' ! -name '*_test.go')
+    [ -n "$files" ] || continue
+
+    if hits=$(grep -nE "$BANNED" $files); then
+        echo "$hits" >&2
+        echo "types are plain data. Move this to an adapter." >&2
+        fail=1
+    fi
+done
+
 if [ "$fail" -eq 0 ]; then
-    echo "every layer depends only on the layers below it"
+    echo "every layer depends only on the layers below it, and types are plain data"
 fi
 
 exit "$fail"
