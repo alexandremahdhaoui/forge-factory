@@ -40,7 +40,12 @@ func toInput(in RenderInput) rendertypes.Input {
 		})
 	}
 
-	return rendertypes.Input{Root: in.Root, Repos: repos, Dependencies: in.Dependencies}
+	return rendertypes.Input{
+		Root:         in.Root,
+		Repos:        repos,
+		Dependencies: in.Dependencies,
+		Dev:          in.DevDependencies,
+	}
 }
 
 func fromSettle(commands []rendertypes.Command) []Command {

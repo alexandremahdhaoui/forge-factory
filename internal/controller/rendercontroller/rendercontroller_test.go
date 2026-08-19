@@ -181,7 +181,8 @@ func TestPythonRendersAWholeProject(t *testing.T) {
 	t.Parallel()
 
 	in := input()
-	in.Dependencies = map[string]string{"pytest": ">=8"}
+	in.Dependencies = map[string]string{"httpx": ">=0.28"}
+	in.Dev = map[string]string{"pytest": ">=8", "ruff": ">=0.6"}
 
 	out, err := rendercontroller.Python{}.Render(in)
 	require.NoError(t, err)
@@ -427,4 +428,80 @@ func TestNoAllowBuildsSectionWhenNobodyNeedsOne(t *testing.T) {
 	out, err := rendercontroller.TypeScript{}.Render(input())
 	require.NoError(t, err)
 	assert.NotContains(t, find(t, out, "pnpm-workspace.yaml").Content, "allowBuilds")
+}
+
+func TestPythonCarriesWhatOnlyTheRepoKnows(t *testing.T) {
+	t.Parallel()
+
+	in := rendertypes.Input{Root: "/w", Repos: []rendertypes.Repo{
+		{Name: "a", Path: "/w/a", Languages: []string{"python"}, Identity: map[string]string{
+			"package":     "a_pkg",
+			"description": "a golden repo",
+			"entrypoint":  "a_pkg.cmd.main:main",
+			"toolConfig":  "[tool.ruff]\nline-length = 100\n",
+		}},
+	}}
+
+	out, err := rendercontroller.Python{}.Render(in)
+	require.NoError(t, err)
+
+	got := out.Files[0].Content
+	assert.Contains(t, got, `description = "a golden repo"`)
+	assert.Contains(t, got, "[project.scripts]\na = \"a_pkg.cmd.main:main\"")
+	assert.Contains(t, got, "[tool.ruff]\nline-length = 100",
+		"pytest and ruff settings are the repo's business and no factory declares them")
+	assert.Equal(t, []string{"uv.lock"}, out.Files[0].AlsoIgnore)
+}
+
+func TestPythonOmitsWhatNobodyDeclared(t *testing.T) {
+	t.Parallel()
+
+	in := rendertypes.Input{Root: "/w", Repos: []rendertypes.Repo{
+		{
+			Name: "a", Path: "/w/a", Languages: []string{"python"},
+			Identity: map[string]string{"package": "a_pkg"},
+		},
+	}}
+
+	out, err := rendercontroller.Python{}.Render(in)
+	require.NoError(t, err)
+
+	got := out.Files[0].Content
+	assert.NotContains(t, got, "description =")
+	assert.NotContains(t, got, "[project.scripts]")
+	assert.NotContains(t, got, "[dependency-groups]")
+	assert.NotContains(t, got, "[tool.ruff]")
+	assert.Contains(t, got, "[tool.hatch.build.targets.wheel]", "the build backend is always written")
+}
+
+func TestTypeScriptSeparatesWhatOnlyTheToolingNeeds(t *testing.T) {
+	t.Parallel()
+
+	in := input()
+	in.Dependencies = map[string]string{"fastify": "^5"}
+	in.Dev = map[string]string{"vitest": "^3", "typescript": "^5.6"}
+	in.Repos[3].Identity["description"] = "a golden repo"
+
+	out, err := rendercontroller.TypeScript{}.Render(in)
+	require.NoError(t, err)
+
+	pkg := find(t, out, "package.json").Content
+	assert.Contains(t, pkg, `"description": "a golden repo"`)
+	assert.Contains(t, pkg, "\"dependencies\": {\n    \"fastify\": \"^5\"\n  },")
+	assert.Contains(t, pkg, "\"devDependencies\": {\n    \"typescript\": \"^5.6\",\n    \"vitest\": \"^3\"\n  }\n}")
+	assert.NotContains(t, pkg, `"scripts"`, "forge stages already run what a script would")
+}
+
+func TestTypeScriptWithNoDevDependencies(t *testing.T) {
+	t.Parallel()
+
+	in := input()
+	in.Dependencies = map[string]string{"fastify": "^5"}
+
+	out, err := rendercontroller.TypeScript{}.Render(in)
+	require.NoError(t, err)
+
+	pkg := find(t, out, "package.json").Content
+	assert.NotContains(t, pkg, "devDependencies")
+	assert.Contains(t, pkg, "\"fastify\": \"^5\"\n  }\n}")
 }

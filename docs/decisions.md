@@ -20,7 +20,13 @@ Work happens in a synced workspace. forge-factory is the only repo that must bui
 
 package.json and pyproject.toml are written in full. No npm scripts.
 
-**Decided 2026-08-19.** A marked block invites hand edits beside it. Scripts would duplicate forge stages, which is a second way to run the same thing.
+**Decided 2026-08-19.** A marked block invites hand edits beside it. Scripts would duplicate forge stages, which is a second way to run the same thing. Every golden-typescript stage already calls pnpm exec directly, so dropping scripts cost nothing.
+
+## A repo carries its own tool config, verbatim
+
+toolConfig in a repo's forge.yaml factory block is appended to the generated manifest unchanged.
+
+**Decided 2026-08-19.** The first generated pyproject.toml deleted pytest options, ruff rules and coverage omits. Generating whole files only works if everything those files hold has somewhere to live, and tool settings belong to the repo, not to the workspace.
 
 ## forge-factory and forge-ci share a contract, not a dependency
 

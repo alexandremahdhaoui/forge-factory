@@ -57,6 +57,7 @@ type renderInput struct {
 	Root         string            `json:"root"`
 	Repos        []repoWire        `json:"repos"`
 	Dependencies map[string]string `json:"dependencies"`
+	Dev          map[string]string `json:"devDependencies"`
 }
 
 type fileWire struct {
@@ -138,7 +139,12 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root string) (R
 			return Report{}, err
 		}
 
-		in := renderInput{Root: root, Repos: resolved, Dependencies: f.DependenciesFor(language)}
+		in := renderInput{
+			Root:         root,
+			Repos:        resolved,
+			Dependencies: f.DependenciesFor(language),
+			Dev:          f.DevFor(language),
+		}
 
 		var out renderOutput
 
@@ -229,7 +235,11 @@ func (c *Controller) checkLanguage(
 ) error {
 	var out languageOutput
 
-	in := renderInput{Repos: repos, Dependencies: map[string]string{}}
+	in := renderInput{
+		Repos:        repos,
+		Dependencies: map[string]string{},
+		Dev:          map[string]string{},
+	}
 
 	if err := c.caller.Call(ctx, uri, ToolLanguage, in, &out); err != nil {
 		return fmt.Errorf("asking %q what language it speaks: %w", alias, err)

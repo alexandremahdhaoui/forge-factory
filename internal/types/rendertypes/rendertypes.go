@@ -13,6 +13,7 @@ type Input struct {
 	Root         string
 	Repos        []Repo
 	Dependencies map[string]string
+	Dev          map[string]string
 }
 
 // Command is what to run after the files land. A generated go.mod names only

@@ -49,6 +49,14 @@ concepts:
       itself is the exception, because it is what materialises the files
       everything else needs.
 
+  - name: Two dependency lists
+    summary: >-
+      dependencies is what a package ships. devDependencies is what only the
+      tests and the tooling need.
+    detail: >-
+      They are kept apart because a published package must not carry its test
+      runner. Each becomes the right section of the right file per language.
+
   - name: Language engines
     summary: >-
       One MCP engine per language answers what to write for that language.
@@ -63,7 +71,9 @@ concepts:
       forge.yaml factory block.
     detail: >-
       forge ignores keys it does not know, so the block costs that repo nothing
-      and no new per-repo file exists.
+      and no new per-repo file exists. toolConfig travels verbatim into the
+      generated file: pytest options, ruff rules and coverage omits are the
+      repo's business and no factory declares them.
 
   - name: The state engine
     summary: >-

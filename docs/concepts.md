@@ -37,6 +37,12 @@ A repo is built through the toolchain, never on its own.
 
 That is what makes generated dependency files possible at all. forge-factory itself is the exception, because it is what materialises the files everything else needs.
 
+### Two dependency lists
+
+dependencies is what a package ships. devDependencies is what only the tests and the tooling need.
+
+They are kept apart because a published package must not carry its test runner. Each becomes the right section of the right file per language.
+
 ### Language engines
 
 One MCP engine per language answers what to write for that language.
@@ -47,7 +53,7 @@ forge-factory knows nothing about cargo, pnpm or uv. It asks an engine, writes w
 
 The module path, package name and entry point come from that repo's forge.yaml factory block.
 
-forge ignores keys it does not know, so the block costs that repo nothing and no new per-repo file exists.
+forge ignores keys it does not know, so the block costs that repo nothing and no new per-repo file exists. toolConfig travels verbatim into the generated file: pytest options, ruff rules and coverage omits are the repo's business and no factory declares them.
 
 ### The state engine
 

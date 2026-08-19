@@ -57,6 +57,13 @@ components:
           additionalProperties:
             type: string
           description: Dependency name to version, for this engine's language only.
+        devDependencies:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            What only the tests and the tooling need, for this engine's language
+            only. Kept apart because a published package must not carry them.
         spec:
           $ref: '#/components/schemas/Spec'
 

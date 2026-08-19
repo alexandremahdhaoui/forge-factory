@@ -19,6 +19,7 @@ type Factory struct {
 	Name         string                       `json:"name"`
 	Repos        []Repo                       `json:"repos"`
 	Dependencies map[string]map[string]string `json:"dependencies,omitempty"`
+	Dev          map[string]map[string]string `json:"devDependencies,omitempty"`
 	Engines      []Engine                     `json:"engines"`
 	State        *State                       `json:"state,omitempty"`
 	Modules      map[string]Module            `json:"modules,omitempty"`
@@ -146,6 +147,12 @@ func (f Factory) Validate() error {
 		}
 	}
 
+	for _, l := range sortedKeys(f.Dev) {
+		if !aliases[l] {
+			add("devDependencies declare the language %q and no engine has that alias", l)
+		}
+	}
+
 	if f.State != nil && !uriPattern.MatchString(f.State.Engine) {
 		add("state: engine must start with go:// or alias://")
 	}
@@ -169,6 +176,16 @@ func (f Factory) Validate() error {
 // an engine always receives a map it can range over.
 func (f Factory) DependenciesFor(language string) map[string]string {
 	if deps, ok := f.Dependencies[language]; ok {
+		return deps
+	}
+
+	return map[string]string{}
+}
+
+// DevFor returns what only the tests and the tooling need for one language,
+// never nil so an engine always receives a map it can range over.
+func (f Factory) DevFor(language string) map[string]string {
+	if deps, ok := f.Dev[language]; ok {
 		return deps
 	}
 

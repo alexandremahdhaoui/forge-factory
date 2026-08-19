@@ -315,25 +315,62 @@ func (p Python) Render(in rendertypes.Input) (rendertypes.Output, error) {
 
 		fmt.Fprintf(&b, "%s\n[project]\nname = %q\nversion = %q\n",
 			header, r.Name, orDefault(r.Identity["version"], "0.1.0"))
-		fmt.Fprintf(&b, "requires-python = %q\n", orDefault(r.Identity["requiresPython"], ">=3.12"))
-		fmt.Fprintf(&b, "dependencies = [\n")
 
-		for _, name := range sortedNames(in.Dependencies) {
-			fmt.Fprintf(&b, "    \"%s%s\",\n", name, in.Dependencies[name])
+		if desc := r.Identity["description"]; desc != "" {
+			fmt.Fprintf(&b, "description = %q\n", desc)
 		}
 
-		fmt.Fprintf(&b, "]\n\n[build-system]\nrequires = [\"hatchling\"]\n")
+		fmt.Fprintf(&b, "requires-python = %q\n", orDefault(r.Identity["requiresPython"], ">=3.12"))
+		writeRequirements(&b, "dependencies", in.Dependencies)
+
+		if entry := r.Identity["entrypoint"]; entry != "" {
+			fmt.Fprintf(&b, "\n[project.scripts]\n%s = %q\n", r.Name, entry)
+		}
+
+		if len(in.Dev) > 0 {
+			b.WriteString("\n[dependency-groups]\n")
+			writeRequirements(&b, "dev", in.Dev)
+		}
+
+		fmt.Fprintf(&b, "\n[build-system]\nrequires = [\"hatchling\"]\n")
 		fmt.Fprintf(&b, "build-backend = \"hatchling.build\"\n\n")
 		fmt.Fprintf(&b, "[tool.hatch.build.targets.wheel]\npackages = [\"src/%s\"]\n", pkg)
 
+		writeToolConfig(&b, r)
+
 		files = append(files, rendertypes.File{
-			Path:      filepath.Join(r.Path, "pyproject.toml"),
-			Content:   b.String(),
-			Gitignore: r.Name,
+			Path:       filepath.Join(r.Path, "pyproject.toml"),
+			Content:    b.String(),
+			Gitignore:  r.Name,
+			AlsoIgnore: []string{"uv.lock"},
 		})
 	}
 
 	return rendertypes.Output{Files: files}, nil
+}
+
+// writeRequirements writes a PEP 508 list. The version is glued to the name,
+// so a pin travels as pytest>=8 and not as two fields.
+func writeRequirements(b *strings.Builder, key string, deps map[string]string) {
+	fmt.Fprintf(b, "%s = [\n", key)
+
+	for _, name := range sortedNames(deps) {
+		fmt.Fprintf(b, "    \"%s%s\",\n", name, deps[name])
+	}
+
+	b.WriteString("]\n")
+}
+
+// writeToolConfig appends what only the repo knows. pytest options, ruff rules
+// and coverage omits are the repo's business and no factory declares them, so
+// the repo carries them verbatim in its own forge.yaml.
+func writeToolConfig(b *strings.Builder, repo rendertypes.Repo) {
+	config := strings.TrimSpace(repo.Identity["toolConfig"])
+	if config == "" {
+		return
+	}
+
+	fmt.Fprintf(b, "\n%s\n", config)
 }
 
 // TypeScript renders package.json for every member and one pnpm-workspace.yaml.
@@ -357,34 +394,11 @@ func (t TypeScript) Render(in rendertypes.Input) (rendertypes.Output, error) {
 			continue
 		}
 
-		var b strings.Builder
-
-		fmt.Fprintf(&b, "{\n  \"_generated\": \"by forge-factory from forge-factory.yaml. DO NOT EDIT.\",\n")
-		fmt.Fprintf(&b, "  \"name\": %q,\n  \"version\": %q,\n  \"private\": true,\n  \"type\": \"module\",\n",
-			r.Name, orDefault(r.Identity["version"], "0.1.0"))
-
-		if bin := r.Identity["bin"]; bin != "" {
-			fmt.Fprintf(&b, "  \"bin\": { %q: %q },\n", r.Name, bin)
-		}
-
-		fmt.Fprintf(&b, "  \"dependencies\": {\n")
-
-		names := sortedNames(in.Dependencies)
-		for i, name := range names {
-			comma := ","
-			if i == len(names)-1 {
-				comma = ""
-			}
-
-			fmt.Fprintf(&b, "    %q: %q%s\n", name, in.Dependencies[name], comma)
-		}
-
-		fmt.Fprintf(&b, "  }\n}\n")
-
 		files = append(files, rendertypes.File{
-			Path:      filepath.Join(r.Path, "package.json"),
-			Content:   b.String(),
-			Gitignore: r.Name,
+			Path:       filepath.Join(r.Path, "package.json"),
+			Content:    packageJSON(r, in),
+			Gitignore:  r.Name,
+			AlsoIgnore: []string{"tsconfig.tsbuildinfo"},
 		})
 	}
 
@@ -413,6 +427,55 @@ func (t TypeScript) Render(in rendertypes.Input) (rendertypes.Output, error) {
 	})
 
 	return rendertypes.Output{Files: files}, nil
+}
+
+// packageJSON writes the whole file. It carries no scripts: they would be a
+// second way to run what forge stages already run.
+func packageJSON(r rendertypes.Repo, in rendertypes.Input) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "{\n  \"_generated\": \"by forge-factory from forge-factory.yaml. DO NOT EDIT.\",\n")
+	fmt.Fprintf(&b, "  \"name\": %q,\n  \"version\": %q,\n  \"private\": true,\n  \"type\": \"module\",\n",
+		r.Name, orDefault(r.Identity["version"], "0.1.0"))
+
+	if desc := r.Identity["description"]; desc != "" {
+		fmt.Fprintf(&b, "  \"description\": %q,\n", desc)
+	}
+
+	if bin := r.Identity["bin"]; bin != "" {
+		fmt.Fprintf(&b, "  \"bin\": { %q: %q },\n", r.Name, bin)
+	}
+
+	writeJSONDeps(&b, "dependencies", in.Dependencies, len(in.Dev) > 0)
+
+	if len(in.Dev) > 0 {
+		writeJSONDeps(&b, "devDependencies", in.Dev, false)
+	}
+
+	b.WriteString("}\n")
+
+	return b.String()
+}
+
+func writeJSONDeps(b *strings.Builder, key string, deps map[string]string, more bool) {
+	fmt.Fprintf(b, "  %q: {\n", key)
+
+	names := sortedNames(deps)
+	for i, name := range names {
+		comma := ","
+		if i == len(names)-1 {
+			comma = ""
+		}
+
+		fmt.Fprintf(b, "    %q: %q%s\n", name, deps[name], comma)
+	}
+
+	trailing := ""
+	if more {
+		trailing = ","
+	}
+
+	fmt.Fprintf(b, "  }%s\n", trailing)
 }
 
 func allowBuilds(repos []rendertypes.Repo) []string {

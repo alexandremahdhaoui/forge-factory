@@ -22,7 +22,19 @@ decisions:
       package.json and pyproject.toml are written in full. No npm scripts.
     because: >-
       A marked block invites hand edits beside it. Scripts would duplicate forge
-      stages, which is a second way to run the same thing.
+      stages, which is a second way to run the same thing. Every golden-typescript
+      stage already calls pnpm exec directly, so dropping scripts cost nothing.
+
+  - title: A repo carries its own tool config, verbatim
+    date: 2026-08-19
+    decision: >-
+      toolConfig in a repo's forge.yaml factory block is appended to the
+      generated manifest unchanged.
+    because: >-
+      The first generated pyproject.toml deleted pytest options, ruff rules and
+      coverage omits. Generating whole files only works if everything those
+      files hold has somewhere to live, and tool settings belong to the repo,
+      not to the workspace.
 
   - title: forge-factory and forge-ci share a contract, not a dependency
     date: 2026-08-19
