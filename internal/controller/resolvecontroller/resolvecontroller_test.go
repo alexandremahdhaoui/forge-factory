@@ -10,7 +10,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/gitadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/resolvecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
 )
@@ -18,7 +20,8 @@ import (
 var now = time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
 
 func newController() *resolvecontroller.Controller {
-	return resolvecontroller.New(fsadapter.New(), func() time.Time { return now })
+	return resolvecontroller.New(fsadapter.New(), gitadapter.New(execadapter.New()),
+		func() time.Time { return now })
 }
 
 // register materialises a register checkout with the given track files.
@@ -318,4 +321,195 @@ func TestEqualVersionsCompareEqualThroughAPin(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, notes[0], "remove this pin",
 		"a pin equal to the track is already dead")
+}
+
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+
+	res, err := execadapter.New().Run(context.Background(), dir, "git", args...)
+	require.NoError(t, err)
+	require.Zero(t, res.ExitCode, "%v: %s", args, res.Stderr)
+}
+
+func TestAPinnedRevisionIsWhatConsumersConsume(t *testing.T) {
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+	dir := filepath.Join(root, "golden-register")
+
+	gitIn(t, dir, "init", "-q")
+	gitIn(t, dir, "add", ".")
+	gitIn(t, dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "index")
+	gitIn(t, dir, "tag", "v0.1.0")
+
+	// The worktree moves past the tag.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "index", "go", "example.com", "pkg", "1.json"),
+		[]byte(track("v1.7.0")), 0o600))
+
+	// Pinned: the tag's version, whatever the worktree says.
+	f.Register.Revision = "v0.1.0"
+	got, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {}})
+	require.NoError(t, err)
+	require.Equal(t, "v1.6.0", got["example.com/pkg"])
+
+	// Unpinned: the checkout as it stands.
+	f.Register.Revision = ""
+	got, _, err = newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {}})
+	require.NoError(t, err)
+	require.Equal(t, "v1.7.0", got["example.com/pkg"])
+}
+
+func TestASoftPinAheadFilesAnUpgradeRequest(t *testing.T) {
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+
+	_, notes, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {
+			Track: "1", Pin: "v1.7.0", Mode: "soft", Reason: "needs the new parser",
+		}})
+	require.NoError(t, err)
+	require.Contains(t, notes[0], "filed")
+
+	filed, _ := filepath.Glob(filepath.Join(root, "golden-register", "requests", "go", "example.com", "pkg", "*-upgrade.json"))
+	require.Len(t, filed, 1, "the pin doubles as the request")
+
+	raw, _ := os.ReadFile(filed[0])
+	require.Contains(t, string(raw), `"type":"upgrade"`)
+	require.Contains(t, string(raw), `"version":"v1.7.0"`)
+	require.Contains(t, string(raw), "needs the new parser")
+}
+
+func TestAnUnknownTrackOnAKnownPackageFilesOpenTrack(t *testing.T) {
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {
+			Track: "1.27", Reason: "1.28 breaks the v1 config API",
+		}})
+	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
+
+	filed, _ := filepath.Glob(filepath.Join(root, "golden-register", "requests", "go", "example.com", "pkg", "*-open-track.json"))
+	require.Len(t, filed, 1, "an unknown track on a known package is an open-track request")
+
+	raw, _ := os.ReadFile(filed[0])
+	require.Contains(t, string(raw), `"track":"1.27"`)
+}
+
+func TestAnExpiredHardPinIsAnError(t *testing.T) {
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {
+			Track: "1", Pin: "v1.4.0", Mode: "hard",
+			Reason: "v1.5 broke the parser", Expires: "2026-08-01",
+		}})
+	require.ErrorIs(t, err, resolvecontroller.ErrExpired)
+	require.ErrorContains(t, err, "re-decide it or remove it")
+
+	// A pin that has not expired yet stands.
+	_, notes, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {
+			Track: "1", Pin: "v1.4.0", Mode: "hard",
+			Reason: "v1.5 broke the parser", Expires: "2026-12-01",
+		}})
+	require.NoError(t, err)
+	require.Contains(t, notes[0], "frozen, visibly")
+}
+
+func TestADeprecationPastGraceIsAnError(t *testing.T) {
+	deprecated := func(since string) string {
+		raw, _ := json.Marshal(map[string]any{
+			"package": "p", "ecosystem": "go", "prefix": "1",
+			"current": "v1.6.0", "updatedAt": now,
+			"deprecated": map[string]any{"reason": "stale", "since": since},
+		})
+
+		return string(raw)
+	}
+
+	// Inside the grace window: a warning with the deadline.
+	f, root := register(t, map[string]string{
+		"go/example.com/pkg/1": deprecated("2026-08-10T00:00:00Z"),
+	})
+
+	_, notes, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {Track: "1"}})
+	require.NoError(t, err)
+	require.Contains(t, notes[0], "before")
+
+	// Past it: the resolution fails.
+	f, root = register(t, map[string]string{
+		"go/example.com/pkg/1": deprecated("2026-06-01T00:00:00Z"),
+	})
+
+	_, _, err = newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {Track: "1"}})
+	require.ErrorIs(t, err, resolvecontroller.ErrDeprecated)
+}
+
+func TestTheRegisterSetsItsOwnGraceWindow(t *testing.T) {
+	deprecated := `{"package":"p","ecosystem":"go","prefix":"1","current":"v1.6.0",` +
+		`"deprecated":{"reason":"superseded","since":"2026-06-01T00:00:00Z"}}`
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": deprecated})
+
+	// Past the 30-day fallback but inside the register's own 120-day window:
+	// the knob is register-level, and the consumer reads it.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(root, "golden-register", "forge-register.yaml"),
+		[]byte("params:\n  deprecatedGraceDays: 120\n"), 0o600))
+
+	_, notes, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {Track: "1"}})
+	require.NoError(t, err)
+	require.Contains(t, notes[0], "before")
+}
+
+func TestAnUnreadableExpiresDateIsAnError(t *testing.T) {
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {
+			Track: "1", Pin: "v1.5.0", Mode: "hard", Reason: "frozen", Expires: "soon",
+		}})
+	require.ErrorContains(t, err, "not a date")
+}
+
+func TestAnRFC3339ExpiresStillInTheFutureHolds(t *testing.T) {
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+
+	got, notes, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {
+			Track: "1", Pin: "v1.5.0", Mode: "hard", Reason: "frozen",
+			Expires: "2027-01-01T00:00:00Z",
+		}})
+	require.NoError(t, err)
+	require.Equal(t, "v1.5.0", got["example.com/pkg"])
+	require.Contains(t, notes[0], "frozen, visibly")
+}
+
+func TestADirectoryAmongTrackFilesIsNotATrack(t *testing.T) {
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+	require.NoError(t, os.MkdirAll(
+		filepath.Join(root, "golden-register", "index", "go", "example.com", "pkg", "junk"), 0o750))
+
+	got, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {}})
+	require.NoError(t, err)
+	require.Equal(t, "v1.6.0", got["example.com/pkg"])
+}
+
+func TestAMissingPackageAtAPinnedRevisionNamesTheRevision(t *testing.T) {
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+	dir := filepath.Join(root, "golden-register")
+
+	gitIn(t, dir, "init", "-q")
+	gitIn(t, dir, "add", ".")
+	gitIn(t, dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "index")
+	gitIn(t, dir, "tag", "v0.1.0")
+
+	f.Register.Revision = "v0.1.0"
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/other": {}})
+	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
+	require.ErrorContains(t, err, "v0.1.0")
 }

@@ -259,3 +259,105 @@ func TestLatestTagReportsAFailure(t *testing.T) {
 	_, err := gitadapter.New(runner).LatestTag(t.Context(), "/w/a")
 	require.Error(t, err)
 }
+
+func TestShowReadsAFileAtARevision(t *testing.T) {
+	r := execadaptermock.NewMockRunner(t)
+	r.EXPECT().Run(mock.Anything, "/repo", "git", "show", "v0.1.0:index/go/p/1.json").
+		Return(ok(`{"current":"v1"}`), nil).Once()
+
+	raw, found, err := gitadapter.New(r).Show(context.Background(), "/repo", "v0.1.0", "index/go/p/1.json")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, `{"current":"v1"}`, raw)
+}
+
+func TestShowAnswersFoundFalseForAPathTheRevisionDoesNotCarry(t *testing.T) {
+	for _, stderr := range []string{
+		"fatal: path 'x' does not exist in 'v0.1.0'",
+		"fatal: path 'x' exists on disk, but not in 'v0.1.0'",
+	} {
+		r := execadaptermock.NewMockRunner(t)
+		r.EXPECT().Run(mock.Anything, "/repo", "git", "show", "v0.1.0:x").
+			Return(execadapter.Result{ExitCode: 128, Stderr: stderr}, nil).Once()
+
+		_, found, err := gitadapter.New(r).Show(context.Background(), "/repo", "v0.1.0", "x")
+		require.NoError(t, err)
+		require.False(t, found)
+	}
+}
+
+func TestShowReportsAnyOtherGitFailure(t *testing.T) {
+	r := execadaptermock.NewMockRunner(t)
+	r.EXPECT().Run(mock.Anything, "/repo", "git", "show", "v0.1.0:x").
+		Return(execadapter.Result{ExitCode: 128, Stderr: "fatal: bad revision"}, nil).Once()
+
+	_, _, err := gitadapter.New(r).Show(context.Background(), "/repo", "v0.1.0", "x")
+	require.ErrorContains(t, err, "bad revision")
+
+	r2 := execadaptermock.NewMockRunner(t)
+	r2.EXPECT().Run(mock.Anything, "/repo", "git", "show", "v0.1.0:x").
+		Return(execadapter.Result{}, errBoom).Once()
+
+	_, _, err = gitadapter.New(r2).Show(context.Background(), "/repo", "v0.1.0", "x")
+	require.ErrorIs(t, err, errBoom)
+}
+
+func TestLsTreeListsBasenames(t *testing.T) {
+	r := execadaptermock.NewMockRunner(t)
+	r.EXPECT().Run(mock.Anything, "/repo", "git", "ls-tree", "--name-only", "v0.1.0", "index/go/p/").
+		Return(ok("index/go/p/1.json\nindex/go/p/2.json\n\n"), nil).Once()
+
+	names, err := gitadapter.New(r).LsTree(context.Background(), "/repo", "v0.1.0", "index/go/p")
+	require.NoError(t, err)
+	require.Equal(t, []string{"1.json", "2.json"}, names)
+}
+
+func TestLsTreeReportsAFailure(t *testing.T) {
+	r := execadaptermock.NewMockRunner(t)
+	r.EXPECT().Run(mock.Anything, "/repo", "git", "ls-tree", "--name-only", "v0.1.0", "x/").
+		Return(execadapter.Result{ExitCode: 128, Stderr: "fatal: not a tree"}, nil).Once()
+
+	_, err := gitadapter.New(r).LsTree(context.Background(), "/repo", "v0.1.0", "x")
+	require.ErrorContains(t, err, "not a tree")
+
+	r2 := execadaptermock.NewMockRunner(t)
+	r2.EXPECT().Run(mock.Anything, "/repo", "git", "ls-tree", "--name-only", "v0.1.0", "x/").
+		Return(execadapter.Result{}, errBoom).Once()
+
+	_, err = gitadapter.New(r2).LsTree(context.Background(), "/repo", "v0.1.0", "x")
+	require.ErrorIs(t, err, errBoom)
+}
+
+func TestAheadBehindCountsBothSides(t *testing.T) {
+	r := execadaptermock.NewMockRunner(t)
+	r.EXPECT().Run(mock.Anything, "/repo", "git", "rev-list", "--left-right", "--count", "HEAD...origin/main").
+		Return(ok("2\t5\n"), nil).Once()
+
+	ahead, behind, err := gitadapter.New(r).AheadBehind(context.Background(), "/repo", "origin/main")
+	require.NoError(t, err)
+	require.Equal(t, 2, ahead)
+	require.Equal(t, 5, behind)
+}
+
+func TestAheadBehindReportsFailures(t *testing.T) {
+	r := execadaptermock.NewMockRunner(t)
+	r.EXPECT().Run(mock.Anything, "/repo", "git", "rev-list", "--left-right", "--count", "HEAD...origin/main").
+		Return(execadapter.Result{ExitCode: 128, Stderr: "fatal: unknown ref"}, nil).Once()
+
+	_, _, err := gitadapter.New(r).AheadBehind(context.Background(), "/repo", "origin/main")
+	require.ErrorContains(t, err, "unknown ref")
+
+	r2 := execadaptermock.NewMockRunner(t)
+	r2.EXPECT().Run(mock.Anything, "/repo", "git", "rev-list", "--left-right", "--count", "HEAD...origin/main").
+		Return(ok("nonsense"), nil).Once()
+
+	_, _, err = gitadapter.New(r2).AheadBehind(context.Background(), "/repo", "origin/main")
+	require.ErrorContains(t, err, "unexpected output")
+
+	r3 := execadaptermock.NewMockRunner(t)
+	r3.EXPECT().Run(mock.Anything, "/repo", "git", "rev-list", "--left-right", "--count", "HEAD...origin/main").
+		Return(ok("x y"), nil).Once()
+
+	_, _, err = gitadapter.New(r3).AheadBehind(context.Background(), "/repo", "origin/main")
+	require.Error(t, err)
+}

@@ -100,6 +100,84 @@ func (_c *MockGit_Add_Call) RunAndReturn(run func(ctx context.Context, dir strin
 	return _c
 }
 
+// AheadBehind provides a mock function for the type MockGit
+func (_mock *MockGit) AheadBehind(ctx context.Context, dir string, ref string) (int, int, error) {
+	ret := _mock.Called(ctx, dir, ref)
+
+	if len(ret) == 0 {
+		panic("no return value specified for AheadBehind")
+	}
+
+	var r0 int
+	var r1 int
+	var r2 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string) (int, int, error)); ok {
+		return returnFunc(ctx, dir, ref)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string) int); ok {
+		r0 = returnFunc(ctx, dir, ref)
+	} else {
+		r0 = ret.Get(0).(int)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, string, string) int); ok {
+		r1 = returnFunc(ctx, dir, ref)
+	} else {
+		r1 = ret.Get(1).(int)
+	}
+	if returnFunc, ok := ret.Get(2).(func(context.Context, string, string) error); ok {
+		r2 = returnFunc(ctx, dir, ref)
+	} else {
+		r2 = ret.Error(2)
+	}
+	return r0, r1, r2
+}
+
+// MockGit_AheadBehind_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'AheadBehind'
+type MockGit_AheadBehind_Call struct {
+	*mock.Call
+}
+
+// AheadBehind is a helper method to define mock.On call
+//   - ctx context.Context
+//   - dir string
+//   - ref string
+func (_e *MockGit_Expecter) AheadBehind(ctx any, dir any, ref any) *MockGit_AheadBehind_Call {
+	return &MockGit_AheadBehind_Call{Call: _e.mock.On("AheadBehind", ctx, dir, ref)}
+}
+
+func (_c *MockGit_AheadBehind_Call) Run(run func(ctx context.Context, dir string, ref string)) *MockGit_AheadBehind_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 string
+		if args[2] != nil {
+			arg2 = args[2].(string)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+		)
+	})
+	return _c
+}
+
+func (_c *MockGit_AheadBehind_Call) Return(n int, n1 int, err error) *MockGit_AheadBehind_Call {
+	_c.Call.Return(n, n1, err)
+	return _c
+}
+
+func (_c *MockGit_AheadBehind_Call) RunAndReturn(run func(ctx context.Context, dir string, ref string) (int, int, error)) *MockGit_AheadBehind_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Checkout provides a mock function for the type MockGit
 func (_mock *MockGit) Checkout(ctx context.Context, dir string, sha string) error {
 	ret := _mock.Called(ctx, dir, sha)
@@ -667,6 +745,86 @@ func (_c *MockGit_LatestTag_Call) RunAndReturn(run func(ctx context.Context, dir
 	return _c
 }
 
+// LsTree provides a mock function for the type MockGit
+func (_mock *MockGit) LsTree(ctx context.Context, dir string, rev string, path string) ([]string, error) {
+	ret := _mock.Called(ctx, dir, rev, path)
+
+	if len(ret) == 0 {
+		panic("no return value specified for LsTree")
+	}
+
+	var r0 []string
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string, string) ([]string, error)); ok {
+		return returnFunc(ctx, dir, rev, path)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string, string) []string); ok {
+		r0 = returnFunc(ctx, dir, rev, path)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]string)
+		}
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, string, string, string) error); ok {
+		r1 = returnFunc(ctx, dir, rev, path)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockGit_LsTree_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'LsTree'
+type MockGit_LsTree_Call struct {
+	*mock.Call
+}
+
+// LsTree is a helper method to define mock.On call
+//   - ctx context.Context
+//   - dir string
+//   - rev string
+//   - path string
+func (_e *MockGit_Expecter) LsTree(ctx any, dir any, rev any, path any) *MockGit_LsTree_Call {
+	return &MockGit_LsTree_Call{Call: _e.mock.On("LsTree", ctx, dir, rev, path)}
+}
+
+func (_c *MockGit_LsTree_Call) Run(run func(ctx context.Context, dir string, rev string, path string)) *MockGit_LsTree_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 string
+		if args[2] != nil {
+			arg2 = args[2].(string)
+		}
+		var arg3 string
+		if args[3] != nil {
+			arg3 = args[3].(string)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+			arg3,
+		)
+	})
+	return _c
+}
+
+func (_c *MockGit_LsTree_Call) Return(strings []string, err error) *MockGit_LsTree_Call {
+	_c.Call.Return(strings, err)
+	return _c
+}
+
+func (_c *MockGit_LsTree_Call) RunAndReturn(run func(ctx context.Context, dir string, rev string, path string) ([]string, error)) *MockGit_LsTree_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // RemoteSHA provides a mock function for the type MockGit
 func (_mock *MockGit) RemoteSHA(ctx context.Context, url string, ref string) (string, error) {
 	ret := _mock.Called(ctx, url, ref)
@@ -735,6 +893,90 @@ func (_c *MockGit_RemoteSHA_Call) Return(s string, err error) *MockGit_RemoteSHA
 }
 
 func (_c *MockGit_RemoteSHA_Call) RunAndReturn(run func(ctx context.Context, url string, ref string) (string, error)) *MockGit_RemoteSHA_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// Show provides a mock function for the type MockGit
+func (_mock *MockGit) Show(ctx context.Context, dir string, rev string, path string) (string, bool, error) {
+	ret := _mock.Called(ctx, dir, rev, path)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Show")
+	}
+
+	var r0 string
+	var r1 bool
+	var r2 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string, string) (string, bool, error)); ok {
+		return returnFunc(ctx, dir, rev, path)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string, string) string); ok {
+		r0 = returnFunc(ctx, dir, rev, path)
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, string, string, string) bool); ok {
+		r1 = returnFunc(ctx, dir, rev, path)
+	} else {
+		r1 = ret.Get(1).(bool)
+	}
+	if returnFunc, ok := ret.Get(2).(func(context.Context, string, string, string) error); ok {
+		r2 = returnFunc(ctx, dir, rev, path)
+	} else {
+		r2 = ret.Error(2)
+	}
+	return r0, r1, r2
+}
+
+// MockGit_Show_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Show'
+type MockGit_Show_Call struct {
+	*mock.Call
+}
+
+// Show is a helper method to define mock.On call
+//   - ctx context.Context
+//   - dir string
+//   - rev string
+//   - path string
+func (_e *MockGit_Expecter) Show(ctx any, dir any, rev any, path any) *MockGit_Show_Call {
+	return &MockGit_Show_Call{Call: _e.mock.On("Show", ctx, dir, rev, path)}
+}
+
+func (_c *MockGit_Show_Call) Run(run func(ctx context.Context, dir string, rev string, path string)) *MockGit_Show_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 string
+		if args[2] != nil {
+			arg2 = args[2].(string)
+		}
+		var arg3 string
+		if args[3] != nil {
+			arg3 = args[3].(string)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+			arg3,
+		)
+	})
+	return _c
+}
+
+func (_c *MockGit_Show_Call) Return(s string, b bool, err error) *MockGit_Show_Call {
+	_c.Call.Return(s, b, err)
+	return _c
+}
+
+func (_c *MockGit_Show_Call) RunAndReturn(run func(ctx context.Context, dir string, rev string, path string) (string, bool, error)) *MockGit_Show_Call {
 	_c.Call.Return(run)
 	return _c
 }

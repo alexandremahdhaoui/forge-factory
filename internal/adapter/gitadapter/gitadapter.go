@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
@@ -23,6 +24,9 @@ type Git interface {
 	LatestTag(ctx context.Context, dir string) (string, error)
 	Fetch(ctx context.Context, dir string) error
 	WorktreeHash(ctx context.Context, dir string) (string, error)
+	Show(ctx context.Context, dir, rev, path string) (string, bool, error)
+	LsTree(ctx context.Context, dir, rev, path string) ([]string, error)
+	AheadBehind(ctx context.Context, dir, ref string) (int, int, error)
 }
 
 type CLI struct {
@@ -162,6 +166,86 @@ func (g *CLI) Fetch(ctx context.Context, dir string) error {
 
 // LatestTag is the highest semver tag a checkout carries. A repo with no tag
 // answers empty rather than failing, because most members never carry one.
+// Show reads one file as it exists at a revision. A path the revision does
+// not carry is found false, never an error - the same shape the state
+// transport gives a missing record.
+func (g *CLI) Show(ctx context.Context, dir, rev, path string) (string, bool, error) {
+	res, err := g.runner.Run(ctx, dir, "git", "show", rev+":"+path)
+	if err != nil {
+		return "", false, fmt.Errorf("reading %s at %s: %w", path, rev, err)
+	}
+
+	if res.ExitCode != 0 {
+		stderr := strings.ToLower(res.Stderr)
+		if strings.Contains(stderr, "does not exist") ||
+			strings.Contains(stderr, "exists on disk, but not in") {
+			return "", false, nil
+		}
+
+		return "", false, fmt.Errorf("reading %s at %s: git exited %d: %s",
+			path, rev, res.ExitCode, strings.TrimSpace(res.Stderr))
+	}
+
+	return res.Stdout, true, nil
+}
+
+// LsTree lists the entry names under one directory as it exists at a
+// revision. A directory the revision does not carry lists to nothing.
+func (g *CLI) LsTree(ctx context.Context, dir, rev, path string) ([]string, error) {
+	res, err := g.runner.Run(ctx, dir, "git", "ls-tree", "--name-only", rev, path+"/")
+	if err != nil {
+		return nil, fmt.Errorf("listing %s at %s: %w", path, rev, err)
+	}
+
+	if res.ExitCode != 0 {
+		return nil, fmt.Errorf("listing %s at %s: git exited %d: %s",
+			path, rev, res.ExitCode, strings.TrimSpace(res.Stderr))
+	}
+
+	var names []string
+
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		if i := strings.LastIndex(line, "/"); i >= 0 {
+			line = line[i+1:]
+		}
+
+		names = append(names, line)
+	}
+
+	return names, nil
+}
+
+// AheadBehind counts the commits a checkout is ahead of and behind a ref.
+func (g *CLI) AheadBehind(ctx context.Context, dir, ref string) (int, int, error) {
+	res, err := g.run(ctx, dir, "counting divergence",
+		"rev-list", "--left-right", "--count", "HEAD..."+ref)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	fields := strings.Fields(res.Stdout)
+	if len(fields) != 2 {
+		return 0, 0, fmt.Errorf("counting divergence against %s: unexpected output %q", ref, res.Stdout)
+	}
+
+	ahead, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return 0, 0, fmt.Errorf("counting divergence against %s: %w", ref, err)
+	}
+
+	behind, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, 0, fmt.Errorf("counting divergence against %s: %w", ref, err)
+	}
+
+	return ahead, behind, nil
+}
+
 func (g *CLI) LatestTag(ctx context.Context, dir string) (string, error) {
 	res, err := g.run(ctx, dir, "listing tags", "tag", "--sort=-v:refname")
 	if err != nil {

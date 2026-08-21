@@ -539,3 +539,28 @@ func TestAddReportsAFailedWrite(t *testing.T) {
 	err := h.driver.Run(t.Context(), []string{"add", "golden-two", "git@x:y.git", "go"})
 	require.ErrorIs(t, err, failed)
 }
+
+func TestRegisterHeadClearsThePinnedRevision(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory + `register:
+  url: git@example.com:golden-register.git
+  revision: v0.1.0
+`)
+
+	var saw config.Factory
+
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, f config.Factory, _ string) (synccontroller.Report, error) {
+			saw = f
+
+			return synccontroller.Report{Root: "/w"}, nil
+		}).Once()
+
+	require.NoError(t, h.driver.Run(t.Context(),
+		[]string{"sync", "--root", "/w", "--register-head"}))
+	require.NotNil(t, saw.Register)
+	assert.Empty(t, saw.Register.Revision,
+		"the canary must see the candidate index, not the published tag")
+}

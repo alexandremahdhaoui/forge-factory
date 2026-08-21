@@ -24,7 +24,7 @@ const DefaultPath = "forge-factory.yaml"
 var (
 	ErrUsage = errors.New(
 		"usage: forge-factory <clone|sync|add|bump|checkout|status|validate> [args] " +
-			"[--config path] [--root dir] [--offline]")
+			"[--config path] [--root dir] [--offline] [--register-head]")
 	ErrDrift = errors.New("the workspace disagrees with the factory")
 
 	ErrUnsettled = errors.New("the files were written and the workspace does not build")
@@ -259,6 +259,8 @@ func (d *Driver) load(
 	root := fs.String("root", "", "directory holding the repos, defaults to the factory file's parent")
 	offline := fs.Bool("offline", false,
 		"do not fail when a command that needs the network could not run")
+	registerHead := fs.Bool("register-head", false,
+		"resolve from the register checkout as it stands, ignoring the pinned revision")
 
 	if err := fs.Parse(args); err != nil {
 		return config.Factory{}, "", "", nil, fmt.Errorf("parsing flags: %w", err)
@@ -274,6 +276,12 @@ func (d *Driver) load(
 	f, err := config.Parse(raw)
 	if err != nil {
 		return config.Factory{}, "", "", nil, fmt.Errorf("reading %s: %w", *path, err)
+	}
+
+	// The canary is the one caller that must see the candidate index, not the
+	// published tag - it exists to test what the pin would hide.
+	if *registerHead && f.Register != nil {
+		f.Register.Revision = ""
 	}
 
 	if *root == "" {

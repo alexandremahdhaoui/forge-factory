@@ -1,8 +1,9 @@
 // Package resolvecontroller turns dependency entries into concrete versions.
 // A legacy string passes through verbatim; a register entry resolves from the
-// register checkout - the local checkout wins, like any member. Resolution is
-// strict: a missing package or track fails loud and files a request, an
-// advisory pierces every pin, and a pin is never silent.
+// register at the pinned revision - consumers consume tags - or from the
+// checkout as it stands when no revision is pinned. Resolution is strict: a
+// missing package or track fails loud and files a request, an advisory
+// pierces every pin, and a pin is never silent.
 package resolvecontroller
 
 import (
@@ -10,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -17,8 +19,10 @@ import (
 	"time"
 
 	spec "github.com/alexandremahdhaoui/forge-register-spec/pkg/registertypes"
+	"sigs.k8s.io/yaml"
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/gitadapter"
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
 )
 
@@ -32,6 +36,11 @@ var (
 	// ErrAdvisory means a resolved version carries a security advisory. An
 	// advisory pierces every pin.
 	ErrAdvisory = errors.New("security advisory")
+	// ErrExpired means a hard pin outlived its expires date.
+	ErrExpired = errors.New("pin expired")
+	// ErrDeprecated means a track's deprecation outlived the register's
+	// grace window.
+	ErrDeprecated = errors.New("deprecated past grace")
 )
 
 // Resolver resolves one language's dependency entries to versions.
@@ -41,18 +50,66 @@ type Resolver interface {
 
 type Controller struct {
 	fs  fsadapter.FS
+	git gitadapter.Git
 	now func() time.Time
 }
 
 var _ Resolver = (*Controller)(nil)
 
-func New(fs fsadapter.FS, now func() time.Time) *Controller {
-	return &Controller{fs: fs, now: now}
+func New(fs fsadapter.FS, git gitadapter.Git, now func() time.Time) *Controller {
+	return &Controller{fs: fs, git: git, now: now}
+}
+
+// registerParams is the slice of the register's own config a consumer reads.
+// The knobs are register-level; a consumer reads them and never sets them.
+type registerParams struct {
+	Params struct {
+		DeprecatedGraceDays int `json:"deprecatedGraceDays"`
+	} `json:"params"`
+}
+
+// view reads the register index either from the worktree or, when a revision
+// is pinned, from that revision - which is how "consumers consume tags" is
+// enforced rather than conventional.
+type view struct {
+	c   *Controller
+	ctx context.Context
+	dir string
+	rev string
+}
+
+func (v view) read(rel string) (string, bool, error) {
+	if v.rev != "" {
+		return v.c.git.Show(v.ctx, v.dir, v.rev, rel)
+	}
+
+	full := filepath.Join(v.dir, filepath.FromSlash(rel))
+
+	exists, err := v.c.fs.Exists(full)
+	if err != nil || !exists {
+		return "", false, err
+	}
+
+	raw, err := v.c.fs.ReadFile(full)
+	if err != nil {
+		return "", false, err
+	}
+
+	return string(raw), true, nil
+}
+
+func (v view) list(rel string) ([]string, error) {
+	if v.rev != "" {
+		return v.c.git.LsTree(v.ctx, v.dir, v.rev, rel)
+	}
+
+	return v.c.fs.List(filepath.Join(v.dir, filepath.FromSlash(rel)))
 }
 
 // Resolve maps entries to versions. The returned notes are diagnostics the
-// driver prints: dead soft pins, hard pins standing, deprecated tracks.
-func (c *Controller) Resolve(_ context.Context, f config.Factory, root, language string, deps map[string]config.DependencySpec) (map[string]string, []string, error) {
+// driver prints: pins standing, pins to remove, deprecated tracks, requests
+// filed.
+func (c *Controller) Resolve(ctx context.Context, f config.Factory, root, language string, deps map[string]config.DependencySpec) (map[string]string, []string, error) {
 	out := make(map[string]string, len(deps))
 
 	var notes []string
@@ -73,25 +130,28 @@ func (c *Controller) Resolve(_ context.Context, f config.Factory, root, language
 			continue
 		}
 
-		version, entryNotes, err := c.resolveEntry(f, root, language, name, d)
+		version, entryNotes, err := c.resolveEntry(ctx, f, root, language, name, d)
+		notes = append(notes, entryNotes...)
+
 		if err != nil {
 			return nil, notes, err
 		}
 
-		notes = append(notes, entryNotes...)
 		out[name] = version
 	}
 
 	return out, notes, nil
 }
 
-func (c *Controller) resolveEntry(f config.Factory, root, language, name string, d config.DependencySpec) (string, []string, error) {
+func (c *Controller) resolveEntry(ctx context.Context, f config.Factory, root, language, name string, d config.DependencySpec) (string, []string, error) {
 	dir, err := c.registerDir(f, root)
 	if err != nil {
 		return "", nil, err
 	}
 
-	track, err := c.track(dir, root, language, name, d)
+	v := view{c: c, ctx: ctx, dir: dir, rev: f.Register.Revision}
+
+	track, err := c.track(v, language, name, d)
 	if err != nil {
 		return "", nil, err
 	}
@@ -101,7 +161,14 @@ func (c *Controller) resolveEntry(f config.Factory, root, language, name string,
 	version := track.Current
 
 	if d.Pin != "" {
-		version, notes = applyPin(language, name, d, track)
+		var pinNotes []string
+
+		version, pinNotes, err = c.applyPin(v, language, name, d, track)
+		notes = append(notes, pinNotes...)
+
+		if err != nil {
+			return "", notes, err
+		}
 	}
 
 	// An advisory pierces every pin: whatever a pin froze, a track whose
@@ -115,10 +182,21 @@ func (c *Controller) resolveEntry(f config.Factory, root, language, name string,
 	}
 
 	if track.Deprecated != nil {
+		grace := c.graceWindow(dir)
+		age := c.now().Sub(track.Deprecated.Since)
+
+		if age > grace {
+			return "", notes, fmt.Errorf(
+				"%s:%s track %s: %w: deprecated (%s) since %s, past the register's %s grace - move to a successor track",
+				language, name, track.Prefix, ErrDeprecated, track.Deprecated.Reason,
+				track.Deprecated.Since.Format("2006-01-02"), grace)
+		}
+
 		notes = append(notes, fmt.Sprintf(
-			"%s:%s track %s is deprecated (%s) since %s - move to a successor track",
+			"%s:%s track %s is deprecated (%s) since %s - move to a successor track before %s",
 			language, name, track.Prefix, track.Deprecated.Reason,
-			track.Deprecated.Since.Format("2006-01-02")))
+			track.Deprecated.Since.Format("2006-01-02"),
+			track.Deprecated.Since.Add(grace).Format("2006-01-02")))
 	}
 
 	if d.Wraps != "" {
@@ -129,25 +207,46 @@ func (c *Controller) resolveEntry(f config.Factory, root, language, name string,
 }
 
 // applyPin floors the track with a soft pin or freezes it with a hard one,
-// and always explains itself.
-func applyPin(language, name string, d config.DependencySpec, track spec.Track) (string, []string) {
+// and always explains itself. A soft pin ahead of its track doubles as the
+// upgrade request.
+func (c *Controller) applyPin(v view, language, name string, d config.DependencySpec, track spec.Track) (string, []string, error) {
 	where := fmt.Sprintf("%s:%s", language, name)
 
 	if d.Mode == "hard" {
+		if d.Expires != "" {
+			expires, err := parseDate(d.Expires)
+			if err != nil {
+				return "", nil, fmt.Errorf("%s: reading expires %q: %w", where, d.Expires, err)
+			}
+
+			if c.now().After(expires) {
+				return "", nil, fmt.Errorf(
+					"%s: hard pin %s %w on %s (reason was: %s) - re-decide it or remove it",
+					where, d.Pin, ErrExpired, d.Expires, d.Reason)
+			}
+		}
+
 		return d.Pin, []string{fmt.Sprintf(
 			"hard pin %s %s (reason: %s) - the register's track %s is at %s; this consumer is frozen, visibly",
-			where, d.Pin, d.Reason, track.Prefix, track.Current)}
+			where, d.Pin, d.Reason, track.Prefix, track.Current)}, nil
 	}
 
 	if compareVersions(d.Pin, track.Current) > 0 {
+		key, err := c.fileRequest(v.dir, language, name, request{
+			kind: spec.Upgrade, version: d.Pin, track: track.Prefix, reason: d.Reason,
+		})
+		if err != nil {
+			return "", nil, err
+		}
+
 		return d.Pin, []string{fmt.Sprintf(
-			"soft pin %s %s (reason: %s) is ahead of track %s (%s) - request an upgrade so the pin can retire",
-			where, d.Pin, d.Reason, track.Prefix, track.Current)}
+			"soft pin %s %s (reason: %s) is ahead of track %s (%s) - filed %s so the pin can retire",
+			where, d.Pin, d.Reason, track.Prefix, track.Current, key)}, nil
 	}
 
 	return track.Current, []string{fmt.Sprintf(
 		"soft pin %s %s is behind track %s (%s) - the register is newer; remove this pin",
-		where, d.Pin, track.Prefix, track.Current)}
+		where, d.Pin, track.Prefix, track.Current)}, nil
 }
 
 // registerDir finds the register checkout: an explicit path, or the directory
@@ -159,7 +258,7 @@ func (c *Controller) registerDir(f config.Factory, root string) (string, error) 
 
 	name := f.Register.Path
 	if name == "" {
-		name = strings.TrimSuffix(filepath.Base(f.Register.URL), ".git")
+		name = strings.TrimSuffix(path.Base(f.Register.URL), ".git")
 	}
 
 	dir := filepath.Join(root, name)
@@ -176,53 +275,56 @@ func (c *Controller) registerDir(f config.Factory, root string) (string, error) 
 	return dir, nil
 }
 
-func (c *Controller) track(dir, root, language, name string, d config.DependencySpec) (spec.Track, error) {
+func (c *Controller) track(v view, language, name string, d config.DependencySpec) (spec.Track, error) {
 	prefix := d.Track
 	if prefix == "" {
 		var err error
 
-		prefix, err = c.defaultTrack(dir, language, name)
+		prefix, err = c.defaultTrack(v, language, name)
 		if err != nil {
 			return spec.Track{}, err
 		}
 	}
 
-	path := filepath.Join(dir, "index", language, filepath.FromSlash(name), prefix+".json")
+	rel := path.Join("index", language, name, prefix+".json")
 
-	exists, err := c.fs.Exists(path)
+	raw, found, err := v.read(rel)
 	if err != nil {
-		return spec.Track{}, fmt.Errorf("reading track %s: %w", path, err)
+		return spec.Track{}, fmt.Errorf("reading track %s: %w", rel, err)
 	}
 
-	if !exists {
-		key, ferr := c.fileRequest(dir, language, name, d)
+	if !found {
+		// The package may carry other tracks: then this is an open-track
+		// request, judged by the deny policies, not an admission.
+		kind := spec.Admission
+
+		if others, lerr := v.list(path.Join("index", language, name)); lerr == nil && len(others) > 0 {
+			kind = spec.OpenTrack
+		}
+
+		key, ferr := c.fileRequest(v.dir, language, name, request{
+			kind: kind, track: d.Track, version: d.Pin, reason: d.Reason,
+		})
 		if ferr != nil {
 			return spec.Track{}, ferr
 		}
 
 		return spec.Track{}, fmt.Errorf(
-			"%s:%s track %q is %w; filed %s - the register pipeline answers it, then sync again",
-			language, name, prefix, ErrUnregistered, key)
-	}
-
-	raw, err := c.fs.ReadFile(path)
-	if err != nil {
-		return spec.Track{}, fmt.Errorf("reading track %s: %w", path, err)
+			"%s:%s track %q is %w at %s; filed %s - the register pipeline answers it, then sync again",
+			language, name, prefix, ErrUnregistered, revLabel(v.rev), key)
 	}
 
 	var track spec.Track
-	if err := json.Unmarshal(raw, &track); err != nil {
-		return spec.Track{}, fmt.Errorf("decoding track %s: %w", path, err)
+	if err := json.Unmarshal([]byte(raw), &track); err != nil {
+		return spec.Track{}, fmt.Errorf("decoding track %s: %w", rel, err)
 	}
 
 	return track, nil
 }
 
 // defaultTrack is the highest prefix the register carries for the package.
-func (c *Controller) defaultTrack(dir, language, name string) (string, error) {
-	base := filepath.Join(dir, "index", language, filepath.FromSlash(name))
-
-	entries, err := c.fs.List(base)
+func (c *Controller) defaultTrack(v view, language, name string) (string, error) {
+	entries, err := v.list(path.Join("index", language, name))
 	if err != nil {
 		return "", fmt.Errorf("listing tracks of %s:%s: %w", language, name, err)
 	}
@@ -241,55 +343,103 @@ func (c *Controller) defaultTrack(dir, language, name string) (string, error) {
 	}
 
 	if best == "" {
-		key, ferr := c.fileRequest(dir, language, name, config.DependencySpec{})
+		key, ferr := c.fileRequest(v.dir, language, name, request{kind: spec.Admission})
 		if ferr != nil {
 			return "", ferr
 		}
 
 		return "", fmt.Errorf(
-			"%s:%s is %w; filed %s - the register pipeline answers it, then sync again",
-			language, name, ErrUnregistered, key)
+			"%s:%s is %w at %s; filed %s - the register pipeline answers it, then sync again",
+			language, name, ErrUnregistered, revLabel(v.rev), key)
 	}
 
 	return best, nil
 }
 
-// fileRequest writes an admission request into the register checkout. Filing
+func revLabel(rev string) string {
+	if rev == "" {
+		return "the checkout"
+	}
+
+	return rev
+}
+
+type request struct {
+	kind    spec.RequestType
+	track   string
+	version string
+	reason  string
+}
+
+// fileRequest writes a request into the register checkout's worktree. Filing
 // is not writing the index: requests are the register's only door, and the
 // pipeline answers them.
-func (c *Controller) fileRequest(dir, language, name string, d config.DependencySpec) (string, error) {
+func (c *Controller) fileRequest(dir, language, name string, r request) (string, error) {
 	now := c.now()
 
-	request := spec.Request{
-		Type:      spec.Admission,
+	wire := spec.Request{
+		Type:      r.kind,
 		Package:   name,
 		Ecosystem: spec.RequestEcosystem(language),
-		Reason:    "filed by forge-factory sync: the workspace factory names this package",
+		Reason:    "filed by forge-factory sync: the workspace factory names this",
 		CreatedAt: now,
 	}
 
-	if d.Track != "" {
-		track := d.Track
-		request.Track = &track
+	if r.reason != "" {
+		wire.Reason = r.reason
 	}
 
-	if d.Reason != "" {
-		request.Reason = d.Reason
+	if r.track != "" {
+		track := r.track
+		wire.Track = &track
 	}
 
-	key := language + "/" + name + "/" + strconv.FormatInt(now.Unix(), 10) + "-admission"
+	if r.version != "" {
+		version := r.version
+		wire.Version = &version
+	}
 
-	payload, err := json.Marshal(request)
+	key := language + "/" + name + "/" + strconv.FormatInt(now.Unix(), 10) + "-" + string(r.kind)
+
+	payload, err := json.Marshal(wire)
 	if err != nil {
 		return "", fmt.Errorf("encoding the request: %w", err)
 	}
 
-	path := filepath.Join(dir, "requests", filepath.FromSlash(key)+".json")
-	if err := c.fs.WriteFile(path, payload); err != nil {
+	full := filepath.Join(dir, "requests", filepath.FromSlash(key)+".json")
+	if err := c.fs.WriteFile(full, payload); err != nil {
 		return "", fmt.Errorf("filing the request: %w", err)
 	}
 
 	return key, nil
+}
+
+// graceWindow reads the register's own deprecatedGraceDays. The knob is
+// register-level: readable by every consumer, settable by none.
+func (c *Controller) graceWindow(dir string) time.Duration {
+	const fallback = 30
+
+	raw, err := c.fs.ReadFile(filepath.Join(dir, "forge-register.yaml"))
+	if err != nil {
+		return fallback * 24 * time.Hour
+	}
+
+	var params registerParams
+	if err := yaml.Unmarshal(raw, &params); err != nil || params.Params.DeprecatedGraceDays <= 0 {
+		return fallback * 24 * time.Hour
+	}
+
+	return time.Duration(params.Params.DeprecatedGraceDays) * 24 * time.Hour
+}
+
+func parseDate(s string) (time.Time, error) {
+	for _, layout := range []string{"2006-01-02", time.RFC3339} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("not a date (want 2006-01-02 or RFC3339)")
 }
 
 // compareVersions orders dotted versions numerically, tolerating a leading v
