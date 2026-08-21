@@ -1,15 +1,19 @@
 #!/bin/sh
-# Resolve an OpenAPI spec from the workspace, falling back to a pinned remote
-# tag. Shared by every consumer repo; kept in golden-spec and copied in by the
-# resolve-spec forge build step.
+# Resolve a shared spec from the workspace, falling back to the version the
+# register carries for the module. Shared by every consumer repo; the
+# canonical copy lives in golden-spec and the tool repos carry copies.
 #
 # Usage:  resolve-spec.sh <module-path> <spec-path-within-module> [dest-dir]
 # Example: resolve-spec.sh github.com/alexandremahdhaoui/golden-spec \
 #              api/golden.v1.yaml .forge/spec-cache
 #
 # Resolution order:
-#   1. modules.<module>.path in forge-factory.yaml, if that directory exists
-#   2. GitHub raw at modules.<module>.version tag
+#   1. The sibling checkout named by the module's basename - the local
+#      checkout wins, like any member.
+#   2. The register's internal track for the module: the highest track's
+#      current version, fetched from GitHub at that tag. The register
+#      checkout is read when present; the index file itself is fetched
+#      from the register repo's main branch when not.
 #
 # Writes the spec to <dest-dir>/<basename> and records provenance in
 # <dest-dir>/.source so builds are auditable.
@@ -22,48 +26,32 @@ DEST="${3:-.forge/spec-cache}"
 
 die() { echo "resolve-spec: $*" >&2; exit 1; }
 
-# --- locate forge-factory.yaml by walking up from the repo root --------------
-find_workspace_file() {
+# --- locate the workspace root by walking up from the repo -------------------
+find_workspace_root() {
     dir=$(pwd)
     while [ "$dir" != "/" ]; do
         if [ -f "$dir/forge-factory.yaml" ]; then
-            printf '%s\n' "$dir/forge-factory.yaml"
+            printf '%s\n' "$dir"
             return 0
         fi
         dir=$(dirname "$dir")
     done
-    return 1
+    # A lone checkout has no placed factory file; its parent is the best
+    # guess at where siblings would live.
+    dirname "$(pwd)"
 }
 
-WS_FILE=$(find_workspace_file) || die "no forge-factory.yaml found walking up from $(pwd). forge-factory owns it."
-WS_DIR=$(dirname "$WS_FILE")
-
-# --- read a scalar key from the module's block ------------------------------
-# Deliberately avoids a yq dependency: forge-factory owns the file and validates
-# its shape, so the block layout is fixed.
-ws_get() {
-    key="$1"
-    awk -v mod="$MODULE" -v key="$key" '
-        $0 ~ "^  " mod ":[[:space:]]*$" { inblock = 1; next }
-        inblock && /^  [^ ]/            { inblock = 0 }
-        inblock && $1 == key ":"        { print $2; exit }
-        inblock {
-            # handle "key: value" where awk splits on the colon-suffixed field
-            if ($1 == key":") { print $2; exit }
-        }
-    ' "$WS_FILE"
-}
-
-LOCAL_PATH=$(ws_get "path")
-VERSION=$(ws_get "version")
+WS_DIR=$(find_workspace_root)
+NAME=$(basename "$MODULE")
+OWNER_REPO=$(printf '%s\n' "$MODULE" | sed 's|^github.com/||')
 
 mkdir -p "$DEST"
 BASENAME=$(basename "$SPEC_REL")
 
-# --- 1. local workspace checkout --------------------------------------------
-if [ -n "$LOCAL_PATH" ] && [ -d "$WS_DIR/$LOCAL_PATH" ]; then
-    SRC="$WS_DIR/$LOCAL_PATH/$SPEC_REL"
-    [ -f "$SRC" ] || die "forge-factory.yaml maps $MODULE to $LOCAL_PATH but $SRC does not exist"
+# --- 1. sibling checkout by basename ----------------------------------------
+if [ -d "$WS_DIR/$NAME" ]; then
+    SRC="$WS_DIR/$NAME/$SPEC_REL"
+    [ -f "$SRC" ] || die "$WS_DIR/$NAME is checked out but $SRC does not exist"
 
     cp "$SRC" "$DEST/$BASENAME"
     printf 'source=local\npath=%s\nresolved=%s\n' "$SRC" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -72,19 +60,45 @@ if [ -n "$LOCAL_PATH" ] && [ -d "$WS_DIR/$LOCAL_PATH" ]; then
     exit 0
 fi
 
-# --- 2. pinned remote tag ---------------------------------------------------
-[ -n "$VERSION" ] || die "$MODULE has no local path and no version tag in forge-factory.yaml"
+# --- 2. the register's internal track ---------------------------------------
+# The register catalogs internal modules under index/internal/<module>/, one
+# file per track; the highest track's current is the version to fetch.
+REGISTER_REPO="golden-register"
+INDEX_REL="index/internal/$MODULE"
 
-OWNER_REPO=$(printf '%s\n' "$MODULE" | sed 's|^github.com/||')
+current_from_index_dir() {
+    track_file=$(ls "$1"/*.json 2>/dev/null | sort -V | tail -1)
+    [ -n "$track_file" ] || return 1
+    sed -n 's/.*"current":"\([^"]*\)".*/\1/p' "$track_file"
+}
 
-# 2a. Unauthenticated raw fetch. Fast, but PUBLIC REPOS ONLY - raw.github
-#     usercontent.com returns 404 for private repos regardless of SSH access.
+VERSION=""
+if [ -d "$WS_DIR/$REGISTER_REPO/$INDEX_REL" ]; then
+    VERSION=$(current_from_index_dir "$WS_DIR/$REGISTER_REPO/$INDEX_REL") \
+        || die "$MODULE has no track in the register checkout - publish it: forge-register publish internal:$MODULE <version> --provenance <revision>"
+else
+    # No register checkout: read the index from the register repo itself.
+    # PUBLIC REPOS ONLY - raw.githubusercontent.com 404s on private repos.
+    REG_OWNER=$(printf '%s\n' "$OWNER_REPO" | cut -d/ -f1)
+    for TRACK_URL in $(printf 'https://api.github.com/repos/%s/%s/contents/%s\n' \
+            "$REG_OWNER" "$REGISTER_REPO" "$INDEX_REL"); do
+        VERSION=$(curl -fsSL "$TRACK_URL" 2>/dev/null \
+            | sed -n 's/.*"download_url": *"\([^"]*\.json\)".*/\1/p' | sort -V | tail -1 \
+            | xargs -r curl -fsSL 2>/dev/null \
+            | sed -n 's/.*"current":"\([^"]*\)".*/\1/p') || true
+    done
+    [ -n "$VERSION" ] || die "$MODULE: no sibling checkout at $WS_DIR/$NAME and the register index is unreachable"
+fi
+
+[ -n "$VERSION" ] || die "$MODULE has no adoptable version in the register"
+
+# 2a. Unauthenticated raw fetch. Fast, but PUBLIC REPOS ONLY.
 URL="https://raw.githubusercontent.com/$OWNER_REPO/$VERSION/$SPEC_REL"
 
 if curl -fsSL "$URL" -o "$DEST/$BASENAME" 2>/dev/null; then
-    printf 'source=remote-raw\nurl=%s\nversion=%s\nresolved=%s\n' \
+    printf 'source=register-raw\nurl=%s\nversion=%s\nresolved=%s\n' \
         "$URL" "$VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEST/.source"
-    echo "resolve-spec: $MODULE -> remote $URL"
+    echo "resolve-spec: $MODULE -> register $VERSION via $URL"
     exit 0
 fi
 
@@ -101,6 +115,6 @@ git clone --quiet --depth 1 --branch "$VERSION" \
     || die "$SPEC_REL not found in $MODULE at $VERSION"
 
 cp "$TMP/repo/$SPEC_REL" "$DEST/$BASENAME"
-printf 'source=remote-ssh\nrepo=git@github.com:%s.git\nversion=%s\nresolved=%s\n' \
+printf 'source=register-ssh\nrepo=git@github.com:%s.git\nversion=%s\nresolved=%s\n' \
     "$OWNER_REPO" "$VERSION" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DEST/.source"
-echo "resolve-spec: $MODULE -> remote ssh $OWNER_REPO@$VERSION"
+echo "resolve-spec: $MODULE -> register $VERSION via ssh $OWNER_REPO"

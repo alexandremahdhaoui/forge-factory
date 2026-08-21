@@ -24,7 +24,6 @@ type Factory struct {
 	Dev          map[string]map[string]DependencySpec `json:"devDependencies,omitempty"`
 	Engines      []Engine                             `json:"engines"`
 	State        *State                               `json:"state,omitempty"`
-	Modules      map[string]Module                    `json:"modules,omitempty"`
 }
 
 // Register names the catalog this workspace resolves versions from. The local
@@ -87,15 +86,6 @@ func (d DependencySpec) MarshalJSON() ([]byte, error) {
 	type alias DependencySpec
 
 	return json.Marshal(alias(d))
-}
-
-// Module maps a module path to a sibling checkout so codegen resolves a spec
-// from the workspace instead of the network. A local checkout wins. The version
-// is the remote fallback when the path is absent.
-type Module struct {
-	Path    string   `json:"path"`
-	Version string   `json:"version,omitempty"`
-	Specs   []string `json:"specs,omitempty"`
 }
 
 // Repo is one member. A repo with no languages is a member that carries no
@@ -257,14 +247,6 @@ func (f Factory) Validate() error {
 	validateDeps("dependencies", f.Dependencies)
 	validateDeps("devDependencies", f.Dev)
 
-	for _, path := range sortedKeys(f.Modules) {
-		m := f.Modules[path]
-
-		if strings.TrimSpace(m.Path) == "" && strings.TrimSpace(m.Version) == "" {
-			add("modules[%s]: needs a path, a version, or both", path)
-		}
-	}
-
 	if len(errs) == 0 {
 		return nil
 	}
@@ -300,11 +282,6 @@ func (f Factory) EngineFor(language string) (string, bool) {
 	}
 
 	return "", false
-}
-
-// ModulePaths returns every declared module path, sorted.
-func (f Factory) ModulePaths() []string {
-	return sortedKeys(f.Modules)
 }
 
 // Languages returns every language any repo declares, sorted, so a sync is

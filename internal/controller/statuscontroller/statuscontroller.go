@@ -33,26 +33,11 @@ const (
 	Diverged = "diverged"
 )
 
-// ModuleStatus is one shared spec measured against what it is pinned at.
-type ModuleStatus struct {
-	Path   string `json:"path"`
-	Pinned string `json:"pinned"`
-	Latest string `json:"latest"`
-}
-
-// Behind is true when the local checkout carries a newer tag than the pin. The
-// pin is what a build without that checkout fetches, so a stale one hands a
-// lone builder a spec the workspace stopped using.
-func (m ModuleStatus) Behind() bool {
-	return m.Pinned != "" && m.Latest != "" && m.Pinned != m.Latest
-}
-
 // Report answers what on disk disagrees with the spec.
 type Report struct {
-	Root    string         `json:"root"`
-	Repos   []RepoStatus   `json:"repos"`
-	Unknown []string       `json:"unknown"`
-	Modules []ModuleStatus `json:"modules"`
+	Root    string       `json:"root"`
+	Repos   []RepoStatus `json:"repos"`
+	Unknown []string     `json:"unknown"`
 
 	// Offline means freshness was skipped: measuring it needs a fetch.
 	Offline bool `json:"offline,omitempty"`
@@ -72,12 +57,6 @@ func (r Report) Agrees() bool {
 		// A diverged checkout holds work origin/main moved past: rebase it or
 		// push it, but do not build a workspace on it.
 		if repo.Freshness == Diverged {
-			return false
-		}
-	}
-
-	for _, m := range r.Modules {
-		if m.Behind() {
 			return false
 		}
 	}
@@ -184,13 +163,6 @@ func (c *Controller) Status(ctx context.Context, f config.Factory, root string, 
 
 	sort.Strings(report.Unknown)
 
-	modules, err := c.modules(ctx, f, root)
-	if err != nil {
-		return Report{}, err
-	}
-
-	report.Modules = modules
-
 	return report, nil
 }
 
@@ -219,43 +191,4 @@ func (c *Controller) measure(ctx context.Context, dir string, status *RepoStatus
 	default:
 		status.Freshness = Fresh
 	}
-}
-
-// modules compares each pinned version against the tag its local checkout
-// carries. Nothing else notices when the two drift apart, because the local
-// checkout always wins and the pin is only read by a builder that lacks it.
-func (c *Controller) modules(
-	ctx context.Context,
-	f config.Factory,
-	root string,
-) ([]ModuleStatus, error) {
-	out := []ModuleStatus{}
-
-	for _, path := range f.ModulePaths() {
-		m := f.Modules[path]
-
-		status := ModuleStatus{Path: path, Pinned: m.Version}
-
-		if m.Path != "" {
-			dir := filepath.Join(root, m.Path)
-
-			isRepo, err := c.isRepo(ctx, dir)
-			if err != nil {
-				return nil, err
-			}
-
-			if isRepo {
-				latest, err := c.git.LatestTag(ctx, dir)
-				if err != nil {
-					return nil, err
-				}
-
-				status.Latest = latest
-			}
-		}
-
-		out = append(out, status)
-	}
-
-	return out, nil
 }

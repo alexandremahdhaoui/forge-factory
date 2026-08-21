@@ -156,10 +156,12 @@ engines:
 	assert.Empty(t, f.Languages())
 }
 
-func TestModulesResolveLocallyOrRemotely(t *testing.T) {
+func TestAModulesMapIsRejected(t *testing.T) {
 	t.Parallel()
 
-	f, err := config.Parse([]byte(`version: "1"
+	// The register subsumed the modules map; the strict parse names the
+	// dead key so every stale factory file fails at once, loudly.
+	_, err := config.Parse([]byte(`version: "1"
 name: golden
 repos:
   - name: a
@@ -171,23 +173,7 @@ engines:
 modules:
   github.com/alexandremahdhaoui/golden-spec:
     path: ./golden-spec
-    version: v0.2.0
-    specs: [api/golden.v1.yaml]
 `))
-	require.NoError(t, err)
-	assert.Equal(t, []string{"github.com/alexandremahdhaoui/golden-spec"}, f.ModulePaths())
-	assert.Equal(t, "./golden-spec", f.Modules["github.com/alexandremahdhaoui/golden-spec"].Path)
-}
-
-func TestAModuleNeedsSomewhereToResolveFrom(t *testing.T) {
-	t.Parallel()
-
-	err := config.Factory{
-		Name:    "x",
-		Repos:   []config.Repo{{Name: "a", URL: "u"}},
-		Engines: []config.Engine{{Alias: "go", Engine: "go://x"}},
-		Modules: map[string]config.Module{"example.com/m": {}},
-	}.Validate()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "needs a path, a version, or both")
+	assert.Contains(t, err.Error(), "modules")
 }

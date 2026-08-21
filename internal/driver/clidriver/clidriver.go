@@ -381,22 +381,7 @@ func describe(f config.Factory) string {
 		fmt.Fprintf(&b, "  %s %s (%d dependencies)\n", l, uri, len(f.DependenciesFor(l)))
 	}
 
-	for _, path := range f.ModulePaths() {
-		m := f.Modules[path]
-		fmt.Fprintf(&b, "  module %s -> %s\n", path, orRemote(m))
-	}
-
 	return b.String()
-}
-
-// orRemote says where a spec comes from. A local checkout wins and the version
-// is the fallback, so a reader sees which one is in play.
-func orRemote(m config.Module) string {
-	if m.Path != "" {
-		return m.Path
-	}
-
-	return m.Version
 }
 
 func renderSync(report synccontroller.Report) string {
@@ -442,13 +427,6 @@ func renderStatus(report statuscontroller.Report) string {
 
 	for _, name := range report.Unknown {
 		fmt.Fprintf(&b, "  %s is a repo the factory does not declare\n", name)
-	}
-
-	for _, m := range report.Modules {
-		if m.Behind() {
-			fmt.Fprintf(&b, "  %s is pinned at %s and the checkout carries %s\n",
-				m.Path, m.Pinned, m.Latest)
-		}
 	}
 
 	return b.String()
