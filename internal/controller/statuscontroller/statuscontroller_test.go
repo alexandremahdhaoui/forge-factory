@@ -45,7 +45,7 @@ func TestStatusReportsACleanWorkspace(t *testing.T) {
 	git.EXPECT().Dirty(mock.Anything, "/w/golden-go").Return(false, nil).Once()
 	git.EXPECT().HeadSHA(mock.Anything, "/w/golden-go").Return("aaa111", nil).Once()
 
-	report, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, factory), "/w")
+	report, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, factory), "/w", true)
 	require.NoError(t, err)
 
 	assert.True(t, report.Agrees())
@@ -63,7 +63,7 @@ func TestStatusReportsAMemberThatIsNotThere(t *testing.T) {
 	fs.EXPECT().List("/w").Return([]string{}, nil).Once()
 
 	report, err := statuscontroller.New(fs, gitadaptermock.NewMockGit(t)).
-		Status(t.Context(), parse(t, factory), "/w")
+		Status(t.Context(), parse(t, factory), "/w", true)
 	require.NoError(t, err)
 
 	assert.False(t, report.Agrees())
@@ -79,7 +79,7 @@ func TestStatusIgnoresAFileSittingBesideTheMembers(t *testing.T) {
 	fs.EXPECT().IsDir("/w/forge-factory.yaml").Return(false, nil).Once()
 
 	report, err := statuscontroller.New(fs, gitadaptermock.NewMockGit(t)).
-		Status(t.Context(), parse(t, factory), "/w")
+		Status(t.Context(), parse(t, factory), "/w", true)
 	require.NoError(t, err)
 	assert.Empty(t, report.Unknown, "git refuses to run inside a file")
 }
@@ -92,7 +92,7 @@ func TestStatusReportsAFailureInspectingAPath(t *testing.T) {
 	fs.EXPECT().IsDir("/w/golden-go").Return(false, assert.AnError).Once()
 
 	_, err := statuscontroller.New(fs, gitadaptermock.NewMockGit(t)).
-		Status(t.Context(), parse(t, factory), "/w")
+		Status(t.Context(), parse(t, factory), "/w", true)
 	require.ErrorIs(t, err, assert.AnError)
 }
 
@@ -107,7 +107,7 @@ func TestStatusReportsADirectoryThatIsNotARepo(t *testing.T) {
 	git := gitadaptermock.NewMockGit(t)
 	git.EXPECT().IsRepo(mock.Anything, "/w/golden-go").Return(false, nil).Once()
 
-	report, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, factory), "/w")
+	report, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, factory), "/w", true)
 	require.NoError(t, err)
 
 	assert.False(t, report.Agrees())
@@ -133,7 +133,7 @@ func TestStatusReportsARepoTheFactoryDoesNotDeclare(t *testing.T) {
 	git.EXPECT().Dirty(mock.Anything, mock.Anything).Return(true, nil).Once()
 	git.EXPECT().HeadSHA(mock.Anything, mock.Anything).Return("", assert.AnError).Once()
 
-	report, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, factory), "/w")
+	report, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, factory), "/w", true)
 	require.NoError(t, err)
 
 	assert.False(t, report.Agrees())
@@ -149,7 +149,7 @@ func TestStatusFailsWhenTheDiskCannotBeRead(t *testing.T) {
 	fs.EXPECT().Exists(mock.Anything).Return(false, assert.AnError).Once()
 
 	_, err := statuscontroller.New(fs, gitadaptermock.NewMockGit(t)).
-		Status(t.Context(), parse(t, factory), "/w")
+		Status(t.Context(), parse(t, factory), "/w", true)
 	require.ErrorIs(t, err, assert.AnError)
 }
 
@@ -161,7 +161,7 @@ func TestStatusFailsWhenListingTheRootFails(t *testing.T) {
 	fs.EXPECT().List("/w").Return(nil, assert.AnError).Once()
 
 	_, err := statuscontroller.New(fs, gitadaptermock.NewMockGit(t)).
-		Status(t.Context(), parse(t, factory), "/w")
+		Status(t.Context(), parse(t, factory), "/w", true)
 	require.ErrorIs(t, err, assert.AnError)
 }
 
@@ -175,7 +175,7 @@ func TestStatusFailsWhenAMemberCannotBeInspected(t *testing.T) {
 	git := gitadaptermock.NewMockGit(t)
 	git.EXPECT().IsRepo(mock.Anything, "/w/golden-go").Return(false, assert.AnError).Once()
 
-	_, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, factory), "/w")
+	_, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, factory), "/w", true)
 	require.ErrorIs(t, err, assert.AnError)
 }
 
@@ -190,7 +190,7 @@ func TestStatusFailsWhenDirtyCannotBeAnswered(t *testing.T) {
 	git.EXPECT().IsRepo(mock.Anything, mock.Anything).Return(true, nil).Once()
 	git.EXPECT().Dirty(mock.Anything, mock.Anything).Return(false, assert.AnError).Once()
 
-	_, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, factory), "/w")
+	_, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, factory), "/w", true)
 	require.ErrorIs(t, err, assert.AnError)
 }
 
@@ -205,7 +205,7 @@ func TestStatusFailsWhenAnUnknownDirectoryCannotBeInspected(t *testing.T) {
 	git := gitadaptermock.NewMockGit(t)
 	git.EXPECT().IsRepo(mock.Anything, "/w/stray").Return(false, assert.AnError).Once()
 
-	_, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, factory), "/w")
+	_, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, factory), "/w", true)
 	require.ErrorIs(t, err, assert.AnError)
 }
 
@@ -242,7 +242,7 @@ func TestStatusReportsAPinThatFellBehindItsCheckout(t *testing.T) {
 	git.EXPECT().IsRepo(mock.Anything, "/w/spec").Return(true, nil).Once()
 	git.EXPECT().LatestTag(mock.Anything, "/w/spec").Return("v0.3.0", nil).Once()
 
-	report, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, withModules), "/w")
+	report, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, withModules), "/w", true)
 	require.NoError(t, err)
 
 	require.Len(t, report.Modules, 2)
@@ -278,7 +278,7 @@ func TestAPinThatMatchesItsCheckoutAgrees(t *testing.T) {
 	git.EXPECT().IsRepo(mock.Anything, "/w/spec").Return(true, nil).Once()
 	git.EXPECT().LatestTag(mock.Anything, "/w/spec").Return("v0.1.0", nil).Once()
 
-	report, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, withModules), "/w")
+	report, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, withModules), "/w", true)
 	require.NoError(t, err)
 	assert.True(t, report.Agrees())
 }
@@ -295,6 +295,100 @@ func TestStatusReportsAFailureReadingTags(t *testing.T) {
 	git.EXPECT().IsRepo(mock.Anything, "/w/spec").Return(true, nil).Once()
 	git.EXPECT().LatestTag(mock.Anything, "/w/spec").Return("", assert.AnError).Once()
 
-	_, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, withModules), "/w")
+	_, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, withModules), "/w", true)
 	require.ErrorIs(t, err, assert.AnError)
+}
+
+func measured(t *testing.T, ahead, behind int) statuscontroller.Report {
+	t.Helper()
+
+	fs := fsadaptermock.NewMockFS(t)
+	fs.EXPECT().Exists("/w/golden-go").Return(true, nil).Once()
+	fs.EXPECT().IsDir("/w/golden-go").Return(true, nil).Once()
+	fs.EXPECT().List("/w").Return([]string{"golden-go"}, nil).Once()
+
+	git := gitadaptermock.NewMockGit(t)
+	git.EXPECT().IsRepo(mock.Anything, "/w/golden-go").Return(true, nil).Once()
+	git.EXPECT().Dirty(mock.Anything, "/w/golden-go").Return(false, nil).Once()
+	git.EXPECT().HeadSHA(mock.Anything, "/w/golden-go").Return("aaa111", nil).Once()
+	git.EXPECT().Fetch(mock.Anything, "/w/golden-go").Return(nil).Once()
+	git.EXPECT().AheadBehind(mock.Anything, "/w/golden-go", "origin/main").
+		Return(ahead, behind, nil).Once()
+
+	report, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, factory), "/w", false)
+	require.NoError(t, err)
+
+	return report
+}
+
+func TestFreshnessAheadIsFine(t *testing.T) {
+	t.Parallel()
+
+	report := measured(t, 2, 0)
+	assert.Equal(t, statuscontroller.Ahead, report.Repos[0].Freshness)
+	assert.True(t, report.Agrees())
+}
+
+func TestFreshnessBehindWarnsButAgrees(t *testing.T) {
+	t.Parallel()
+
+	report := measured(t, 0, 3)
+	assert.Equal(t, statuscontroller.Behind, report.Repos[0].Freshness)
+	assert.True(t, report.Agrees(), "behind warns; only diverged fails")
+}
+
+func TestFreshnessDivergedFails(t *testing.T) {
+	t.Parallel()
+
+	report := measured(t, 2, 3)
+	assert.Equal(t, statuscontroller.Diverged, report.Repos[0].Freshness)
+	assert.False(t, report.Agrees(),
+		"a diverged checkout holds work origin/main moved past")
+}
+
+func TestFreshnessUpToDate(t *testing.T) {
+	t.Parallel()
+
+	report := measured(t, 0, 0)
+	assert.Equal(t, statuscontroller.Fresh, report.Repos[0].Freshness)
+}
+
+func TestARepoThatCannotFetchStaysUnmeasured(t *testing.T) {
+	t.Parallel()
+
+	fs := fsadaptermock.NewMockFS(t)
+	fs.EXPECT().Exists("/w/golden-go").Return(true, nil).Once()
+	fs.EXPECT().IsDir("/w/golden-go").Return(true, nil).Once()
+	fs.EXPECT().List("/w").Return([]string{"golden-go"}, nil).Once()
+
+	git := gitadaptermock.NewMockGit(t)
+	git.EXPECT().IsRepo(mock.Anything, "/w/golden-go").Return(true, nil).Once()
+	git.EXPECT().Dirty(mock.Anything, "/w/golden-go").Return(false, nil).Once()
+	git.EXPECT().HeadSHA(mock.Anything, "/w/golden-go").Return("aaa111", nil).Once()
+	git.EXPECT().Fetch(mock.Anything, "/w/golden-go").Return(assert.AnError).Once()
+
+	report, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, factory), "/w", false)
+	require.NoError(t, err, "freshness is a warning system, not a gate on reading state")
+	assert.Empty(t, report.Repos[0].Freshness)
+}
+
+func TestARepoWithNoMainStaysUnmeasured(t *testing.T) {
+	t.Parallel()
+
+	fs := fsadaptermock.NewMockFS(t)
+	fs.EXPECT().Exists("/w/golden-go").Return(true, nil).Once()
+	fs.EXPECT().IsDir("/w/golden-go").Return(true, nil).Once()
+	fs.EXPECT().List("/w").Return([]string{"golden-go"}, nil).Once()
+
+	git := gitadaptermock.NewMockGit(t)
+	git.EXPECT().IsRepo(mock.Anything, "/w/golden-go").Return(true, nil).Once()
+	git.EXPECT().Dirty(mock.Anything, "/w/golden-go").Return(false, nil).Once()
+	git.EXPECT().HeadSHA(mock.Anything, "/w/golden-go").Return("aaa111", nil).Once()
+	git.EXPECT().Fetch(mock.Anything, "/w/golden-go").Return(nil).Once()
+	git.EXPECT().AheadBehind(mock.Anything, "/w/golden-go", "origin/main").
+		Return(0, 0, assert.AnError).Once()
+
+	report, err := statuscontroller.New(fs, git).Status(t.Context(), parse(t, factory), "/w", false)
+	require.NoError(t, err)
+	assert.Empty(t, report.Repos[0].Freshness)
 }

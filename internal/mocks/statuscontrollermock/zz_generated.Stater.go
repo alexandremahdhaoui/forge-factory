@@ -40,8 +40,8 @@ func (_m *MockStater) EXPECT() *MockStater_Expecter {
 }
 
 // Status provides a mock function for the type MockStater
-func (_mock *MockStater) Status(ctx context.Context, f config.Factory, root string) (statuscontroller.Report, error) {
-	ret := _mock.Called(ctx, f, root)
+func (_mock *MockStater) Status(ctx context.Context, f config.Factory, root string, offline bool) (statuscontroller.Report, error) {
+	ret := _mock.Called(ctx, f, root, offline)
 
 	if len(ret) == 0 {
 		panic("no return value specified for Status")
@@ -49,16 +49,16 @@ func (_mock *MockStater) Status(ctx context.Context, f config.Factory, root stri
 
 	var r0 statuscontroller.Report
 	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, config.Factory, string) (statuscontroller.Report, error)); ok {
-		return returnFunc(ctx, f, root)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, config.Factory, string, bool) (statuscontroller.Report, error)); ok {
+		return returnFunc(ctx, f, root, offline)
 	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, config.Factory, string) statuscontroller.Report); ok {
-		r0 = returnFunc(ctx, f, root)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, config.Factory, string, bool) statuscontroller.Report); ok {
+		r0 = returnFunc(ctx, f, root, offline)
 	} else {
 		r0 = ret.Get(0).(statuscontroller.Report)
 	}
-	if returnFunc, ok := ret.Get(1).(func(context.Context, config.Factory, string) error); ok {
-		r1 = returnFunc(ctx, f, root)
+	if returnFunc, ok := ret.Get(1).(func(context.Context, config.Factory, string, bool) error); ok {
+		r1 = returnFunc(ctx, f, root, offline)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -74,11 +74,12 @@ type MockStater_Status_Call struct {
 //   - ctx context.Context
 //   - f config.Factory
 //   - root string
-func (_e *MockStater_Expecter) Status(ctx any, f any, root any) *MockStater_Status_Call {
-	return &MockStater_Status_Call{Call: _e.mock.On("Status", ctx, f, root)}
+//   - offline bool
+func (_e *MockStater_Expecter) Status(ctx any, f any, root any, offline any) *MockStater_Status_Call {
+	return &MockStater_Status_Call{Call: _e.mock.On("Status", ctx, f, root, offline)}
 }
 
-func (_c *MockStater_Status_Call) Run(run func(ctx context.Context, f config.Factory, root string)) *MockStater_Status_Call {
+func (_c *MockStater_Status_Call) Run(run func(ctx context.Context, f config.Factory, root string, offline bool)) *MockStater_Status_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
@@ -92,10 +93,15 @@ func (_c *MockStater_Status_Call) Run(run func(ctx context.Context, f config.Fac
 		if args[2] != nil {
 			arg2 = args[2].(string)
 		}
+		var arg3 bool
+		if args[3] != nil {
+			arg3 = args[3].(bool)
+		}
 		run(
 			arg0,
 			arg1,
 			arg2,
+			arg3,
 		)
 	})
 	return _c
@@ -106,7 +112,7 @@ func (_c *MockStater_Status_Call) Return(report statuscontroller.Report, err err
 	return _c
 }
 
-func (_c *MockStater_Status_Call) RunAndReturn(run func(ctx context.Context, f config.Factory, root string) (statuscontroller.Report, error)) *MockStater_Status_Call {
+func (_c *MockStater_Status_Call) RunAndReturn(run func(ctx context.Context, f config.Factory, root string, offline bool) (statuscontroller.Report, error)) *MockStater_Status_Call {
 	_c.Call.Return(run)
 	return _c
 }

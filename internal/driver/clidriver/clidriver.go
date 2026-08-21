@@ -12,6 +12,7 @@ import (
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/clonecontroller"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/resolvecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/revisioncontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/speccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller"
@@ -32,6 +33,7 @@ var (
 
 type Driver struct {
 	offline bool
+	prune   bool
 	out     io.Writer
 	fs      fsadapter.FS
 	clone   clonecontroller.Cloner
@@ -67,9 +69,9 @@ func (d *Driver) Run(ctx context.Context, args []string) error {
 	case "validate":
 		return d.write(describe(f))
 	case "clone":
-		return d.runClone(ctx, f, root)
+		return d.runClone(ctx, f, path, root)
 	case "sync":
-		return d.runSync(ctx, f, root)
+		return d.runSync(ctx, f, path, root)
 	case "status":
 		return d.runStatus(ctx, f, root)
 	case "add":
@@ -77,7 +79,7 @@ func (d *Driver) Run(ctx context.Context, args []string) error {
 	case "bump":
 		return d.runBump(ctx, f, path, root, rest)
 	case "checkout":
-		return d.runCheckout(ctx, f, root, rest)
+		return d.runCheckout(ctx, f, path, root, rest)
 	default:
 		return fmt.Errorf("unknown subcommand %q: %w", verb, ErrUsage)
 	}
@@ -85,7 +87,7 @@ func (d *Driver) Run(ctx context.Context, args []string) error {
 
 // runClone fetches what is missing and then syncs, because a member with no
 // manifest is not yet something forge can build.
-func (d *Driver) runClone(ctx context.Context, f config.Factory, root string) error {
+func (d *Driver) runClone(ctx context.Context, f config.Factory, path, root string) error {
 	report, err := d.clone.Clone(ctx, f, root)
 	if err != nil {
 		return err
@@ -95,7 +97,7 @@ func (d *Driver) runClone(ctx context.Context, f config.Factory, root string) er
 		return err
 	}
 
-	return d.runSync(ctx, f, root)
+	return d.runSync(ctx, f, path, root)
 }
 
 func renderClone(report clonecontroller.Report) string {
@@ -114,7 +116,7 @@ func renderClone(report clonecontroller.Report) string {
 	return b.String()
 }
 
-func (d *Driver) runSync(ctx context.Context, f config.Factory, root string) error {
+func (d *Driver) runSync(ctx context.Context, f config.Factory, path, root string) error {
 	report, err := d.sync.Sync(ctx, f, root)
 	if err != nil {
 		return err
@@ -122,6 +124,19 @@ func (d *Driver) runSync(ctx context.Context, f config.Factory, root string) err
 
 	if err := d.write(renderSync(report)); err != nil {
 		return err
+	}
+
+	if d.prune {
+		d.prune = false // one pass: the re-sync must not loop
+
+		updated, pruned, err := d.pruneDeadPins(path, report)
+		if err != nil {
+			return err
+		}
+
+		if pruned {
+			return d.runSync(ctx, updated, path, root)
+		}
 	}
 
 	// A sync that writes a version nothing can resolve leaves every member
@@ -134,8 +149,56 @@ func (d *Driver) runSync(ctx context.Context, f config.Factory, root string) err
 	return nil
 }
 
+// pruneDeadPins deletes the soft pins the resolver named dead, so the factory
+// file ends the run already clean. It acts only on what the notes said.
+func (d *Driver) pruneDeadPins(
+	path string,
+	report synccontroller.Report,
+) (config.Factory, bool, error) {
+	var dead []string
+
+	for _, note := range report.Notes {
+		if dep, ok := resolvecontroller.DeadPin(note); ok {
+			dead = append(dead, dep)
+		}
+	}
+
+	if len(dead) == 0 {
+		return config.Factory{}, false, nil
+	}
+
+	raw, err := d.fs.ReadFile(path)
+	if err != nil {
+		return config.Factory{}, false, err
+	}
+
+	next, edits, err := speccontroller.PrunePins(raw, dead)
+	if err != nil {
+		return config.Factory{}, false, err
+	}
+
+	if err := d.fs.WriteFile(path, next); err != nil {
+		return config.Factory{}, false, err
+	}
+
+	for _, e := range edits {
+		err := d.write(fmt.Sprintf("%s:%d pruned a dead pin\n  was %s\n  now %s\n",
+			path, e.Line, strings.TrimSpace(e.Was), strings.TrimSpace(e.Now)))
+		if err != nil {
+			return config.Factory{}, false, err
+		}
+	}
+
+	updated, err := config.Parse(next)
+	if err != nil {
+		return config.Factory{}, false, err
+	}
+
+	return updated, true, nil
+}
+
 func (d *Driver) runStatus(ctx context.Context, f config.Factory, root string) error {
-	report, err := d.state.Status(ctx, f, root)
+	report, err := d.state.Status(ctx, f, root, d.offline)
 	if err != nil {
 		return err
 	}
@@ -181,7 +244,7 @@ func (d *Driver) runAdd(ctx context.Context, path, root string, rest []string) e
 		return err
 	}
 
-	return d.runSync(ctx, updated, root)
+	return d.runSync(ctx, updated, path, root)
 }
 
 func (d *Driver) runBump(
@@ -223,13 +286,13 @@ func (d *Driver) runBump(
 		return err
 	}
 
-	return d.runSync(ctx, updated, root)
+	return d.runSync(ctx, updated, path, root)
 }
 
 func (d *Driver) runCheckout(
 	ctx context.Context,
 	f config.Factory,
-	root string,
+	path, root string,
 	rest []string,
 ) error {
 	if len(rest) != 1 {
@@ -245,7 +308,7 @@ func (d *Driver) runCheckout(
 		return err
 	}
 
-	return d.runSync(ctx, f, root)
+	return d.runSync(ctx, f, path, root)
 }
 
 func (d *Driver) load(
@@ -261,12 +324,15 @@ func (d *Driver) load(
 		"do not fail when a command that needs the network could not run")
 	registerHead := fs.Bool("register-head", false,
 		"resolve from the register checkout as it stands, ignoring the pinned revision")
+	prune := fs.Bool("prune-pins", false,
+		"delete the soft pins the resolver names dead, then sync again")
 
 	if err := fs.Parse(args); err != nil {
 		return config.Factory{}, "", "", nil, fmt.Errorf("parsing flags: %w", err)
 	}
 
 	d.offline = *offline
+	d.prune = *prune
 
 	raw, err := d.fs.ReadFile(*path)
 	if err != nil {
@@ -366,6 +432,10 @@ func renderStatus(report statuscontroller.Report) string {
 
 	fmt.Fprintf(&b, "factory %s\n", report.Root)
 
+	if report.Offline {
+		fmt.Fprintf(&b, "  freshness skipped (--offline): measuring it needs a fetch\n")
+	}
+
 	for _, repo := range report.Repos {
 		fmt.Fprintf(&b, "  %s %s\n", repo.Name, describeRepo(repo))
 	}
@@ -390,11 +460,24 @@ func describeRepo(repo statuscontroller.RepoStatus) string {
 		return "is missing"
 	case !repo.Cloned:
 		return "is a directory and not a git repo"
-	case repo.Dirty:
-		return short(repo.Head) + " dirty"
-	default:
-		return short(repo.Head)
 	}
+
+	out := short(repo.Head)
+	if repo.Dirty {
+		out += " dirty"
+	}
+
+	switch repo.Freshness {
+	case statuscontroller.Ahead:
+		out += fmt.Sprintf(" (%d ahead of origin/main)", repo.Ahead)
+	case statuscontroller.Behind:
+		out += fmt.Sprintf(" (%d behind origin/main - pull it)", repo.Behind)
+	case statuscontroller.Diverged:
+		out += fmt.Sprintf(" (diverged: %d ahead, %d behind origin/main - rebase or push before building on it)",
+			repo.Ahead, repo.Behind)
+	}
+
+	return out
 }
 
 func renderCheckout(result revisioncontroller.Result) string {

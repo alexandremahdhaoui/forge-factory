@@ -249,6 +249,22 @@ func (c *Controller) applyPin(v view, language, name string, d config.Dependency
 		where, d.Pin, track.Prefix, track.Current)}, nil
 }
 
+// DeadPin reads a note back: when it names a pin for removal, it answers the
+// language:name the pin sits on. The note format and this parser live side by
+// side, so sync --prune-pins acts on exactly what the resolver said.
+func DeadPin(note string) (string, bool) {
+	if !strings.HasSuffix(note, "remove this pin") {
+		return "", false
+	}
+
+	fields := strings.Fields(note)
+	if len(fields) < 3 || fields[0] != "soft" || fields[1] != "pin" {
+		return "", false
+	}
+
+	return fields[2], true
+}
+
 // registerDir finds the register checkout: an explicit path, or the directory
 // the URL names, rooted in the workspace.
 func (c *Controller) registerDir(f config.Factory, root string) (string, error) {

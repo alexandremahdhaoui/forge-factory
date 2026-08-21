@@ -1,6 +1,7 @@
 package speccontroller
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -103,6 +104,104 @@ func Bump(raw []byte, dep, version string) ([]byte, Edit, error) {
 	}
 
 	return out, Edit{Line: at + 1, Was: was, Now: now}, nil
+}
+
+// PrunePins rewrites named dependencies with their pin fields dropped, keeping
+// track and wraps. The deps are language:name pairs, the shape DeadPin
+// answers. Entries must be inline objects - the only shape sync writes.
+func PrunePins(raw []byte, deps []string) ([]byte, []Edit, error) {
+	f, err := config.Parse(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	lines := strings.Split(string(raw), "\n")
+	edits := []Edit{}
+
+	for _, dep := range deps {
+		language, name := split(dep)
+
+		d, ok := f.Dependencies[language][name]
+		if !ok {
+			d, ok = f.Dev[language][name]
+		}
+
+		if !ok {
+			return nil, nil, fmt.Errorf("pruning %q: %w", dep, ErrNotFound)
+		}
+
+		d.Pin, d.Mode, d.Reason, d.Expires = "", "", "", ""
+
+		val, err := json.Marshal(d)
+		if err != nil {
+			return nil, nil, fmt.Errorf("pruning %q: %w", dep, err)
+		}
+
+		at := findDep(lines, language, name)
+		if at < 0 {
+			return nil, nil, fmt.Errorf("pruning %q: %w", dep, ErrNotFound)
+		}
+
+		m := depLine.FindStringSubmatch(lines[at])
+		was := lines[at]
+		now := fmt.Sprintf("%s%s%s%s: %s", m[1], m[2], m[3], m[4], string(val))
+		lines[at] = now
+
+		edits = append(edits, Edit{Line: at + 1, Was: was, Now: now})
+	}
+
+	out := []byte(strings.Join(lines, "\n"))
+
+	if _, err := config.Parse(out); err != nil {
+		return nil, nil, fmt.Errorf("pruning pins: %w", err)
+	}
+
+	return out, edits, nil
+}
+
+// findDep locates one dependency line by language and name, in either the
+// dependencies or the devDependencies section.
+func findDep(lines []string, language, name string) int {
+	var (
+		inDeps  bool
+		current string
+	)
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		if !strings.HasPrefix(line, " ") {
+			inDeps = trimmed == "dependencies:" || trimmed == "devDependencies:"
+			current = ""
+
+			continue
+		}
+
+		if !inDeps {
+			continue
+		}
+
+		m := depLine.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+
+		if len(m[1]) <= 2 {
+			current = m[3]
+
+			continue
+		}
+
+		if m[3] == name && current == language {
+			return i
+		}
+	}
+
+	return -1
 }
 
 // Add appends a member to the repos list.

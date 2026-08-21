@@ -148,7 +148,7 @@ func TestStatusFailsWhenTheWorkspaceDisagrees(t *testing.T) {
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.state.EXPECT().Status(mock.Anything, mock.Anything, mock.Anything).Return(
+	h.state.EXPECT().Status(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		statuscontroller.Report{
 			Root: "/w",
 			Repos: []statuscontroller.RepoStatus{
@@ -176,7 +176,7 @@ func TestStatusPassesWhenEverythingAgrees(t *testing.T) {
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.state.EXPECT().Status(mock.Anything, mock.Anything, mock.Anything).Return(
+	h.state.EXPECT().Status(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		statuscontroller.Report{Root: "/w", Repos: []statuscontroller.RepoStatus{
 			{Name: "a", Present: true, Cloned: true, Head: "aaa"},
 		}}, nil).Once()
@@ -189,7 +189,7 @@ func TestStatusReportsAFailure(t *testing.T) {
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.state.EXPECT().Status(mock.Anything, mock.Anything, mock.Anything).
+	h.state.EXPECT().Status(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(statuscontroller.Report{}, assert.AnError).Once()
 
 	require.ErrorIs(t, h.driver.Run(t.Context(), []string{"status"}), assert.AnError)
@@ -441,7 +441,7 @@ func TestStatusNamesAPinThatFellBehind(t *testing.T) {
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.state.EXPECT().Status(mock.Anything, mock.Anything, mock.Anything).Return(
+	h.state.EXPECT().Status(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		statuscontroller.Report{
 			Root: "/w",
 			Modules: []statuscontroller.ModuleStatus{
@@ -563,4 +563,147 @@ func TestRegisterHeadClearsThePinnedRevision(t *testing.T) {
 	require.NotNil(t, saw.Register)
 	assert.Empty(t, saw.Register.Revision,
 		"the canary must see the candidate index, not the published tag")
+}
+
+func TestSyncPrunePinsRewritesTheFactoryAndSyncsAgain(t *testing.T) {
+	t.Parallel()
+
+	pinned := `version: "1"
+name: golden
+repos:
+  - name: golden-go
+    url: u
+    languages: [go]
+register:
+  url: git@example.com:golden-register.git
+dependencies:
+  go:
+    example.com/pkg: { track: "1", pin: v1.5.0, mode: soft, reason: dead }
+engines:
+  - alias: go
+    engine: go://example.com/lang-go
+`
+
+	h := newHarness(t)
+	h.reads(pinned)
+	h.recordWrites()
+
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).Return(
+		synccontroller.Report{Root: "/w", Notes: []string{
+			"soft pin go:example.com/pkg v1.5.0 is behind track 1 (v1.6.0) - the register is newer; remove this pin",
+		}}, nil).Once()
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, f config.Factory, _ string) (synccontroller.Report, error) {
+			require.Empty(t, f.Dependencies["go"]["example.com/pkg"].Pin,
+				"the re-sync runs on the pruned factory")
+
+			return synccontroller.Report{Root: "/w"}, nil
+		}).Once()
+
+	require.NoError(t, h.driver.Run(t.Context(),
+		[]string{"sync", "--root", "/w", "--prune-pins"}))
+	assert.Contains(t, h.out.String(), "pruned a dead pin")
+	assert.Contains(t, h.wrote["forge-factory.yaml"], `{"track":"1"}`)
+}
+
+func TestSyncPrunePinsWithNothingDeadSyncsOnce(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).
+		Return(synccontroller.Report{Root: "/w"}, nil).Once()
+
+	require.NoError(t, h.driver.Run(t.Context(),
+		[]string{"sync", "--root", "/w", "--prune-pins"}))
+	assert.NotContains(t, h.out.String(), "pruned")
+}
+
+func TestStatusRendersFreshness(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.state.EXPECT().Status(mock.Anything, mock.Anything, mock.Anything, false).Return(
+		statuscontroller.Report{Root: "/w", Repos: []statuscontroller.RepoStatus{
+			{
+				Name: "a", Present: true, Cloned: true, Head: "aaa111",
+				Freshness: statuscontroller.Ahead, Ahead: 2,
+			},
+			{
+				Name: "b", Present: true, Cloned: true, Head: "bbb222",
+				Freshness: statuscontroller.Behind, Behind: 3,
+			},
+			{
+				Name: "c", Present: true, Cloned: true, Head: "ccc333", Dirty: true,
+				Freshness: statuscontroller.Diverged, Ahead: 1, Behind: 2,
+			},
+		}}, nil).Once()
+
+	err := h.driver.Run(t.Context(), []string{"status", "--root", "/w"})
+	require.ErrorIs(t, err, clidriver.ErrDrift, "a diverged checkout fails status")
+	assert.Contains(t, h.out.String(), "2 ahead of origin/main")
+	assert.Contains(t, h.out.String(), "3 behind origin/main - pull it")
+	assert.Contains(t, h.out.String(), "diverged: 1 ahead, 2 behind")
+	assert.Contains(t, h.out.String(), "ccc333 dirty (diverged")
+}
+
+func TestStatusOfflineSkipsFreshnessAndSaysSo(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.state.EXPECT().Status(mock.Anything, mock.Anything, mock.Anything, true).Return(
+		statuscontroller.Report{Root: "/w", Offline: true, Repos: []statuscontroller.RepoStatus{
+			{Name: "a", Present: true, Cloned: true, Head: "aaa111"},
+		}}, nil).Once()
+
+	require.NoError(t, h.driver.Run(t.Context(), []string{"status", "--root", "/w", "--offline"}))
+	assert.Contains(t, h.out.String(), "freshness skipped (--offline)")
+}
+
+func TestPrunePinsReportsADependencyTheFactoryLost(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).Return(
+		synccontroller.Report{Root: "/w", Notes: []string{
+			"soft pin go:example.com/ghost v1 is behind track 1 (v2) - the register is newer; remove this pin",
+		}}, nil).Once()
+
+	err := h.driver.Run(t.Context(), []string{"sync", "--root", "/w", "--prune-pins"})
+	require.ErrorIs(t, err, speccontroller.ErrNotFound)
+}
+
+func TestPrunePinsReportsAFailedWrite(t *testing.T) {
+	t.Parallel()
+
+	pinned := `version: "1"
+name: golden
+repos:
+  - name: golden-go
+    url: u
+    languages: [go]
+register:
+  url: git@example.com:golden-register.git
+dependencies:
+  go:
+    example.com/pkg: { pin: v1.5.0, mode: soft, reason: dead }
+engines:
+  - alias: go
+    engine: go://example.com/lang-go
+`
+
+	h := newHarness(t)
+	h.reads(pinned)
+	failed := errors.New("disk full")
+	h.fs.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(failed).Once()
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).Return(
+		synccontroller.Report{Root: "/w", Notes: []string{
+			"soft pin go:example.com/pkg v1.5.0 is behind track 1 (v1.6.0) - the register is newer; remove this pin",
+		}}, nil).Once()
+
+	err := h.driver.Run(t.Context(), []string{"sync", "--root", "/w", "--prune-pins"})
+	require.ErrorIs(t, err, failed)
 }

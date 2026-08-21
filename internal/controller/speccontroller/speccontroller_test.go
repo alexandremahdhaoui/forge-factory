@@ -209,3 +209,62 @@ repos:
 	require.NoError(t, err)
 	require.Len(t, f.Repos, 2)
 }
+
+const pinned = `version: "1"
+name: golden
+repos:
+  - name: golden-go
+    url: git@github.com:x/golden-go.git
+    languages: [go]
+register:
+  url: git@github.com:x/golden-register.git
+dependencies:
+  go:
+    example.com/pkg: { track: "1", pin: v1.5.0, mode: soft, reason: "old, workaround" }
+devDependencies:
+  go:
+    example.com/tool: { pin: v2.0.0, mode: soft, reason: dead }
+engines:
+  - alias: go
+    engine: go://example.com/lang-go
+`
+
+func TestPrunePinsDropsThePinAndKeepsTheTrack(t *testing.T) {
+	t.Parallel()
+
+	out, edits, err := speccontroller.PrunePins([]byte(pinned), []string{"go:example.com/pkg"})
+	require.NoError(t, err)
+	require.Len(t, edits, 1)
+	assert.Contains(t, edits[0].Now, `{"track":"1"}`)
+
+	f, err := config.Parse(out)
+	require.NoError(t, err)
+	assert.Empty(t, f.Dependencies["go"]["example.com/pkg"].Pin)
+	assert.Equal(t, "1", f.Dependencies["go"]["example.com/pkg"].Track)
+	assert.Equal(t, "v2.0.0", f.Dev["go"]["example.com/tool"].Pin, "only the named pin goes")
+}
+
+func TestPrunePinsReachesDevDependencies(t *testing.T) {
+	t.Parallel()
+
+	out, _, err := speccontroller.PrunePins([]byte(pinned), []string{"go:example.com/tool"})
+	require.NoError(t, err)
+
+	f, err := config.Parse(out)
+	require.NoError(t, err)
+	assert.Empty(t, f.Dev["go"]["example.com/tool"].Pin)
+}
+
+func TestPrunePinsRefusesADependencyNobodyDeclares(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := speccontroller.PrunePins([]byte(pinned), []string{"go:example.com/ghost"})
+	require.ErrorIs(t, err, speccontroller.ErrNotFound)
+}
+
+func TestPrunePinsRefusesAFactoryThatDoesNotParse(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := speccontroller.PrunePins([]byte("nonsense: ["), nil)
+	require.Error(t, err)
+}

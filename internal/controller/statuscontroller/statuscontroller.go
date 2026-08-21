@@ -17,7 +17,21 @@ type RepoStatus struct {
 	Cloned  bool   `json:"cloned"`
 	Dirty   bool   `json:"dirty"`
 	Head    string `json:"head,omitempty"`
+
+	// Freshness measures the checkout against origin/main: ahead is fine,
+	// behind warns, diverged fails. Empty when it could not be measured.
+	Freshness string `json:"freshness,omitempty"`
+	Ahead     int    `json:"ahead,omitempty"`
+	Behind    int    `json:"behind,omitempty"`
 }
+
+// Freshness labels.
+const (
+	Fresh    = "fresh"
+	Ahead    = "ahead"
+	Behind   = "behind"
+	Diverged = "diverged"
+)
 
 // ModuleStatus is one shared spec measured against what it is pinned at.
 type ModuleStatus struct {
@@ -39,6 +53,9 @@ type Report struct {
 	Repos   []RepoStatus   `json:"repos"`
 	Unknown []string       `json:"unknown"`
 	Modules []ModuleStatus `json:"modules"`
+
+	// Offline means freshness was skipped: measuring it needs a fetch.
+	Offline bool `json:"offline,omitempty"`
 }
 
 // Agrees is true when every member is cloned and nothing on disk is unclaimed.
@@ -49,6 +66,12 @@ func (r Report) Agrees() bool {
 
 	for _, repo := range r.Repos {
 		if !repo.Cloned {
+			return false
+		}
+
+		// A diverged checkout holds work origin/main moved past: rebase it or
+		// push it, but do not build a workspace on it.
+		if repo.Freshness == Diverged {
 			return false
 		}
 	}
@@ -63,8 +86,9 @@ func (r Report) Agrees() bool {
 }
 
 // Stater is what a driver accepts, declared in the package that implements it.
+// Offline skips the fetch that freshness needs, and the report says so.
 type Stater interface {
-	Status(ctx context.Context, f config.Factory, root string) (Report, error)
+	Status(ctx context.Context, f config.Factory, root string, offline bool) (Report, error)
 }
 
 type Controller struct {
@@ -89,8 +113,8 @@ func (c *Controller) isRepo(ctx context.Context, dir string) (bool, error) {
 	return c.git.IsRepo(ctx, dir)
 }
 
-func (c *Controller) Status(ctx context.Context, f config.Factory, root string) (Report, error) {
-	report := Report{Root: root, Repos: []RepoStatus{}, Unknown: []string{}}
+func (c *Controller) Status(ctx context.Context, f config.Factory, root string, offline bool) (Report, error) {
+	report := Report{Root: root, Repos: []RepoStatus{}, Unknown: []string{}, Offline: offline}
 
 	claimed := map[string]bool{}
 
@@ -129,6 +153,10 @@ func (c *Controller) Status(ctx context.Context, f config.Factory, root string) 
 			if err == nil {
 				status.Head = head
 			}
+
+			if !offline {
+				c.measure(ctx, dir, &status)
+			}
 		}
 
 		report.Repos = append(report.Repos, status)
@@ -164,6 +192,33 @@ func (c *Controller) Status(ctx context.Context, f config.Factory, root string) 
 	report.Modules = modules
 
 	return report, nil
+}
+
+// measure fetches and counts the checkout against origin/main. A repo with no
+// remote, no main, or no network stays unmeasured rather than failing the
+// whole report - freshness is a warning system, not a gate on reading state.
+func (c *Controller) measure(ctx context.Context, dir string, status *RepoStatus) {
+	if err := c.git.Fetch(ctx, dir); err != nil {
+		return
+	}
+
+	ahead, behind, err := c.git.AheadBehind(ctx, dir, "origin/main")
+	if err != nil {
+		return
+	}
+
+	status.Ahead, status.Behind = ahead, behind
+
+	switch {
+	case ahead > 0 && behind > 0:
+		status.Freshness = Diverged
+	case behind > 0:
+		status.Freshness = Behind
+	case ahead > 0:
+		status.Freshness = Ahead
+	default:
+		status.Freshness = Fresh
+	}
 }
 
 // modules compares each pinned version against the tag its local checkout

@@ -513,3 +513,24 @@ func TestAMissingPackageAtAPinnedRevisionNamesTheRevision(t *testing.T) {
 	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
 	require.ErrorContains(t, err, "v0.1.0")
 }
+
+func TestDeadPinReadsTheNoteBack(t *testing.T) {
+	_, notes, err := func() (map[string]string, []string, error) {
+		f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+
+		return newController().Resolve(context.Background(), f, root, "go",
+			map[string]config.DependencySpec{"example.com/pkg": {
+				Track: "1", Pin: "v1.5.0", Mode: "soft", Reason: "old workaround",
+			}})
+	}()
+	require.NoError(t, err)
+
+	dep, ok := resolvecontroller.DeadPin(notes[0])
+	require.True(t, ok)
+	require.Equal(t, "go:example.com/pkg", dep)
+
+	_, ok = resolvecontroller.DeadPin("hard pin go:x v1 (reason: r) - frozen, visibly")
+	require.False(t, ok)
+	_, ok = resolvecontroller.DeadPin("remove this pin")
+	require.False(t, ok)
+}
