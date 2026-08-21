@@ -76,7 +76,9 @@ fail = False
 
 for path in owned:
     for name in sorted(set(define.findall(bodies[path]))):
-        if name in ('Main', 'TestMain'):
+        # Marshal/Unmarshal implement encoding/json interfaces: the stdlib
+        # calls them, so no direct caller exists to count.
+        if name in ('Main', 'TestMain', 'MarshalJSON', 'UnmarshalJSON'):
             continue
 
         hits = len(re.findall(r'[^\w.]%s\s*\(' % name, haystack))

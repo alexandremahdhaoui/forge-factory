@@ -330,6 +330,10 @@ func renderSync(report synccontroller.Report) string {
 
 	fmt.Fprintf(&b, "synced %s\n", report.Root)
 
+	for _, note := range report.Notes {
+		fmt.Fprintf(&b, "  note: %s\n", note)
+	}
+
 	for _, path := range report.Written {
 		fmt.Fprintf(&b, "  wrote %s\n", relative(report.Root, path))
 	}

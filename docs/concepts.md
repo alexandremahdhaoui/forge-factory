@@ -17,6 +17,18 @@ forge-factory owns what a workspace is made of and what version everything agree
 
 ## Concepts
 
+### The register
+
+A dependency entry that is an object resolves from the register: the catalog of adoptable package versions, advanced by policy, written only by its own pipeline.
+
+The local register checkout wins, like any member. A bare string stays a version written verbatim, exactly as before the register existed. Resolution is strict: a missing package fails loud and files a request for the register pipeline to answer, and a security advisory on a resolved version fails the sync whatever pins say - an advisory pierces every pin.
+
+### Pins
+
+A soft pin floors a track and retires itself once the register catches up. A hard pin freezes one consumer, visibly, and never blocks the register.
+
+Every pin carries a reason - a pin without one is a config error, not a warning. Sync explains every standing pin, names the dead ones to remove, and a wraps template renders the resolved version into whatever the language file needs, so a rust inline table keeps its features and a python specifier keeps its operator.
+
 ### The factory file
 
 forge-factory.yaml declares members, shared dependency versions, a language engine per language, and optionally a state engine.

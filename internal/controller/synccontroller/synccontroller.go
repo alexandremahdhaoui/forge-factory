@@ -12,6 +12,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/repoadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/resolvecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
 )
 
@@ -38,12 +39,15 @@ func tail(s string) string {
 }
 
 // Report is what a sync did, so a caller can print it and a test can assert it.
+// Notes carry the resolver's diagnostics: pins standing, pins to remove,
+// deprecated tracks.
 type Report struct {
 	Root      string   `json:"root"`
 	Written   []string `json:"written"`
 	Ignored   []string `json:"ignored"`
 	Settled   []string `json:"settled"`
 	Unsettled []string `json:"unsettled"`
+	Notes     []string `json:"notes,omitempty"`
 }
 
 type repoWire struct {
@@ -91,10 +95,11 @@ type Syncer interface {
 }
 
 type Controller struct {
-	caller engineadapter.Caller
-	fs     fsadapter.FS
-	repos  repoadapter.Reader
-	runner execadapter.Runner
+	caller   engineadapter.Caller
+	fs       fsadapter.FS
+	repos    repoadapter.Reader
+	runner   execadapter.Runner
+	resolver resolvecontroller.Resolver
 }
 
 var _ Syncer = (*Controller)(nil)
@@ -104,8 +109,9 @@ func New(
 	fs fsadapter.FS,
 	repos repoadapter.Reader,
 	runner execadapter.Runner,
+	resolver resolvecontroller.Resolver,
 ) *Controller {
-	return &Controller{caller: caller, fs: fs, repos: repos, runner: runner}
+	return &Controller{caller: caller, fs: fs, repos: repos, runner: runner, resolver: resolver}
 }
 
 // Sync asks every language engine what to write, writes it, and keeps each
@@ -139,11 +145,24 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root string) (R
 			return Report{}, err
 		}
 
+		deps, depNotes, err := c.resolver.Resolve(ctx, f, root, language, f.DependenciesFor(language))
+		if err != nil {
+			return Report{}, fmt.Errorf("resolving %s dependencies: %w", language, err)
+		}
+
+		dev, devNotes, err := c.resolver.Resolve(ctx, f, root, language, f.DevFor(language))
+		if err != nil {
+			return Report{}, fmt.Errorf("resolving %s devDependencies: %w", language, err)
+		}
+
+		report.Notes = append(report.Notes, depNotes...)
+		report.Notes = append(report.Notes, devNotes...)
+
 		in := renderInput{
 			Root:         root,
 			Repos:        resolved,
-			Dependencies: f.DependenciesFor(language),
-			Dev:          f.DevFor(language),
+			Dependencies: deps,
+			Dev:          dev,
 		}
 
 		var out renderOutput

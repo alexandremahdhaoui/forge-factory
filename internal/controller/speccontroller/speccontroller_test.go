@@ -51,7 +51,7 @@ func TestBumpRewritesOneLineAndKeepsComments(t *testing.T) {
 
 	f, err := config.Parse(out)
 	require.NoError(t, err)
-	assert.Equal(t, "v1.12.0", f.DependenciesFor("go")["github.com/stretchr/testify"])
+	assert.Equal(t, "v1.12.0", f.DependenciesFor("go")["github.com/stretchr/testify"].Version)
 }
 
 func TestBumpQuotesAVersionYAMLWouldReadAsANumber(t *testing.T) {
@@ -95,8 +95,11 @@ func TestBumpTakesALanguagePrefixToPickOne(t *testing.T) {
 func TestBumpRefusesAnEditThatBreaksTheFactory(t *testing.T) {
 	t.Parallel()
 
+	// An empty version used to be tolerated; under a register it means
+	// "resolve from the register", which needs a register block, so the
+	// re-parse refuses the edit.
 	_, _, err := speccontroller.Bump([]byte(factory), "go:sigs.k8s.io/yaml", "")
-	require.NoError(t, err, "an empty version is still valid yaml")
+	require.Error(t, err, "an empty version now means the register, and this factory has none")
 
 	_, _, err = speccontroller.Bump([]byte("name: x\n"), "anything", "v1")
 	require.ErrorIs(t, err, speccontroller.ErrNotFound)

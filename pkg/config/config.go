@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -15,14 +16,77 @@ var (
 )
 
 type Factory struct {
-	Version      string                       `json:"version"`
-	Name         string                       `json:"name"`
-	Repos        []Repo                       `json:"repos"`
-	Dependencies map[string]map[string]string `json:"dependencies,omitempty"`
-	Dev          map[string]map[string]string `json:"devDependencies,omitempty"`
-	Engines      []Engine                     `json:"engines"`
-	State        *State                       `json:"state,omitempty"`
-	Modules      map[string]Module            `json:"modules,omitempty"`
+	Version      string                               `json:"version"`
+	Name         string                               `json:"name"`
+	Repos        []Repo                               `json:"repos"`
+	Register     *Register                            `json:"register,omitempty"`
+	Dependencies map[string]map[string]DependencySpec `json:"dependencies,omitempty"`
+	Dev          map[string]map[string]DependencySpec `json:"devDependencies,omitempty"`
+	Engines      []Engine                             `json:"engines"`
+	State        *State                               `json:"state,omitempty"`
+	Modules      map[string]Module                    `json:"modules,omitempty"`
+}
+
+// Register names the catalog this workspace resolves versions from. The local
+// checkout wins, like any member; the URL is the remote fallback, cloned at
+// the pinned revision when the checkout is absent.
+type Register struct {
+	URL      string `json:"url"`
+	Path     string `json:"path,omitempty"`
+	Revision string `json:"revision,omitempty"`
+}
+
+// DependencySpec is one dependency entry. A bare string is a version written
+// verbatim, exactly as before the register existed. An object resolves from
+// the register: the track's current version, floored by a soft pin or frozen
+// by a hard one. Every pin carries a reason - a pin without one is a config
+// error, not a warning.
+type DependencySpec struct {
+	// Version is the legacy form: written verbatim, register not consulted.
+	Version string `json:"-"`
+
+	Track   string `json:"track,omitempty"`
+	Pin     string `json:"pin,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	Expires string `json:"expires,omitempty"`
+	// Wraps renders the resolved version into a larger value, %s replaced -
+	// a rust inline table carrying features, a python specifier prefix.
+	Wraps string `json:"wraps,omitempty"`
+}
+
+// FromRegister reports whether this entry resolves from the register.
+func (d DependencySpec) FromRegister() bool {
+	return d.Version == ""
+}
+
+// UnmarshalJSON keeps the legacy form parsing: a bare string is a version.
+func (d *DependencySpec) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		return json.Unmarshal(data, &d.Version)
+	}
+
+	type alias DependencySpec
+
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+
+	*d = DependencySpec(a)
+
+	return nil
+}
+
+// MarshalJSON round-trips the legacy form.
+func (d DependencySpec) MarshalJSON() ([]byte, error) {
+	if d.Version != "" {
+		return json.Marshal(d.Version)
+	}
+
+	type alias DependencySpec
+
+	return json.Marshal(alias(d))
 }
 
 // Module maps a module path to a sibling checkout so codegen resolves a spec
@@ -157,6 +221,42 @@ func (f Factory) Validate() error {
 		add("state: engine must start with go:// or alias://")
 	}
 
+	if f.Register != nil && strings.TrimSpace(f.Register.URL) == "" && strings.TrimSpace(f.Register.Path) == "" {
+		add("register: needs a url, a path, or both")
+	}
+
+	validateDeps := func(section string, deps map[string]map[string]DependencySpec) {
+		for _, language := range sortedKeys(deps) {
+			for _, name := range sortedKeys(deps[language]) {
+				d := deps[language][name]
+				where := fmt.Sprintf("%s.%s.%s", section, language, name)
+
+				if d.FromRegister() && f.Register == nil {
+					add("%s: resolves from the register and no register: block is declared", where)
+				}
+
+				if d.Pin != "" && strings.TrimSpace(d.Reason) == "" {
+					add("%s: a pin without a reason is a config error, not a warning", where)
+				}
+
+				if d.Pin != "" && d.Mode != "soft" && d.Mode != "hard" {
+					add("%s: a pin needs mode: soft or mode: hard", where)
+				}
+
+				if d.Pin == "" && d.Mode != "" {
+					add("%s: mode without a pin means nothing", where)
+				}
+
+				if d.Wraps != "" && !strings.Contains(d.Wraps, "%s") {
+					add("%s: wraps must contain %%s for the resolved version", where)
+				}
+			}
+		}
+	}
+
+	validateDeps("dependencies", f.Dependencies)
+	validateDeps("devDependencies", f.Dev)
+
 	for _, path := range sortedKeys(f.Modules) {
 		m := f.Modules[path]
 
@@ -172,24 +272,23 @@ func (f Factory) Validate() error {
 	return fmt.Errorf("invalid factory:\n  %s", strings.Join(errs, "\n  "))
 }
 
-// DependenciesFor returns the declared versions for one language, never nil so
-// an engine always receives a map it can range over.
-func (f Factory) DependenciesFor(language string) map[string]string {
+// DependenciesFor returns the declared entries for one language, never nil.
+func (f Factory) DependenciesFor(language string) map[string]DependencySpec {
 	if deps, ok := f.Dependencies[language]; ok {
 		return deps
 	}
 
-	return map[string]string{}
+	return map[string]DependencySpec{}
 }
 
 // DevFor returns what only the tests and the tooling need for one language,
-// never nil so an engine always receives a map it can range over.
-func (f Factory) DevFor(language string) map[string]string {
+// never nil.
+func (f Factory) DevFor(language string) map[string]DependencySpec {
 	if deps, ok := f.Dev[language]; ok {
 		return deps
 	}
 
-	return map[string]string{}
+	return map[string]DependencySpec{}
 }
 
 // EngineFor returns the engine URI registered for a language.

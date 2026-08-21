@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/engineadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
@@ -12,6 +13,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/gitadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/repoadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/clonecontroller"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/resolvecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/revisioncontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
@@ -41,7 +43,8 @@ func run(ctx context.Context, args []string) error {
 		os.Stdout,
 		fs,
 		clonecontroller.New(fs, git),
-		synccontroller.New(caller, fs, repoadapter.New(fs), execadapter.New()),
+		synccontroller.New(caller, fs, repoadapter.New(fs), execadapter.New(),
+			resolvecontroller.New(fs, time.Now)),
 		revisioncontroller.New(caller, git),
 		statuscontroller.New(fs, git),
 	)

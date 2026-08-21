@@ -3,6 +3,7 @@ package clidriver_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -492,4 +493,49 @@ func TestCloneReportsAFailure(t *testing.T) {
 		Return(clonecontroller.Report{}, assert.AnError).Once()
 
 	require.ErrorIs(t, h.driver.Run(t.Context(), []string{"clone"}), assert.AnError)
+}
+
+func TestValidateDescribesModulesAndTheRegister(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory + `register:
+  url: git@example.com:golden-register.git
+modules:
+  example.com/spec:
+    path: ./spec
+  example.com/remote-spec:
+    version: v1.2.0
+`)
+
+	require.NoError(t, h.driver.Run(t.Context(), []string{"validate"}))
+	assert.Contains(t, h.out.String(), "module example.com/spec -> ./spec")
+	assert.Contains(t, h.out.String(), "module example.com/remote-spec -> v1.2.0")
+}
+
+func TestSyncPrintsTheResolverNotes(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).Return(
+		synccontroller.Report{
+			Root:  "/w",
+			Notes: []string{"soft pin go:x v1 is behind track 1 (v2) - the register is newer; remove this pin"},
+		}, nil).Once()
+
+	require.NoError(t, h.driver.Run(t.Context(), []string{"sync", "--root", "/w"}))
+	assert.Contains(t, h.out.String(), "note: soft pin go:x")
+}
+
+func TestAddReportsAFailedWrite(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	failed := errors.New("disk full")
+	h.fs.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(failed).Once()
+
+	err := h.driver.Run(t.Context(), []string{"add", "golden-two", "git@x:y.git", "go"})
+	require.ErrorIs(t, err, failed)
 }

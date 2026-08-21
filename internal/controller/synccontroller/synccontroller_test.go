@@ -41,6 +41,19 @@ func parse(t *testing.T, raw string) config.Factory {
 	return f
 }
 
+// passthrough resolves like the pre-register world: legacy versions pass
+// through verbatim.
+type passthrough struct{}
+
+func (passthrough) Resolve(_ context.Context, _ config.Factory, _, _ string, deps map[string]config.DependencySpec) (map[string]string, []string, error) {
+	out := make(map[string]string, len(deps))
+	for name, d := range deps {
+		out[name] = d.Version
+	}
+
+	return out, nil, nil
+}
+
 type harness struct {
 	caller *engineadaptermock.MockCaller
 	fs     *fsadaptermock.MockFS
@@ -61,7 +74,7 @@ func newHarness(t *testing.T) *harness {
 		wrote:  map[string]string{},
 	}
 
-	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner)
+	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner, passthrough{})
 
 	return h
 }

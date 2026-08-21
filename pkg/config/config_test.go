@@ -40,8 +40,8 @@ func TestParseReadsAWholeFactory(t *testing.T) {
 	assert.Equal(t, "golden", f.Name)
 	assert.Len(t, f.Repos, 2)
 	assert.Equal(t, []string{"go", "typescript"}, f.Languages())
-	assert.Equal(t, map[string]string{"sigs.k8s.io/yaml": "v1.6.0"}, f.DependenciesFor("go"))
-	assert.Equal(t, map[string]string{}, f.DependenciesFor("typescript"),
+	assert.Equal(t, map[string]config.DependencySpec{"sigs.k8s.io/yaml": {Version: "v1.6.0"}}, f.DependenciesFor("go"))
+	assert.Equal(t, map[string]config.DependencySpec{}, f.DependenciesFor("typescript"),
 		"a language with no versions still gets a map an engine can range over")
 	assert.Equal(t, map[string]any{"path": "../golden-state"}, f.State.Spec)
 }

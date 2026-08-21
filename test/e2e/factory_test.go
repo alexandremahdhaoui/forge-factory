@@ -227,8 +227,12 @@ func TestABumpToAVersionNobodyCanResolveFails(t *testing.T) {
 	require.Error(t, err, out)
 	assert.Contains(t, out, "which a build will need")
 
-	assert.Contains(t, out, "unknown revision",
-		"the reason the build cannot be settled is on the report")
+	// The proxy's exact words differ by environment: a direct fetch says
+	// "unknown revision", a filtered one says "Forbidden" on the fallback.
+	// What matters is that the reason reached the report.
+	if !strings.Contains(out, "unknown revision") && !strings.Contains(out, "unrecognized import path") {
+		t.Fatalf("the reason the build cannot be settled is not on the report:\n%s", out)
+	}
 }
 
 func TestOfflineAcceptsASyncThatCouldNotSettle(t *testing.T) {
