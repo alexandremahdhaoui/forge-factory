@@ -534,3 +534,30 @@ func TestDeadPinReadsTheNoteBack(t *testing.T) {
 	_, ok = resolvecontroller.DeadPin("remove this pin")
 	require.False(t, ok)
 }
+
+func TestAPEP440PrereleasePinComparesBelowItsRelease(t *testing.T) {
+	f, root := register(t, map[string]string{"python/httpx/0": track("0.28.1")})
+
+	// 1.0.dev5 carries no hyphen and is still a pre-release: it must sort
+	// above the 0.x track (numerically) but below 1.0 - so a soft pin on it
+	// reads as ahead of track 0, the same reading the register uses.
+	_, notes, err := newController().Resolve(context.Background(), f, root, "python",
+		map[string]config.DependencySpec{"httpx": {
+			Track: "0", Pin: "1.0.dev5", Mode: "soft", Reason: "trying the beta",
+		}})
+	require.NoError(t, err)
+	require.Contains(t, notes[0], "ahead of track")
+}
+
+func TestVersionTailsCombineAndOrder(t *testing.T) {
+	f, root := register(t, map[string]string{"python/httpx/1": track("1.0rc1-x")})
+
+	// A hyphen tail on top of a PEP 440 segment still parses; the pin below
+	// the current is named dead, which pins the ordering both ways.
+	_, notes, err := newController().Resolve(context.Background(), f, root, "python",
+		map[string]config.DependencySpec{"httpx": {
+			Track: "1", Pin: "1.0.dev5", Mode: "soft", Reason: "old",
+		}})
+	require.NoError(t, err)
+	require.Contains(t, notes[0], "remove this pin")
+}

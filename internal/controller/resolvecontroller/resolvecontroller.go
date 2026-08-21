@@ -510,13 +510,31 @@ func parseVersion(s string) ([]int, string) {
 	raw := strings.Split(s, ".")
 	parts := make([]int, 0, len(raw))
 
-	for _, r := range raw {
+	for i, r := range raw {
 		n, err := strconv.Atoi(r)
-		if err != nil {
-			break
+		if err == nil {
+			parts = append(parts, n)
+
+			continue
 		}
 
-		parts = append(parts, n)
+		// PEP 440 spells pre-releases with no hyphen (1.0.dev5, 1.0rc1):
+		// any non-numeric segment joins the pre-release tail, with leading
+		// digits kept numeric - the same reading the register uses.
+		digits := len(r) - len(strings.TrimLeft(r, "0123456789"))
+		if digits > 0 {
+			n, _ := strconv.Atoi(r[:digits])
+			parts = append(parts, n)
+		}
+
+		tail := strings.Join(append([]string{r[digits:]}, raw[i+1:]...), ".")
+		if pre == "" {
+			pre = tail
+		} else {
+			pre = tail + "." + pre
+		}
+
+		break
 	}
 
 	return parts, pre
