@@ -422,7 +422,7 @@ func (c *Controller) fileRequest(dir, language, name string, r request) (string,
 		return "", fmt.Errorf("encoding the request: %w", err)
 	}
 
-	full := filepath.Join(dir, "requests", filepath.FromSlash(key)+".json")
+	full := filepath.Join(dir, "request", filepath.FromSlash(key)+".json")
 	if err := c.fs.WriteFile(full, payload); err != nil {
 		return "", fmt.Errorf("filing the request: %w", err)
 	}

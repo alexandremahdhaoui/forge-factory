@@ -174,7 +174,7 @@ func TestAMissingPackageFailsLoudAndFilesARequest(t *testing.T) {
 	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
 	require.ErrorContains(t, err, "sync again")
 
-	filed, err2 := filepath.Glob(filepath.Join(root, "golden-register", "requests", "go", "example.com", "absent", "*.json"))
+	filed, err2 := filepath.Glob(filepath.Join(root, "golden-register", "request", "go", "example.com", "absent", "*.json"))
 	require.NoError(t, err2)
 	require.Len(t, filed, 1, "strict resolution files the request it failed on")
 
@@ -288,7 +288,7 @@ func TestAnExplicitTrackTheRegisterLacksFilesARequest(t *testing.T) {
 		map[string]config.DependencySpec{"example.com/pkg": {Track: "2", Reason: "needs v2"}})
 	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
 
-	filed, _ := filepath.Glob(filepath.Join(root, "golden-register", "requests", "go", "example.com", "pkg", "*.json"))
+	filed, _ := filepath.Glob(filepath.Join(root, "golden-register", "request", "go", "example.com", "pkg", "*.json"))
 	require.Len(t, filed, 1)
 
 	raw, _ := os.ReadFile(filed[0])
@@ -370,7 +370,7 @@ func TestASoftPinAheadFilesAnUpgradeRequest(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, notes[0], "filed")
 
-	filed, _ := filepath.Glob(filepath.Join(root, "golden-register", "requests", "go", "example.com", "pkg", "*-upgrade.json"))
+	filed, _ := filepath.Glob(filepath.Join(root, "golden-register", "request", "go", "example.com", "pkg", "*-upgrade.json"))
 	require.Len(t, filed, 1, "the pin doubles as the request")
 
 	raw, _ := os.ReadFile(filed[0])
@@ -388,7 +388,7 @@ func TestAnUnknownTrackOnAKnownPackageFilesOpenTrack(t *testing.T) {
 		}})
 	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
 
-	filed, _ := filepath.Glob(filepath.Join(root, "golden-register", "requests", "go", "example.com", "pkg", "*-open-track.json"))
+	filed, _ := filepath.Glob(filepath.Join(root, "golden-register", "request", "go", "example.com", "pkg", "*-open-track.json"))
 	require.Len(t, filed, 1, "an unknown track on a known package is an open-track request")
 
 	raw, _ := os.ReadFile(filed[0])
