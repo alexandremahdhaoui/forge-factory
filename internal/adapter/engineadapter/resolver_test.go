@@ -20,7 +20,7 @@ func TestAnInstalledBinaryWins(t *testing.T) {
 		return "/usr/local/bin/ci-compute-local", nil
 	}
 
-	cmd, err := r.Resolve("go://github.com/x/forge-factory/cmd/ci-compute-local@v0.1.0")
+	cmd, err := r.Resolve("forge://github.com/x/forge-factory/cmd/ci-compute-local@v0.1.0")
 	require.NoError(t, err)
 	require.Equal(t, "/usr/local/bin/ci-compute-local", cmd.Path)
 	require.Empty(t, cmd.Args)
@@ -33,7 +33,7 @@ func TestTheSourceTreeIsUsedWhenNothingIsInstalled(t *testing.T) {
 	r := engineadapter.NewResolver(dir)
 	r.LookPath = notOnPath
 
-	cmd, err := r.Resolve("go://github.com/x/forge-factory/cmd/ci-state-git@v0.1.0")
+	cmd, err := r.Resolve("forge://github.com/x/forge-factory/cmd/ci-state-git@v0.1.0")
 	require.NoError(t, err)
 	require.Equal(t, "go", cmd.Path)
 	require.Equal(t, []string{"run", "./cmd/ci-state-git"}, cmd.Args)
@@ -43,7 +43,7 @@ func TestAModuleFallsBackToGoRun(t *testing.T) {
 	r := engineadapter.NewResolver("")
 	r.LookPath = notOnPath
 
-	cmd, err := r.Resolve("go://github.com/x/forge-factory/cmd/ci-gate-manual@v0.2.0")
+	cmd, err := r.Resolve("forge://github.com/x/forge-factory/cmd/ci-gate-manual@v0.2.0")
 	require.NoError(t, err)
 	require.Equal(t, "go", cmd.Path)
 	require.Equal(t, []string{"run", "github.com/x/forge-factory/cmd/ci-gate-manual@v0.2.0"}, cmd.Args)
@@ -53,7 +53,7 @@ func TestAShortNameResolvesToOurOwnModule(t *testing.T) {
 	r := engineadapter.NewResolver("")
 	r.LookPath = notOnPath
 
-	cmd, err := r.Resolve("go://ci-promotion-all")
+	cmd, err := r.Resolve("forge://ci-promotion-all")
 	require.NoError(t, err)
 	require.Equal(t,
 		[]string{"run", "github.com/alexandremahdhaoui/forge-factory/cmd/ci-promotion-all@latest"},
@@ -64,7 +64,7 @@ func TestAMissingVersionBecomesLatest(t *testing.T) {
 	r := engineadapter.NewResolver("")
 	r.LookPath = notOnPath
 
-	cmd, err := r.Resolve("go://github.com/x/y/cmd/z")
+	cmd, err := r.Resolve("forge://github.com/x/y/cmd/z")
 	require.NoError(t, err)
 	require.Equal(t, []string{"run", "github.com/x/y/cmd/z@latest"}, cmd.Args)
 }
@@ -75,7 +75,7 @@ func TestAliasMustBeResolvedFirst(t *testing.T) {
 }
 
 func TestOtherSchemesAreRefused(t *testing.T) {
-	for _, uri := range []string{"https://example.com/x", "ci-compute-local", "go://", ""} {
+	for _, uri := range []string{"https://example.com/x", "ci-compute-local", "forge://", ""} {
 		_, err := engineadapter.NewResolver("").Resolve(uri)
 		require.ErrorIs(t, err, engineadapter.ErrScheme, uri)
 	}
@@ -85,7 +85,7 @@ func TestASourceDirWithoutTheCommandFallsThrough(t *testing.T) {
 	r := engineadapter.NewResolver(t.TempDir())
 	r.LookPath = notOnPath
 
-	cmd, err := r.Resolve("go://github.com/x/y/cmd/missing@v1")
+	cmd, err := r.Resolve("forge://github.com/x/y/cmd/missing@v1")
 	require.NoError(t, err)
 	require.Equal(t, []string{"run", "github.com/x/y/cmd/missing@v1"}, cmd.Args)
 }
@@ -94,7 +94,7 @@ func TestANilLookPathIsSkipped(t *testing.T) {
 	r := engineadapter.NewResolver("")
 	r.LookPath = nil
 
-	cmd, err := r.Resolve("go://github.com/x/y/cmd/z@v1")
+	cmd, err := r.Resolve("forge://github.com/x/y/cmd/z@v1")
 	require.NoError(t, err)
 	require.Equal(t, "go", cmd.Path)
 }

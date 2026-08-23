@@ -200,7 +200,7 @@ repos:
     languages: [go]
 engines:
   - alias: go
-    engine: go://example.com/lang-go
+    engine: forge://example.com/lang-go
 dependencies:
   go:
     example.com/pkg: {}
@@ -219,7 +219,7 @@ register:
   url: git@example.com:reg.git
 engines:
   - alias: go
-    engine: go://example.com/lang-go
+    engine: forge://example.com/lang-go
 dependencies:
   go:
     example.com/pkg: { pin: v1.2.3, mode: soft }

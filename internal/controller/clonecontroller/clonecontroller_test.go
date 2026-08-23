@@ -23,9 +23,9 @@ repos:
     languages: [rust]
 engines:
   - alias: go
-    engine: go://example.com/lang-go
+    engine: forge://example.com/lang-go
   - alias: rust
-    engine: go://example.com/lang-rust
+    engine: forge://example.com/lang-rust
 `
 
 func parse(t *testing.T, raw string) config.Factory {

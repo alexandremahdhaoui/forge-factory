@@ -897,6 +897,78 @@ func (_c *MockGit_RemoteSHA_Call) RunAndReturn(run func(ctx context.Context, url
 	return _c
 }
 
+// ResolveRev provides a mock function for the type MockGit
+func (_mock *MockGit) ResolveRev(ctx context.Context, dir string, rev string) (string, error) {
+	ret := _mock.Called(ctx, dir, rev)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ResolveRev")
+	}
+
+	var r0 string
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string) (string, error)); ok {
+		return returnFunc(ctx, dir, rev)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string) string); ok {
+		r0 = returnFunc(ctx, dir, rev)
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, string, string) error); ok {
+		r1 = returnFunc(ctx, dir, rev)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockGit_ResolveRev_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'ResolveRev'
+type MockGit_ResolveRev_Call struct {
+	*mock.Call
+}
+
+// ResolveRev is a helper method to define mock.On call
+//   - ctx context.Context
+//   - dir string
+//   - rev string
+func (_e *MockGit_Expecter) ResolveRev(ctx any, dir any, rev any) *MockGit_ResolveRev_Call {
+	return &MockGit_ResolveRev_Call{Call: _e.mock.On("ResolveRev", ctx, dir, rev)}
+}
+
+func (_c *MockGit_ResolveRev_Call) Run(run func(ctx context.Context, dir string, rev string)) *MockGit_ResolveRev_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 string
+		if args[2] != nil {
+			arg2 = args[2].(string)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+		)
+	})
+	return _c
+}
+
+func (_c *MockGit_ResolveRev_Call) Return(s string, err error) *MockGit_ResolveRev_Call {
+	_c.Call.Return(s, err)
+	return _c
+}
+
+func (_c *MockGit_ResolveRev_Call) RunAndReturn(run func(ctx context.Context, dir string, rev string) (string, error)) *MockGit_ResolveRev_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Show provides a mock function for the type MockGit
 func (_mock *MockGit) Show(ctx context.Context, dir string, rev string, path string) (string, bool, error) {
 	ret := _mock.Called(ctx, dir, rev, path)
@@ -977,6 +1049,75 @@ func (_c *MockGit_Show_Call) Return(s string, b bool, err error) *MockGit_Show_C
 }
 
 func (_c *MockGit_Show_Call) RunAndReturn(run func(ctx context.Context, dir string, rev string, path string) (string, bool, error)) *MockGit_Show_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// WorktreeAdd provides a mock function for the type MockGit
+func (_mock *MockGit) WorktreeAdd(ctx context.Context, dir string, sha string, dest string) error {
+	ret := _mock.Called(ctx, dir, sha, dest)
+
+	if len(ret) == 0 {
+		panic("no return value specified for WorktreeAdd")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, string, string, string) error); ok {
+		r0 = returnFunc(ctx, dir, sha, dest)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockGit_WorktreeAdd_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'WorktreeAdd'
+type MockGit_WorktreeAdd_Call struct {
+	*mock.Call
+}
+
+// WorktreeAdd is a helper method to define mock.On call
+//   - ctx context.Context
+//   - dir string
+//   - sha string
+//   - dest string
+func (_e *MockGit_Expecter) WorktreeAdd(ctx any, dir any, sha any, dest any) *MockGit_WorktreeAdd_Call {
+	return &MockGit_WorktreeAdd_Call{Call: _e.mock.On("WorktreeAdd", ctx, dir, sha, dest)}
+}
+
+func (_c *MockGit_WorktreeAdd_Call) Run(run func(ctx context.Context, dir string, sha string, dest string)) *MockGit_WorktreeAdd_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		var arg2 string
+		if args[2] != nil {
+			arg2 = args[2].(string)
+		}
+		var arg3 string
+		if args[3] != nil {
+			arg3 = args[3].(string)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+			arg3,
+		)
+	})
+	return _c
+}
+
+func (_c *MockGit_WorktreeAdd_Call) Return(err error) *MockGit_WorktreeAdd_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockGit_WorktreeAdd_Call) RunAndReturn(run func(ctx context.Context, dir string, sha string, dest string) error) *MockGit_WorktreeAdd_Call {
 	_c.Call.Return(run)
 	return _c
 }

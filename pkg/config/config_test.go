@@ -22,11 +22,11 @@ dependencies:
     sigs.k8s.io/yaml: v1.6.0
 engines:
   - alias: go
-    engine: go://example.com/lang-go
+    engine: forge://example.com/lang-go
   - alias: typescript
     engine: alias://lang-ts
 state:
-  engine: go://example.com/ci-state-git
+  engine: forge://example.com/ci-state-git
   spec:
     path: ../golden-state
 `
@@ -92,9 +92,9 @@ engines:
   - alias: Go
     engine: https://example.com/lang-go
   - alias: go
-    engine: go://a
+    engine: forge://a
   - alias: go
-    engine: go://b
+    engine: forge://b
 dependencies:
   python:
     pytest: ">=8"
@@ -110,11 +110,11 @@ state:
 		`language "Rust" must be lowercase kebab-case`,
 		"duplicate repo name",
 		"alias must be lowercase kebab-case",
-		"engine must start with go:// or alias://",
+		"engine must start with forge:// or alias://",
 		"duplicate engine alias",
 		`repos declare the language "Rust" and no engine has that alias`,
 		`dependencies declare the language "python" and no engine has that alias`,
-		"state: engine must start with go:// or alias://",
+		"state: engine must start with forge:// or alias://",
 	} {
 		assert.Contains(t, err.Error(), want)
 	}
@@ -150,7 +150,7 @@ repos:
     url: git@github.com:x/golden-spec.git
 engines:
   - alias: go
-    engine: go://example.com/lang-go
+    engine: forge://example.com/lang-go
 `))
 	require.NoError(t, err, "a spec repo is a member and nothing is generated into it")
 	assert.Empty(t, f.Languages())
@@ -169,7 +169,7 @@ repos:
     languages: [go]
 engines:
   - alias: go
-    engine: go://x
+    engine: forge://x
 modules:
   github.com/alexandremahdhaoui/golden-spec:
     path: ./golden-spec

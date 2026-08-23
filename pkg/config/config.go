@@ -12,7 +12,7 @@ import (
 
 var (
 	aliasPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
-	uriPattern   = regexp.MustCompile(`^(go|alias)://.+`)
+	uriPattern   = regexp.MustCompile(`^(forge|alias)://.+`)
 )
 
 type Factory struct {
@@ -178,8 +178,10 @@ func (f Factory) Validate() error {
 			add("%s: alias must be lowercase kebab-case", where)
 		}
 
-		if !uriPattern.MatchString(e.Engine) {
-			add("%s: engine must start with go:// or alias://", where)
+		if strings.HasPrefix(e.Engine, "go://") {
+			add("%s: the go:// scheme is removed; use forge://", where)
+		} else if !uriPattern.MatchString(e.Engine) {
+			add("%s: engine must start with forge:// or alias://", where)
 		}
 
 		if aliases[e.Alias] {
@@ -207,8 +209,10 @@ func (f Factory) Validate() error {
 		}
 	}
 
-	if f.State != nil && !uriPattern.MatchString(f.State.Engine) {
-		add("state: engine must start with go:// or alias://")
+	if f.State != nil && strings.HasPrefix(f.State.Engine, "go://") {
+		add("state: the go:// scheme is removed; use forge://")
+	} else if f.State != nil && !uriPattern.MatchString(f.State.Engine) {
+		add("state: engine must start with forge:// or alias://")
 	}
 
 	if f.Register != nil && strings.TrimSpace(f.Register.URL) == "" && strings.TrimSpace(f.Register.Path) == "" {

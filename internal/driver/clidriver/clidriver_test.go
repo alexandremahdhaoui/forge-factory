@@ -9,6 +9,7 @@ import (
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/clonecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/revisioncontroller"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/runcontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/speccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
@@ -16,6 +17,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/clonecontrollermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/fsadaptermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/revisioncontrollermock"
+	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/runcontrollermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/statuscontrollermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/synccontrollermock"
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
@@ -32,21 +34,23 @@ repos:
     languages: [go]
 engines:
   - alias: go
-    engine: go://example.com/lang-go
+    engine: forge://example.com/lang-go
 dependencies:
   go:
     sigs.k8s.io/yaml: v1.6.0
 `
 
 type harness struct {
-	out    *bytes.Buffer
-	fs     *fsadaptermock.MockFS
-	clone  *clonecontrollermock.MockCloner
-	sync   *synccontrollermock.MockSyncer
-	revise *revisioncontrollermock.MockReviser
-	state  *statuscontrollermock.MockStater
-	driver *clidriver.Driver
-	wrote  map[string]string
+	out      *bytes.Buffer
+	fs       *fsadaptermock.MockFS
+	clone    *clonecontrollermock.MockCloner
+	sync     *synccontrollermock.MockSyncer
+	revise   *revisioncontrollermock.MockReviser
+	state    *statuscontrollermock.MockStater
+	runner   *runcontrollermock.MockRunner
+	driver   *clidriver.Driver
+	wrote    map[string]string
+	exitCode *int
 }
 
 func newHarness(t *testing.T) *harness {
@@ -59,10 +63,16 @@ func newHarness(t *testing.T) *harness {
 		sync:   synccontrollermock.NewMockSyncer(t),
 		revise: revisioncontrollermock.NewMockReviser(t),
 		state:  statuscontrollermock.NewMockStater(t),
+		runner: runcontrollermock.NewMockRunner(t),
 		wrote:  map[string]string{},
 	}
 
-	h.driver = clidriver.New(h.out, h.fs, h.clone, h.sync, h.revise, h.state)
+	h.driver = clidriver.New(h.out, h.fs, h.clone, h.sync, h.revise, h.state, h.runner,
+		func(code int) {
+			if h.exitCode != nil {
+				*h.exitCode = code
+			}
+		})
 
 	return h
 }
@@ -81,7 +91,7 @@ func (h *harness) recordWrites() {
 }
 
 func (h *harness) expectSync() {
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(synccontroller.Report{Root: "/w", Written: []string{"/w/go.work"}}, nil).Once()
 }
 
@@ -111,7 +121,7 @@ func TestValidateDescribesTheFactory(t *testing.T) {
 
 	require.NoError(t, h.driver.Run(t.Context(), []string{"validate"}))
 	assert.Contains(t, h.out.String(), "golden: 1 repos, 1 engines, 1 languages")
-	assert.Contains(t, h.out.String(), "go go://example.com/lang-go (1 dependencies)")
+	assert.Contains(t, h.out.String(), "go forge://example.com/lang-go (1 dependencies)")
 }
 
 func TestSyncPrintsWhatItWrote(t *testing.T) {
@@ -119,7 +129,7 @@ func TestSyncPrintsWhatItWrote(t *testing.T) {
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).Return(
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		synccontroller.Report{
 			Root:    "/w",
 			Written: []string{"/w/go.work", "/w/golden-go/go.mod"},
@@ -137,7 +147,7 @@ func TestSyncReportsAFailure(t *testing.T) {
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(synccontroller.Report{}, assert.AnError).Once()
 
 	require.ErrorIs(t, h.driver.Run(t.Context(), []string{"sync"}), assert.AnError)
@@ -354,8 +364,8 @@ func TestRootDefaultsToTheFactoryFilesParent(t *testing.T) {
 
 	var seen string
 
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).
-		RunAndReturn(func(_ context.Context, _ config.Factory, root string) (synccontroller.Report, error) {
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, _ config.Factory, root string, _ string) (synccontroller.Report, error) {
 			seen = root
 
 			return synccontroller.Report{Root: root}, nil
@@ -389,7 +399,7 @@ func TestAReportThatCannotBePrintedIsAnError(t *testing.T) {
 	driver := clidriver.New(brokenWriter{}, fs,
 		clonecontrollermock.NewMockCloner(t),
 		synccontrollermock.NewMockSyncer(t), revisioncontrollermock.NewMockReviser(t),
-		statuscontrollermock.NewMockStater(t))
+		statuscontrollermock.NewMockStater(t), nil, func(int) {})
 
 	err := driver.Run(t.Context(), []string{"validate"})
 	require.ErrorIs(t, err, assert.AnError)
@@ -401,7 +411,7 @@ func TestAPathOutsideTheRootPrintsWhole(t *testing.T) {
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).Return(
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		synccontroller.Report{Root: "relative", Written: []string{"/absolute/go.work"}}, nil).Once()
 
 	require.NoError(t, h.driver.Run(t.Context(), []string{"sync", "--root", "relative"}))
@@ -413,7 +423,7 @@ func TestASyncThatLeavesTheWorkspaceUnbuildableFails(t *testing.T) {
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).Return(
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		synccontroller.Report{
 			Root:      "/w",
 			Unsettled: []string{"go mod tidy in /w/a: unknown revision v1.7.0"},
@@ -430,7 +440,7 @@ func TestOfflineAllowsASyncThatCouldNotReachTheNetwork(t *testing.T) {
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).Return(
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		synccontroller.Report{Root: "/w", Unsettled: []string{"go mod tidy in /w/a: no network"}}, nil).Once()
 
 	require.NoError(t, h.driver.Run(t.Context(), []string{"sync", "--offline"}))
@@ -480,7 +490,7 @@ func TestSyncPrintsTheResolverNotes(t *testing.T) {
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).Return(
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		synccontroller.Report{
 			Root:  "/w",
 			Notes: []string{"soft pin go:x v1 is behind track 1 (v2) - the register is newer; remove this pin"},
@@ -513,8 +523,8 @@ func TestRegisterHeadClearsThePinnedRevision(t *testing.T) {
 
 	var saw config.Factory
 
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).
-		RunAndReturn(func(_ context.Context, f config.Factory, _ string) (synccontroller.Report, error) {
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, f config.Factory, _ string, _ string) (synccontroller.Report, error) {
 			saw = f
 
 			return synccontroller.Report{Root: "/w"}, nil
@@ -543,19 +553,19 @@ dependencies:
     example.com/pkg: { track: "1", pin: v1.5.0, mode: soft, reason: dead }
 engines:
   - alias: go
-    engine: go://example.com/lang-go
+    engine: forge://example.com/lang-go
 `
 
 	h := newHarness(t)
 	h.reads(pinned)
 	h.recordWrites()
 
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).Return(
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		synccontroller.Report{Root: "/w", Notes: []string{
 			"soft pin go:example.com/pkg v1.5.0 is behind track 1 (v1.6.0) - the register is newer; remove this pin",
 		}}, nil).Once()
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).
-		RunAndReturn(func(_ context.Context, f config.Factory, _ string) (synccontroller.Report, error) {
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, f config.Factory, _ string, _ string) (synccontroller.Report, error) {
 			require.Empty(t, f.Dependencies["go"]["example.com/pkg"].Pin,
 				"the re-sync runs on the pruned factory")
 
@@ -573,7 +583,7 @@ func TestSyncPrunePinsWithNothingDeadSyncsOnce(t *testing.T) {
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(synccontroller.Report{Root: "/w"}, nil).Once()
 
 	require.NoError(t, h.driver.Run(t.Context(),
@@ -629,7 +639,7 @@ func TestPrunePinsReportsADependencyTheFactoryLost(t *testing.T) {
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).Return(
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		synccontroller.Report{Root: "/w", Notes: []string{
 			"soft pin go:example.com/ghost v1 is behind track 1 (v2) - the register is newer; remove this pin",
 		}}, nil).Once()
@@ -654,18 +664,115 @@ dependencies:
     example.com/pkg: { pin: v1.5.0, mode: soft, reason: dead }
 engines:
   - alias: go
-    engine: go://example.com/lang-go
+    engine: forge://example.com/lang-go
 `
 
 	h := newHarness(t)
 	h.reads(pinned)
 	failed := errors.New("disk full")
 	h.fs.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(failed).Once()
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything).Return(
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		synccontroller.Report{Root: "/w", Notes: []string{
 			"soft pin go:example.com/pkg v1.5.0 is behind track 1 (v1.6.0) - the register is newer; remove this pin",
 		}}, nil).Once()
 
 	err := h.driver.Run(t.Context(), []string{"sync", "--root", "/w", "--prune-pins"})
 	require.ErrorIs(t, err, failed)
+}
+
+func TestRunSplitsFlagsTargetAndProgramArgs(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+
+	var got runcontroller.Request
+
+	h.runner.EXPECT().Run(mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, req runcontroller.Request) (int, error) {
+			got = req
+
+			return 0, nil
+		}).Once()
+
+	require.NoError(t, h.driver.Run(t.Context(),
+		[]string{"run", "--factory", "git@x:f.git@v1", "--quiet", "my-tool", "--", "-v", "serve"}))
+	assert.Equal(t, "my-tool", got.Target)
+	assert.Equal(t, []string{"-v", "serve"}, got.Args)
+	assert.Equal(t, "git@x:f.git@v1", got.Factory)
+	assert.True(t, got.Quiet)
+	assert.NotEmpty(t, got.WorkDir)
+}
+
+func TestRunTakesARepoAndARunnableName(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+
+	var got runcontroller.Request
+
+	h.runner.EXPECT().Run(mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, req runcontroller.Request) (int, error) {
+			got = req
+
+			return 0, nil
+		}).Once()
+
+	require.NoError(t, h.driver.Run(t.Context(),
+		[]string{"run", "github.com/x/repo", "my-tool"}))
+	assert.Equal(t, "github.com/x/repo", got.Target)
+	assert.Equal(t, "my-tool", got.Name)
+}
+
+func TestRunPropagatesANonZeroExitCode(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.runner.EXPECT().Run(mock.Anything, mock.Anything).Return(3, nil).Once()
+
+	code := -1
+	h.exitCode = &code
+
+	require.NoError(t, h.driver.Run(t.Context(), []string{"run", "my-tool"}))
+	assert.Equal(t, 3, code)
+}
+
+func TestRunWithNoTargetIsUsage(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+
+	err := h.driver.Run(t.Context(), []string{"run"})
+	require.ErrorIs(t, err, clidriver.ErrUsage)
+
+	err = h.driver.Run(t.Context(), []string{"run", "a", "b", "c"})
+	require.ErrorIs(t, err, clidriver.ErrUsage)
+}
+
+func TestBootstrapPlacesThenClonesThenSyncs(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+
+	f, err := config.Parse([]byte(factory))
+	require.NoError(t, err)
+
+	h.runner.EXPECT().Bootstrap(mock.Anything, runcontroller.BootstrapRequest{
+		Factory: "git@x:f.git", Dir: "dest",
+	}).Return(f, "/abs/dest", nil).Once()
+	h.clone.EXPECT().Clone(mock.Anything, mock.Anything, "/abs/dest").
+		Return(clonecontroller.Report{Root: "/abs/dest"}, nil).Once()
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, "/abs/dest", mock.Anything).
+		Return(synccontroller.Report{Root: "/abs/dest"}, nil).Once()
+
+	require.NoError(t, h.driver.Run(t.Context(),
+		[]string{"bootstrap", "git@x:f.git", "dest"}))
+	assert.Contains(t, h.out.String(), "synced /abs/dest")
+}
+
+func TestBootstrapNeedsAFactoryURL(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+
+	require.ErrorIs(t, h.driver.Run(t.Context(), []string{"bootstrap"}), clidriver.ErrUsage)
 }

@@ -20,7 +20,7 @@ func RenderUsage(dir string, e docstypes.Engine) (docstypes.File, error) {
 	fmt.Fprintf(&b, "%s\n\n# %s\n\n%s\n", Header, e.Name, e.Description)
 
 	fmt.Fprintf(&b, "\nAn MCP engine. forge resolves it by URI and calls a tool over stdio.\n")
-	fmt.Fprintf(&b, "\n```yaml\nengine: go://github.com/alexandremahdhaoui/forge-factory/cmd/%s@v%s\n```\n",
+	fmt.Fprintf(&b, "\n```yaml\nengine: forge://github.com/alexandremahdhaoui/forge-factory/cmd/%s@v%s\n```\n",
 		e.Name, e.Version)
 
 	b.WriteString("\n## Tools\n\n| Tool | Does | Input | Output |\n|---|---|---|---|\n")

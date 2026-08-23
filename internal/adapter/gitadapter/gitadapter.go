@@ -25,6 +25,8 @@ type Git interface {
 	Fetch(ctx context.Context, dir string) error
 	WorktreeHash(ctx context.Context, dir string) (string, error)
 	Show(ctx context.Context, dir, rev, path string) (string, bool, error)
+	ResolveRev(ctx context.Context, dir, rev string) (string, error)
+	WorktreeAdd(ctx context.Context, dir, sha, dest string) error
 	LsTree(ctx context.Context, dir, rev, path string) ([]string, error)
 	AheadBehind(ctx context.Context, dir, ref string) (int, int, error)
 }
@@ -218,6 +220,25 @@ func (g *CLI) LsTree(ctx context.Context, dir, rev, path string) ([]string, erro
 	}
 
 	return names, nil
+}
+
+// ResolveRev answers the commit sha a rev names - a tag, a branch, a sha, or
+// HEAD - in one clone.
+func (g *CLI) ResolveRev(ctx context.Context, dir, rev string) (string, error) {
+	res, err := g.run(ctx, dir, "resolving "+rev, "rev-parse", rev+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(res.Stdout), nil
+}
+
+// WorktreeAdd materialises one commit of a clone into its own directory. One
+// clone serves every rev through cheap checkouts; nothing is ever shallow.
+func (g *CLI) WorktreeAdd(ctx context.Context, dir, sha, dest string) error {
+	_, err := g.run(ctx, dir, "adding worktree "+dest, "worktree", "add", "--detach", dest, sha)
+
+	return err
 }
 
 // AheadBehind counts the commits a checkout is ahead of and behind a ref.

@@ -31,9 +31,9 @@ dependencies:
 
 engines:
   - alias: go
-    engine: go://example.com/lang-go
+    engine: forge://example.com/lang-go
   - alias: rust
-    engine: go://example.com/lang-rust
+    engine: forge://example.com/lang-rust
 `
 
 func TestBumpRewritesOneLineAndKeepsComments(t *testing.T) {
@@ -114,7 +114,7 @@ func TestAddAppendsInsideTheReposList(t *testing.T) {
 		Languages: []string{"python"},
 	}
 
-	withEngine := factory + "  - alias: python\n    engine: go://example.com/lang-python\n"
+	withEngine := factory + "  - alias: python\n    engine: forge://example.com/lang-python\n"
 
 	out, edit, err := speccontroller.Add([]byte(withEngine), repo)
 	require.NoError(t, err)
@@ -193,7 +193,7 @@ func TestAddLandsAfterAReposListFollowedByNothing(t *testing.T) {
 name: golden
 engines:
   - alias: go
-    engine: go://x
+    engine: forge://x
 repos:
   - name: a
     url: u
@@ -226,7 +226,7 @@ devDependencies:
     example.com/tool: { pin: v2.0.0, mode: soft, reason: dead }
 engines:
   - alias: go
-    engine: go://example.com/lang-go
+    engine: forge://example.com/lang-go
 `
 
 func TestPrunePinsDropsThePinAndKeepsTheTrack(t *testing.T) {

@@ -15,6 +15,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/clonecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/resolvecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/revisioncontroller"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/runcontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/driver/clidriver"
@@ -39,14 +40,18 @@ func run(ctx context.Context, args []string) error {
 	git := gitadapter.New(execadapter.New())
 	caller := engineadapter.NewMCPCaller(".", version, os.Stderr)
 
+	sync := synccontroller.New(caller, fs, repoadapter.New(fs), execadapter.New(),
+		resolvecontroller.New(fs, git, time.Now))
+
 	driver := clidriver.New(
 		os.Stdout,
 		fs,
 		clonecontroller.New(fs, git),
-		synccontroller.New(caller, fs, repoadapter.New(fs), execadapter.New(),
-			resolvecontroller.New(fs, git, time.Now)),
+		sync,
 		revisioncontroller.New(caller, git),
 		statuscontroller.New(fs, git),
+		runcontroller.New(fs, git, execadapter.New(), sync, os.Stderr),
+		os.Exit,
 	)
 
 	return driver.Run(ctx, args)

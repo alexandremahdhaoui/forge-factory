@@ -7,7 +7,7 @@ Render Python manifests from the workspace composition.
 An MCP engine. forge resolves it by URI and calls a tool over stdio.
 
 ```yaml
-engine: go://github.com/alexandremahdhaoui/forge-factory/cmd/factory-lang-python@v0.1.0
+engine: forge://github.com/alexandremahdhaoui/forge-factory/cmd/factory-lang-python@v0.1.0
 ```
 
 ## Tools

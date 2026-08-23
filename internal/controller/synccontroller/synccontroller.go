@@ -91,7 +91,10 @@ type languageOutput struct {
 // Syncer is what a driver accepts. It is declared here, in the package that
 // implements it, as golden-go does.
 type Syncer interface {
-	Sync(ctx context.Context, f config.Factory, root string) (Report, error)
+	// Sync writes every member's manifest. Only restricts writes and settle
+	// commands to one member - the ephemeral run context uses it, where the
+	// other members are not on disk at all. Empty means everything.
+	Sync(ctx context.Context, f config.Factory, root, only string) (Report, error)
 }
 
 type Controller struct {
@@ -117,7 +120,7 @@ func New(
 // Sync asks every language engine what to write, writes it, and keeps each
 // repo's gitignore in step. A version is written in the factory and nowhere
 // else, so everything written here is ignored by git.
-func (c *Controller) Sync(ctx context.Context, f config.Factory, root string) (Report, error) {
+func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only string) (Report, error) {
 	resolved, err := c.resolve(f, root)
 	if err != nil {
 		return Report{}, err
@@ -172,6 +175,10 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root string) (R
 		}
 
 		for _, file := range out.Files {
+			if only != "" && !strings.HasPrefix(file.Path, filepath.Join(root, only)+string(filepath.Separator)) {
+				continue
+			}
+
 			if err := c.fs.WriteFile(file.Path, []byte(file.Content)); err != nil {
 				return Report{}, fmt.Errorf("writing %s: %w", file.Path, err)
 			}
@@ -185,7 +192,13 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root string) (R
 			}
 		}
 
-		settle = append(settle, out.Settle...)
+		for _, cmd := range out.Settle {
+			if only != "" && cmd.Dir != filepath.Join(root, only) {
+				continue
+			}
+
+			settle = append(settle, cmd)
+		}
 	}
 
 	sort.Strings(report.Written)

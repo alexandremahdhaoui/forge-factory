@@ -26,7 +26,7 @@ repos:
     languages: [go]
 engines:
   - alias: go
-    engine: go://example.com/lang-go
+    engine: forge://example.com/lang-go
 dependencies:
   go:
     sigs.k8s.io/yaml: v1.6.0
@@ -106,15 +106,15 @@ func TestSyncWritesWhatTheEngineAsksForAndIgnoresIt(t *testing.T) {
 	h := newHarness(t)
 	h.repos.EXPECT().Identity("/w/golden-go").
 		Return(map[string]string{"module": "example.com/g"}, nil).Once()
-	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
-	h.answers("go://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
 		{"path": "/w/golden-go/go.mod", "content": "module example.com/g\n", "gitignore": "golden-go"},
 		{"path": "/w/go.work", "content": "use ./golden-go\n"},
 	}})
 	h.fs.EXPECT().Exists("/w/golden-go/.gitignore").Return(false, nil).Once()
 	h.recordWrites()
 
-	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"/w/go.work", "/w/golden-go/go.mod"}, report.Written)
@@ -130,7 +130,7 @@ func TestSyncSendsTheDependenciesAndIdentityToTheEngine(t *testing.T) {
 	h := newHarness(t)
 	h.repos.EXPECT().Identity("/w/golden-go").
 		Return(map[string]string{"module": "example.com/g"}, nil).Once()
-	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 
 	var seen map[string]any
 
@@ -143,7 +143,7 @@ func TestSyncSendsTheDependenciesAndIdentityToTheEngine(t *testing.T) {
 			return json.Unmarshal([]byte(`{"files":[]}`), out)
 		}).Once()
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
 
 	assert.Equal(t, "/w", seen["root"])
@@ -164,9 +164,9 @@ func TestSyncRefusesAnEngineThatSpeaksAnotherLanguage(t *testing.T) {
 
 	h := newHarness(t)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
-	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "rust"})
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "rust"})
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorIs(t, err, synccontroller.ErrLanguage)
 	assert.Contains(t, err.Error(), `registered as "go" but speaks "rust"`)
 }
@@ -176,15 +176,15 @@ func TestSyncAddsToAGitignoreWithoutDisturbingIt(t *testing.T) {
 
 	h := newHarness(t)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
-	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
-	h.answers("go://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
 		{"path": "/w/golden-go/go.mod", "content": "x", "gitignore": "golden-go"},
 	}})
 	h.fs.EXPECT().Exists("/w/golden-go/.gitignore").Return(true, nil).Once()
 	h.fs.EXPECT().ReadFile("/w/golden-go/.gitignore").Return([]byte(".envrc\ntmp/"), nil).Once()
 	h.recordWrites()
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
 
 	got := h.wrote["/w/golden-go/.gitignore"]
@@ -198,15 +198,15 @@ func TestSyncLeavesAGitignoreAloneWhenItAlreadyNamesEverything(t *testing.T) {
 
 	h := newHarness(t)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
-	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
-	h.answers("go://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
 		{"path": "/w/golden-go/go.mod", "content": "x", "gitignore": "golden-go"},
 	}})
 	h.fs.EXPECT().Exists("/w/golden-go/.gitignore").Return(true, nil).Once()
 	h.fs.EXPECT().ReadFile("/w/golden-go/.gitignore").Return([]byte("/go.mod\n"), nil).Once()
 	h.fs.EXPECT().WriteFile("/w/golden-go/go.mod", mock.Anything).Return(nil).Once()
 
-	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
 	assert.Empty(t, report.Ignored)
 }
@@ -217,7 +217,7 @@ func TestSyncFailsWhenARepoCannotBeRead(t *testing.T) {
 	h := newHarness(t)
 	h.repos.EXPECT().Identity(mock.Anything).Return(nil, assert.AnError).Once()
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorIs(t, err, assert.AnError)
 }
 
@@ -226,11 +226,11 @@ func TestSyncFailsWhenAnEngineFails(t *testing.T) {
 
 	h := newHarness(t)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
-	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.caller.EXPECT().Call(mock.Anything, mock.Anything, "render", mock.Anything, mock.Anything).
 		Return(assert.AnError).Once()
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorIs(t, err, assert.AnError)
 	assert.Contains(t, err.Error(), "rendering go")
 }
@@ -243,7 +243,7 @@ func TestSyncFailsWhenTheLanguageProbeFails(t *testing.T) {
 	h.caller.EXPECT().Call(mock.Anything, mock.Anything, "language", mock.Anything, mock.Anything).
 		Return(assert.AnError).Once()
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorIs(t, err, assert.AnError)
 	assert.Contains(t, err.Error(), "what language it speaks")
 }
@@ -253,13 +253,13 @@ func TestSyncFailsWhenAFileCannotBeWritten(t *testing.T) {
 
 	h := newHarness(t)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
-	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
-	h.answers("go://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
 		{"path": "/w/go.work", "content": "x"},
 	}})
 	h.fs.EXPECT().WriteFile("/w/go.work", mock.Anything).Return(assert.AnError).Once()
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorIs(t, err, assert.AnError)
 }
 
@@ -268,14 +268,14 @@ func TestSyncFailsWhenAGitignoreCannotBeRead(t *testing.T) {
 
 	h := newHarness(t)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
-	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
-	h.answers("go://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
 		{"path": "/w/golden-go/go.mod", "content": "x", "gitignore": "golden-go"},
 	}})
 	h.fs.EXPECT().WriteFile("/w/golden-go/go.mod", mock.Anything).Return(nil).Once()
 	h.fs.EXPECT().Exists("/w/golden-go/.gitignore").Return(false, assert.AnError).Once()
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorIs(t, err, assert.AnError)
 }
 
@@ -288,7 +288,7 @@ func TestSyncRefusesALanguageWithNoEngine(t *testing.T) {
 	f := parse(t, factory)
 	f.Engines = nil
 
-	_, err := h.c.Sync(t.Context(), f, "/w")
+	_, err := h.c.Sync(t.Context(), f, "/w", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no engine is registered")
 }
@@ -310,9 +310,9 @@ func TestTheLanguageProbeNeverSendsNull(t *testing.T) {
 
 			return json.Unmarshal([]byte(`{"language":"go"}`), out)
 		}).Once()
-	h.answers("go://example.com/lang-go", "render", map[string]any{"files": []any{}})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []any{}})
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
 
 	assert.NotContains(t, string(raw), "null",
@@ -324,8 +324,8 @@ func TestSyncRunsWhatAnEngineAsksForAfterTheFilesLand(t *testing.T) {
 
 	h := newHarness(t)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
-	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
-	h.answers("go://example.com/lang-go", "render", map[string]any{
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{
 		"files": []map[string]any{{"path": "/w/golden-go/go.mod", "content": "x"}},
 		"settle": []map[string]any{{
 			"dir": "/w/golden-go", "command": "go", "args": []string{"mod", "tidy"},
@@ -336,7 +336,7 @@ func TestSyncRunsWhatAnEngineAsksForAfterTheFilesLand(t *testing.T) {
 	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", map[string]string{"GOWORK": "off"},
 		"go", "mod", "tidy").Return(execadapter.Result{}, nil).Once()
 
-	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"go mod tidy in /w/golden-go"}, report.Settled)
 	assert.Empty(t, report.Unsettled)
@@ -347,8 +347,8 @@ func TestAnOptionalCommandThatFailsIsReportedAndTheSyncStillPasses(t *testing.T)
 
 	h := newHarness(t)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
-	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
-	h.answers("go://example.com/lang-go", "render", map[string]any{
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{
 		"files": []any{},
 		"settle": []map[string]any{
 			{"dir": "/w/golden-go", "command": "go", "args": []string{"mod", "tidy"}, "optional": true},
@@ -357,7 +357,7 @@ func TestAnOptionalCommandThatFailsIsReportedAndTheSyncStillPasses(t *testing.T)
 	h.runner.EXPECT().RunEnv(mock.Anything, mock.Anything, mock.Anything, "go", "mod", "tidy").
 		Return(execadapter.Result{}, assert.AnError).Once()
 
-	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err, "a tidy needs the network and a sync must work offline")
 	require.Len(t, report.Unsettled, 1)
 	assert.Contains(t, report.Unsettled[0], "go mod tidy in /w/golden-go")
@@ -368,15 +368,15 @@ func TestACommandThatIsNotOptionalStopsTheSync(t *testing.T) {
 
 	h := newHarness(t)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
-	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
-	h.answers("go://example.com/lang-go", "render", map[string]any{
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{
 		"files":  []any{},
 		"settle": []map[string]any{{"dir": "/w", "command": "false"}},
 	})
 	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "false").
 		Return(execadapter.Result{}, assert.AnError).Once()
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorIs(t, err, assert.AnError)
 	assert.Contains(t, err.Error(), "running false")
 }
@@ -386,15 +386,15 @@ func TestACommandThatExitsNonZeroCountsAsAFailure(t *testing.T) {
 
 	h := newHarness(t)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
-	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
-	h.answers("go://example.com/lang-go", "render", map[string]any{
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{
 		"files":  []any{},
 		"settle": []map[string]any{{"dir": "/w", "command": "go", "args": []string{"mod", "tidy"}}},
 	})
 	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "go", "mod", "tidy").
 		Return(execadapter.Result{ExitCode: 1, Stderr: "unknown directive: #"}, nil).Once()
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorIs(t, err, synccontroller.ErrCommand,
 		"a non zero exit comes back with no error, so reading only the error passes every failure")
 	assert.Contains(t, err.Error(), "unknown directive")
@@ -405,8 +405,8 @@ func TestALongFailureIsTrimmedToItsReason(t *testing.T) {
 
 	h := newHarness(t)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
-	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
-	h.answers("go://example.com/lang-go", "render", map[string]any{
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{
 		"files":  []any{},
 		"settle": []map[string]any{{"dir": "/w", "command": "go"}},
 	})
@@ -416,7 +416,7 @@ func TestALongFailureIsTrimmedToItsReason(t *testing.T) {
 			Stderr:   strings.Repeat("x", 600) + "the reason",
 		}, nil).Once()
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "the reason")
 	assert.Less(t, len(err.Error()), 600)
@@ -427,15 +427,15 @@ func TestAFileCanNameMoreThanItselfToIgnore(t *testing.T) {
 
 	h := newHarness(t)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
-	h.answers("go://example.com/lang-go", "language", map[string]any{"language": "go"})
-	h.answers("go://example.com/lang-go", "render", map[string]any{"files": []map[string]any{{
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{{
 		"path": "/w/golden-go/go.mod", "content": "x",
 		"gitignore": "golden-go", "alsoIgnore": []string{"go.sum"},
 	}}})
 	h.fs.EXPECT().Exists("/w/golden-go/.gitignore").Return(false, nil).Once()
 	h.recordWrites()
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w")
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
 
 	got := h.wrote["/w/golden-go/.gitignore"]

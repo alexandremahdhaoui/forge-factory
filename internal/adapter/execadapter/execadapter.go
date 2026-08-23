@@ -18,6 +18,9 @@ type Result struct {
 type Runner interface {
 	Run(ctx context.Context, dir, name string, args ...string) (Result, error)
 	RunEnv(ctx context.Context, dir string, env map[string]string, name string, args ...string) (Result, error)
+	// RunAttached wires the command to the caller's stdio and answers its
+	// exit code. It is how a run hands the terminal to the program.
+	RunAttached(ctx context.Context, dir string, env map[string]string, name string, args ...string) (int, error)
 }
 
 type OS struct{}
@@ -69,4 +72,36 @@ func (OS) RunEnv(
 	}
 
 	return res, nil
+}
+
+func (OS) RunAttached(
+	ctx context.Context,
+	dir string,
+	env map[string]string,
+	name string,
+	args ...string,
+) (int, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	cmd.Env = os.Environ()
+
+	for key, value := range env {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	err := cmd.Run()
+	if err == nil {
+		return 0, nil
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), nil
+	}
+
+	return 0, fmt.Errorf("running %s: %w", name, err)
 }

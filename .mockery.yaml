@@ -68,3 +68,10 @@ packages:
       pkgname: statuscontrollermock
     interfaces:
       Stater:
+
+  github.com/alexandremahdhaoui/forge-factory/internal/controller/runcontroller:
+    config:
+      dir: internal/mocks/runcontrollermock
+      pkgname: runcontrollermock
+    interfaces:
+      Runner:

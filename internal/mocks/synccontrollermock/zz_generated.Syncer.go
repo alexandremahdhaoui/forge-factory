@@ -40,8 +40,8 @@ func (_m *MockSyncer) EXPECT() *MockSyncer_Expecter {
 }
 
 // Sync provides a mock function for the type MockSyncer
-func (_mock *MockSyncer) Sync(ctx context.Context, f config.Factory, root string) (synccontroller.Report, error) {
-	ret := _mock.Called(ctx, f, root)
+func (_mock *MockSyncer) Sync(ctx context.Context, f config.Factory, root string, only string) (synccontroller.Report, error) {
+	ret := _mock.Called(ctx, f, root, only)
 
 	if len(ret) == 0 {
 		panic("no return value specified for Sync")
@@ -49,16 +49,16 @@ func (_mock *MockSyncer) Sync(ctx context.Context, f config.Factory, root string
 
 	var r0 synccontroller.Report
 	var r1 error
-	if returnFunc, ok := ret.Get(0).(func(context.Context, config.Factory, string) (synccontroller.Report, error)); ok {
-		return returnFunc(ctx, f, root)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, config.Factory, string, string) (synccontroller.Report, error)); ok {
+		return returnFunc(ctx, f, root, only)
 	}
-	if returnFunc, ok := ret.Get(0).(func(context.Context, config.Factory, string) synccontroller.Report); ok {
-		r0 = returnFunc(ctx, f, root)
+	if returnFunc, ok := ret.Get(0).(func(context.Context, config.Factory, string, string) synccontroller.Report); ok {
+		r0 = returnFunc(ctx, f, root, only)
 	} else {
 		r0 = ret.Get(0).(synccontroller.Report)
 	}
-	if returnFunc, ok := ret.Get(1).(func(context.Context, config.Factory, string) error); ok {
-		r1 = returnFunc(ctx, f, root)
+	if returnFunc, ok := ret.Get(1).(func(context.Context, config.Factory, string, string) error); ok {
+		r1 = returnFunc(ctx, f, root, only)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -74,11 +74,12 @@ type MockSyncer_Sync_Call struct {
 //   - ctx context.Context
 //   - f config.Factory
 //   - root string
-func (_e *MockSyncer_Expecter) Sync(ctx any, f any, root any) *MockSyncer_Sync_Call {
-	return &MockSyncer_Sync_Call{Call: _e.mock.On("Sync", ctx, f, root)}
+//   - only string
+func (_e *MockSyncer_Expecter) Sync(ctx any, f any, root any, only any) *MockSyncer_Sync_Call {
+	return &MockSyncer_Sync_Call{Call: _e.mock.On("Sync", ctx, f, root, only)}
 }
 
-func (_c *MockSyncer_Sync_Call) Run(run func(ctx context.Context, f config.Factory, root string)) *MockSyncer_Sync_Call {
+func (_c *MockSyncer_Sync_Call) Run(run func(ctx context.Context, f config.Factory, root string, only string)) *MockSyncer_Sync_Call {
 	_c.Call.Run(func(args mock.Arguments) {
 		var arg0 context.Context
 		if args[0] != nil {
@@ -92,10 +93,15 @@ func (_c *MockSyncer_Sync_Call) Run(run func(ctx context.Context, f config.Facto
 		if args[2] != nil {
 			arg2 = args[2].(string)
 		}
+		var arg3 string
+		if args[3] != nil {
+			arg3 = args[3].(string)
+		}
 		run(
 			arg0,
 			arg1,
 			arg2,
+			arg3,
 		)
 	})
 	return _c
@@ -106,7 +112,7 @@ func (_c *MockSyncer_Sync_Call) Return(report synccontroller.Report, err error) 
 	return _c
 }
 
-func (_c *MockSyncer_Sync_Call) RunAndReturn(run func(ctx context.Context, f config.Factory, root string) (synccontroller.Report, error)) *MockSyncer_Sync_Call {
+func (_c *MockSyncer_Sync_Call) RunAndReturn(run func(ctx context.Context, f config.Factory, root string, only string) (synccontroller.Report, error)) *MockSyncer_Sync_Call {
 	_c.Call.Return(run)
 	return _c
 }

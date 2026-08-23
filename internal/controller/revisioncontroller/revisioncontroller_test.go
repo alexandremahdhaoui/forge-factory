@@ -25,11 +25,11 @@ repos:
     languages: [rust]
 engines:
   - alias: go
-    engine: go://example.com/lang-go
+    engine: forge://example.com/lang-go
   - alias: rust
-    engine: go://example.com/lang-rust
+    engine: forge://example.com/lang-rust
 state:
-  engine: go://example.com/ci-state-git
+  engine: forge://example.com/ci-state-git
   spec:
     path: ../golden-state
 `
@@ -77,7 +77,7 @@ func TestGetReadsARevisionThroughTheStateEngine(t *testing.T) {
 
 	var seen map[string]any
 
-	caller.EXPECT().Call(mock.Anything, "go://example.com/ci-state-git", "get", mock.Anything, mock.Anything).
+	caller.EXPECT().Call(mock.Anything, "forge://example.com/ci-state-git", "get", mock.Anything, mock.Anything).
 		RunAndReturn(func(_ context.Context, _, _ string, in, out any) error {
 			raw, err := json.Marshal(in)
 			require.NoError(t, err)

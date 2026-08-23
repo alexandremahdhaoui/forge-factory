@@ -10,14 +10,14 @@ import (
 )
 
 const (
-	SchemeGo    = "go://"
+	SchemeGo    = "forge://"
 	SchemeAlias = "alias://"
 
 	defaultModule = "github.com/alexandremahdhaoui/forge-factory"
 )
 
 var (
-	ErrScheme = errors.New("engine must start with go:// or alias://")
+	ErrScheme = errors.New("engine must start with forge:// or alias://")
 	ErrAlias  = errors.New("alias:// must be resolved before calling an engine")
 )
 

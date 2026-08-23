@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/clonecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/resolvecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/revisioncontroller"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/runcontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/speccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
@@ -24,7 +26,7 @@ const DefaultPath = "forge-factory.yaml"
 
 var (
 	ErrUsage = errors.New(
-		"usage: forge-factory <clone|sync|add|bump|checkout|status|validate> [args] " +
+		"usage: forge-factory <clone|sync|add|bump|checkout|status|validate|run|bootstrap> [args] " +
 			"[--config path] [--root dir] [--offline] [--register-head]")
 	ErrDrift = errors.New("the workspace disagrees with the factory")
 
@@ -34,12 +36,15 @@ var (
 type Driver struct {
 	offline bool
 	prune   bool
+	only    string
 	out     io.Writer
 	fs      fsadapter.FS
 	clone   clonecontroller.Cloner
 	sync    synccontroller.Syncer
 	revise  revisioncontroller.Reviser
 	state   statuscontroller.Stater
+	run     runcontroller.Runner
+	exit    func(int)
 }
 
 func New(
@@ -49,8 +54,13 @@ func New(
 	sync synccontroller.Syncer,
 	revise revisioncontroller.Reviser,
 	state statuscontroller.Stater,
+	run runcontroller.Runner,
+	exit func(int),
 ) *Driver {
-	return &Driver{out: out, fs: fs, clone: clone, sync: sync, revise: revise, state: state}
+	return &Driver{
+		out: out, fs: fs, clone: clone, sync: sync,
+		revise: revise, state: state, run: run, exit: exit,
+	}
 }
 
 func (d *Driver) Run(ctx context.Context, args []string) error {
@@ -59,6 +69,15 @@ func (d *Driver) Run(ctx context.Context, args []string) error {
 	}
 
 	verb := args[0]
+
+	// run and bootstrap need no local factory file: the target or the
+	// bootstrap URL names everything.
+	switch verb {
+	case "run":
+		return d.runRun(ctx, args[1:])
+	case "bootstrap":
+		return d.runBootstrap(ctx, args[1:])
+	}
 
 	f, path, root, rest, err := d.load(verb, args[1:])
 	if err != nil {
@@ -117,7 +136,7 @@ func renderClone(report clonecontroller.Report) string {
 }
 
 func (d *Driver) runSync(ctx context.Context, f config.Factory, path, root string) error {
-	report, err := d.sync.Sync(ctx, f, root)
+	report, err := d.sync.Sync(ctx, f, root, d.only)
 	if err != nil {
 		return err
 	}
@@ -195,6 +214,98 @@ func (d *Driver) pruneDeadPins(
 	}
 
 	return updated, true, nil
+}
+
+// runRun materialises the context a runnable needs and delegates execution
+// to forge, propagating the program's exit code verbatim.
+func (d *Driver) runRun(ctx context.Context, args []string) error {
+	req := runcontroller.Request{}
+
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(d.out)
+	factory := fs.String("factory", "", "resolve through this factory url[@rev], overriding everything")
+	force := fs.Bool("force", false, "refresh the run cache")
+	quiet := fs.Bool("quiet", false, "silence the progress lines")
+	cache := fs.String("cache", "", "cache directory, defaults to the user cache")
+
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parsing flags: %w", err)
+	}
+
+	rest := fs.Args()
+
+	for i, a := range rest {
+		if a == "--" {
+			req.Args = rest[i+1:]
+			rest = rest[:i]
+
+			break
+		}
+	}
+
+	switch len(rest) {
+	case 1:
+		req.Target = rest[0]
+	case 2:
+		req.Target, req.Name = rest[0], rest[1]
+	default:
+		return fmt.Errorf("run takes a target and an optional runnable name: %w", ErrUsage)
+	}
+
+	req.Factory = *factory
+	req.Force = *force
+	req.Quiet = *quiet
+	req.CacheDir = *cache
+
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
+	req.WorkDir = wd
+
+	code, err := d.run.Run(ctx, req)
+	if err != nil {
+		return err
+	}
+
+	if code != 0 {
+		d.exit(code)
+	}
+
+	return nil
+}
+
+// runBootstrap places a factory's workspace files, then clones every member
+// and syncs: one command from nothing to a working workspace.
+func (d *Driver) runBootstrap(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
+	fs.SetOutput(d.out)
+	quiet := fs.Bool("quiet", false, "silence the progress lines")
+	cache := fs.String("cache", "", "cache directory, defaults to the user cache")
+
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parsing flags: %w", err)
+	}
+
+	rest := fs.Args()
+	if len(rest) < 1 || len(rest) > 2 {
+		return fmt.Errorf("bootstrap takes a factory url[@rev] and an optional directory: %w", ErrUsage)
+	}
+
+	dir := "."
+	if len(rest) == 2 {
+		dir = rest[1]
+	}
+
+	f, root, err := d.run.Bootstrap(ctx, runcontroller.BootstrapRequest{
+		Factory: rest[0], Dir: dir, Quiet: *quiet, CacheDir: *cache,
+	})
+	if err != nil {
+		return err
+	}
+
+	return d.runClone(ctx, f, filepath.Join(root, DefaultPath), root)
 }
 
 func (d *Driver) runStatus(ctx context.Context, f config.Factory, root string) error {
@@ -326,6 +437,8 @@ func (d *Driver) load(
 		"resolve from the register checkout as it stands, ignoring the pinned revision")
 	prune := fs.Bool("prune-pins", false,
 		"delete the soft pins the resolver names dead, then sync again")
+	only := fs.String("only", "",
+		"restrict sync writes and settle commands to one member")
 
 	if err := fs.Parse(args); err != nil {
 		return config.Factory{}, "", "", nil, fmt.Errorf("parsing flags: %w", err)
@@ -333,6 +446,7 @@ func (d *Driver) load(
 
 	d.offline = *offline
 	d.prune = *prune
+	d.only = *only
 
 	raw, err := d.fs.ReadFile(*path)
 	if err != nil {

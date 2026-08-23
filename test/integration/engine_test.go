@@ -89,7 +89,7 @@ func empty() renderInput {
 }
 
 func uri(name string) string {
-	return "go://" + name
+	return "forge://" + name
 }
 
 func TestEveryEngineReportsItsOwnLanguage(t *testing.T) {

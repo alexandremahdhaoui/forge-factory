@@ -20,7 +20,7 @@ repos:
     languages: [go]
 engines:
   - alias: go
-    engine: go://example.com/lang-go
+    engine: forge://example.com/lang-go
 `
 
 func parse(t *testing.T, raw string) config.Factory {

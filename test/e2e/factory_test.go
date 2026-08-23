@@ -75,11 +75,11 @@ dependencies:
 
 engines:
   - alias: go
-    engine: go://factory-lang-go
+    engine: forge://factory-lang-go
   - alias: rust
-    engine: go://factory-lang-rust
+    engine: forge://factory-lang-rust
   - alias: typescript
-    engine: go://factory-lang-typescript
+    engine: forge://factory-lang-typescript
 `
 
 // workspace lays out a factory with three members, each carrying the identity
@@ -322,7 +322,7 @@ func TestSyncRefusesAFactoryThatDoesNotValidate(t *testing.T) {
 	root := workspace(t)
 
 	write(t, filepath.Join(root, "forge-factory.yaml"), strings.Replace(factory,
-		"  - alias: rust\n    engine: go://factory-lang-rust\n", "", 1))
+		"  - alias: rust\n    engine: forge://factory-lang-rust\n", "", 1))
 
 	out, err := run(t, root, "sync")
 	require.Error(t, err)
@@ -410,7 +410,7 @@ func TestCheckoutPutsAMemberOnItsProvenSHA(t *testing.T) {
 
 	write(t, filepath.Join(root, "forge-factory.yaml"), factory+`
 state:
-  engine: go://`+filepath.Base(engine)+`
+  engine: forge://`+filepath.Base(engine)+`
   spec:
     path: `+store+`
 `)
@@ -443,7 +443,7 @@ func TestCheckoutRefusesToDestroyUncommittedWork(t *testing.T) {
 
 	write(t, filepath.Join(root, "forge-factory.yaml"), factory+`
 state:
-  engine: go://`+filepath.Base(engine)+`
+  engine: forge://`+filepath.Base(engine)+`
   spec:
     path: `+store+`
 `)
@@ -464,7 +464,7 @@ func TestCheckoutReportsARevisionNobodyMinted(t *testing.T) {
 
 	write(t, filepath.Join(root, "forge-factory.yaml"), factory+`
 state:
-  engine: go://`+filepath.Base(engine)+`
+  engine: forge://`+filepath.Base(engine)+`
   spec:
     path: `+filepath.Join(root, "state")+`
 `)

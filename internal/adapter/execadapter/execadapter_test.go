@@ -35,3 +35,19 @@ func TestAMissingBinaryIsAnError(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "running definitely-not-a-real-binary-xyz")
 }
+
+func TestRunAttachedAnswersTheExitCode(t *testing.T) {
+	t.Parallel()
+
+	code, err := execadapter.New().RunAttached(context.Background(), "", nil, "sh", "-c", "exit 4")
+	require.NoError(t, err)
+	require.Equal(t, 4, code)
+
+	code, err = execadapter.New().RunAttached(context.Background(), "",
+		map[string]string{"X": "y"}, "sh", "-c", `test "$X" = y`)
+	require.NoError(t, err)
+	require.Zero(t, code)
+
+	_, err = execadapter.New().RunAttached(context.Background(), "", nil, "/does/not/exist")
+	require.Error(t, err)
+}
