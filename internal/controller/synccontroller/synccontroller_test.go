@@ -442,3 +442,50 @@ func TestAFileCanNameMoreThanItselfToIgnore(t *testing.T) {
 	assert.Contains(t, got, "/go.mod")
 	assert.Contains(t, got, "/go.sum")
 }
+
+const twoMemberFactory = `version: "1"
+name: golden
+repos:
+  - name: golden-go
+    url: u
+    languages: [go]
+  - name: other-go
+    url: v
+    languages: [go]
+engines:
+  - alias: go
+    engine: forge://example.com/lang-go
+`
+
+func TestSyncOnlyRendersTheOneMemberAndTheRoot(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.repos.EXPECT().Identity("/w/golden-go").
+		Return(map[string]string{"module": "example.com/g"}, nil).Once()
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{
+		"files": []map[string]any{
+			{"path": "/w/golden-go/go.mod", "content": "module example.com/g\n"},
+			{"path": "/w/other-go/go.mod", "content": "module example.com/o\n"},
+			{"path": "/w/go.work", "content": "use ./golden-go\n"},
+		},
+		"settle": []map[string]any{
+			{"dir": "/w/golden-go", "command": "true"},
+			{"dir": "/w/other-go", "command": "false"},
+			{"dir": "/w", "command": "true"},
+		},
+	})
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", mock.Anything, "true").
+		Return(execadapter.Result{}, nil).Once()
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "true").
+		Return(execadapter.Result{}, nil).Once()
+	h.recordWrites()
+
+	report, err := h.c.Sync(t.Context(), parse(t, twoMemberFactory), "/w", "golden-go")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"/w/go.work", "/w/golden-go/go.mod"}, report.Written,
+		"the one member and the root land; the absent member never does")
+	assert.NotContains(t, h.wrote, "/w/other-go/go.mod")
+}
