@@ -85,6 +85,22 @@ func TestGoRender(t *testing.T) {
 	assert.Contains(t, work.Content, "./alpha-go")
 }
 
+func TestACommittedManifestIsWrittenAndNeverIgnored(t *testing.T) {
+	t.Parallel()
+
+	in := input()
+	in.Repos[0].Identity["manifest"] = "committed"
+
+	out, err := rendercontroller.Go{}.Render(in)
+	require.NoError(t, err)
+
+	mod := find(t, out, "go.mod")
+	assert.Contains(t, mod.Content, "module example.com/alpha",
+		"sync still writes the file; committing it is what makes bare go run work")
+	assert.Empty(t, mod.Gitignore)
+	assert.Empty(t, mod.AlsoIgnore)
+}
+
 func TestGoWorkTakesTheNewestMemberVersion(t *testing.T) {
 	t.Parallel()
 

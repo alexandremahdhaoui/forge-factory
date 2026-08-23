@@ -49,8 +49,17 @@ func reposFor(in rendertypes.Input, language string) []rendertypes.Repo {
 // over would throw them away.
 const OwnManifest = "own"
 
+// CommittedManifest is the middle ground: sync writes the manifest and the
+// repo commits it, so a bare `go run module@version` works with no
+// workspace. The file is not gitignored, which is the point.
+const CommittedManifest = "committed"
+
 func ownsItsManifest(repo rendertypes.Repo) bool {
 	return repo.Identity["manifest"] == OwnManifest
+}
+
+func commitsItsManifest(repo rendertypes.Repo) bool {
+	return repo.Identity["manifest"] == CommittedManifest
 }
 
 func identity(repo rendertypes.Repo, key string) (string, error) {
@@ -114,12 +123,19 @@ func (g Go) Render(in rendertypes.Input) (rendertypes.Output, error) {
 			fmt.Fprintf(&b, ")\n")
 		}
 
-		files = append(files, rendertypes.File{
+		file := rendertypes.File{
 			Path:       filepath.Join(r.Path, "go.mod"),
 			Content:    b.String(),
 			Gitignore:  r.Name,
 			AlsoIgnore: []string{"go.sum"},
-		})
+		}
+
+		if commitsItsManifest(r) {
+			file.Gitignore = ""
+			file.AlsoIgnore = nil
+		}
+
+		files = append(files, file)
 	}
 
 	var work strings.Builder
