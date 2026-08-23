@@ -121,6 +121,8 @@ func New(
 // repo's gitignore in step. A version is written in the factory and nowhere
 // else, so everything written here is ignored by git.
 func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only string) (Report, error) {
+	f = restrictTo(f, only)
+
 	resolved, err := c.resolve(f, root)
 	if err != nil {
 		return Report{}, err
@@ -175,7 +177,7 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		}
 
 		for _, file := range out.Files {
-			if only != "" && !strings.HasPrefix(file.Path, filepath.Join(root, only)+string(filepath.Separator)) {
+			if only != "" && !underMemberOrRoot(root, only, file.Path) {
 				continue
 			}
 
@@ -193,7 +195,7 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		}
 
 		for _, cmd := range out.Settle {
-			if only != "" && cmd.Dir != filepath.Join(root, only) {
+			if only != "" && cmd.Dir != filepath.Join(root, only) && cmd.Dir != root {
 				continue
 			}
 
@@ -221,6 +223,38 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 	}
 
 	return report, nil
+}
+
+// underMemberOrRoot keeps a write inside the one materialised member or at
+// the context root itself: the workspace files reference only the member,
+// because restrictTo already narrowed the factory.
+func underMemberOrRoot(root, only, path string) bool {
+	if strings.HasPrefix(path, filepath.Join(root, only)+string(filepath.Separator)) {
+		return true
+	}
+
+	return filepath.Dir(path) == filepath.Clean(root)
+}
+
+// restrictTo narrows the factory to one member. The ephemeral run context
+// holds only that member and the register, so rendering the others would
+// read identities that are not on disk.
+func restrictTo(f config.Factory, only string) config.Factory {
+	if only == "" {
+		return f
+	}
+
+	repos := []config.Repo{}
+
+	for _, r := range f.Repos {
+		if r.Name == only {
+			repos = append(repos, r)
+		}
+	}
+
+	f.Repos = repos
+
+	return f
 }
 
 // settle runs what each engine asked for after its files landed. A generated

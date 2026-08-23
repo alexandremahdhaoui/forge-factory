@@ -15,6 +15,26 @@ forge-factory status
 `docs/concepts.md` is the reference and `docs/decisions.md` holds the closed
 questions. Both are generated from yaml. This file is the only hand written one.
 
+## Running things
+
+forge-factory materialises the dependency context a runnable needs and
+hands execution to forge with one exec of `forge run <name>` inside it.
+The context rules, ordered, first match wins, one stderr line names the
+rule:
+
+1. `--factory url[@rev]` overrides everything.
+2. The enclosing workspace, when its factory claims the repo.
+3. The runnable's own `factory:`. Mandatory, so nothing falls through.
+
+A remote run resolves the version from the factory's register internal
+track and pins every sha through the proving revision's record. The
+factory's repos list is the trust boundary in every mode. The cache keeps
+one full clone per repo URL under `~/.cache/forge-factory/git/` and one
+worktree per resolved tuple under `~/.cache/forge-factory/run/`; nothing
+is ever shallow, `--force` refreshes a tuple. A dev `@rev` runs visibly
+UNPROVEN. `forge-factory bootstrap <factory-url> [dir]` places the
+workspace files so `forge clone` stands a workspace up from nothing.
+
 ## Building it
 
 ```sh
