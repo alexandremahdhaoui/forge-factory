@@ -1,5 +1,5 @@
 name: factory-lang-python
-type: generic
+kind: mcp-server
 version: 0.1.0
 description: Render Python manifests from the workspace composition.
 openapi:
@@ -7,6 +7,7 @@ openapi:
 generate:
   packageName: main
   docsBaseURL: https://raw.githubusercontent.com/alexandremahdhaoui/forge-factory/refs/heads/main
+surface:
   tools:
     - name: language
       description: Report which language this engine speaks.

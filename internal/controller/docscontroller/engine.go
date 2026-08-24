@@ -25,7 +25,7 @@ func RenderUsage(dir string, e docstypes.Engine) (docstypes.File, error) {
 
 	b.WriteString("\n## Tools\n\n| Tool | Does | Input | Output |\n|---|---|---|---|\n")
 
-	for _, t := range e.Generate.Tools {
+	for _, t := range e.Surface.Tools {
 		fmt.Fprintf(&b, "| `%s` | %s | `%s` | `%s` |\n",
 			t.Name, t.Description, t.Input, t.Output)
 	}
