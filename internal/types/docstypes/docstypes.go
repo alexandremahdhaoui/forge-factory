@@ -45,14 +45,16 @@ type Tool struct {
 
 type Engine struct {
 	Name        string `json:"name"`
-	Type        string `json:"type"`
+	Kind        string `json:"kind"`
 	Version     string `json:"version"`
 	Description string `json:"description"`
 	Generate    struct {
 		PackageName string `json:"packageName"`
 		DocsBaseURL string `json:"docsBaseURL"`
-		Tools       []Tool `json:"tools"`
 	} `json:"generate"`
+	Surface struct {
+		Tools []Tool `json:"tools"`
+	} `json:"surface"`
 	OpenAPI struct {
 		SpecPath string `json:"specPath"`
 	} `json:"openapi"`

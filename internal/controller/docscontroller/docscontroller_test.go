@@ -84,11 +84,11 @@ func TestRenderDecisionsNeedsATitle(t *testing.T) {
 func engine() docstypes.Engine {
 	e := docstypes.Engine{
 		Name:        "factory-lang-go",
-		Type:        "generic",
+		Kind:        "mcp-server",
 		Version:     "0.1.0",
 		Description: "Render Go manifests.",
 	}
-	e.Generate.Tools = []docstypes.Tool{
+	e.Surface.Tools = []docstypes.Tool{
 		{Name: "render", Description: "Render every manifest.", Input: "RenderInput", Output: "RenderOutput"},
 	}
 
