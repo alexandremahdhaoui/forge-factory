@@ -249,6 +249,18 @@ func (c *Controller) syncWorkspace(ctx context.Context, wsRoot, only string) (in
 func (c *Controller) runRemote(ctx context.Context, req Request) (int, error) {
 	module, sub, rev := splitTarget(req.Target)
 
+	// The tuple-keyed early entry: a request that pins everything itself -
+	// a full sha on the target and a full sha on --factory - names its run
+	// context with no resolution, so a warm one enters at the inputs step
+	// with no clone, fetch or register lookup. Anything that floats (a
+	// branch, a tag, the internal track, the factory's head) keeps
+	// resolving, because floating is the point of those forms.
+	if key := warmTupleKey(req); key != "" && !req.Force {
+		if code, err, hit := c.enterWarmTuple(ctx, req, key); hit {
+			return code, err
+		}
+	}
+
 	c.say(req.Quiet, "clone: %s", module)
 
 	repoClone, err := c.cloneOrFetch(ctx, req.CacheDir, moduleToURL(module))
@@ -383,9 +395,124 @@ func (c *Controller) materialiseRemote(
 		return 0, err
 	}
 
+	if key := warmTupleKey(req); key != "" {
+		c.writeWarmTuple(req.CacheDir, key, repoDir, target)
+	}
+
 	c.say(req.Quiet, "exec: forge run %s in %s", target.Name, repoDir)
 
 	return c.exec(ctx, repoDir, target.Name, req.Args)
+}
+
+// warmTuple is the marker a fully pinned run leaves behind: enough to
+// re-enter at the inputs step with no resolution.
+type warmTuple struct {
+	RepoDir string `json:"repoDir"`
+	Target  struct {
+		Name            string `json:"name"`
+		Src             string `json:"src"`
+		Factory         string `json:"factory"`
+		FactoryRevision string `json:"factoryRevision"`
+	} `json:"target"`
+}
+
+// warmTupleKey names the request's tuple, or answers "" when anything
+// floats. Only a full 40-hex sha pins immutably - a branch or tag can
+// move under the cache and the internal track advances by design.
+func warmTupleKey(req Request) string {
+	module, sub, rev := splitTarget(req.Target)
+	if !isFullSha(rev) {
+		return ""
+	}
+
+	factoryURL, factoryRev := splitRev(req.Factory)
+	if factoryURL == "" || !isFullSha(factoryRev) {
+		return ""
+	}
+
+	name := sub
+	if name == "" {
+		name = req.Name
+	}
+
+	return sanitize(module) + "@" + shortSha(rev) +
+		"+" + sanitize(name) +
+		"+" + sanitize(factoryURL) + "@" + shortSha(factoryRev)
+}
+
+func isFullSha(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+
+	return true
+}
+
+func warmTuplePath(cacheDir, key string) string {
+	return filepath.Join(cacheDir, "run", ".ready", key+".json")
+}
+
+// enterWarmTuple re-enters a marked run context at the inputs step. A
+// missing or unreadable marker, or a context that is gone, is a miss and
+// the run resolves normally; the marker is convenience, never authority.
+func (c *Controller) enterWarmTuple(ctx context.Context, req Request, key string) (int, error, bool) {
+	raw, err := c.fs.ReadFile(warmTuplePath(req.CacheDir, key))
+	if err != nil {
+		return 0, nil, false
+	}
+
+	var mark warmTuple
+	if err := json.Unmarshal(raw, &mark); err != nil {
+		return 0, nil, false
+	}
+
+	if ok, _ := c.fs.IsDir(mark.RepoDir); !ok {
+		return 0, nil, false
+	}
+
+	target := runnable(mark.Target)
+
+	if err := c.checkInputs(mark.RepoDir, target); err != nil {
+		return 0, err, true
+	}
+
+	c.say(req.Quiet, "cache: warm tuple, entering at inputs")
+	c.say(req.Quiet, "exec: forge run %s in %s", target.Name, mark.RepoDir)
+
+	code, err := c.exec(ctx, mark.RepoDir, target.Name, req.Args)
+
+	return code, err, true
+}
+
+// writeWarmTuple records a successful materialisation. Failing to write
+// it costs the next run a resolution, nothing more, so it stays quiet.
+func (c *Controller) writeWarmTuple(cacheDir, key, repoDir string, target runnable) {
+	var mark warmTuple
+	mark.RepoDir = repoDir
+	mark.Target = struct {
+		Name            string `json:"name"`
+		Src             string `json:"src"`
+		Factory         string `json:"factory"`
+		FactoryRevision string `json:"factoryRevision"`
+	}(target)
+
+	raw, err := json.Marshal(mark)
+	if err != nil {
+		return
+	}
+
+	path := warmTuplePath(cacheDir, key)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return
+	}
+
+	_ = c.fs.WriteFile(path, raw)
 }
 
 func (c *Controller) checkoutContext(
