@@ -55,12 +55,17 @@ type Controller struct {
 	fs  fsadapter.FS
 	git gitadapter.Git
 	now func() time.Time
+
+	// warnedUnpushed dedupes the local-only-entries warning per register
+	// checkout. Resolution runs sequentially within one sync, so a plain
+	// map is enough.
+	warnedUnpushed map[string]bool
 }
 
 var _ Resolver = (*Controller)(nil)
 
 func New(fs fsadapter.FS, git gitadapter.Git, now func() time.Time) *Controller {
-	return &Controller{fs: fs, git: git, now: now}
+	return &Controller{fs: fs, git: git, now: now, warnedUnpushed: map[string]bool{}}
 }
 
 // registerParams is the slice of the register's own config a consumer reads.
@@ -79,6 +84,9 @@ type view struct {
 	ctx context.Context
 	dir string
 	rev string
+	// url names the register remote, so a failure in a cache
+	// materialisation can point at the real register to fix.
+	url string
 }
 
 func (v view) read(rel string) (string, bool, error) {
@@ -165,14 +173,18 @@ func (c *Controller) resolveEntry(ctx context.Context, f config.Factory, root, l
 		return "", nil, err
 	}
 
-	v := view{c: c, ctx: ctx, dir: dir, rev: f.Register.Revision}
+	v := view{c: c, ctx: ctx, dir: dir, rev: f.Register.Revision, url: f.Register.URL}
+
+	var notes []string
+
+	if note := c.unpushedNote(ctx, v); note != "" {
+		notes = append(notes, note)
+	}
 
 	track, err := c.track(v, language, name, d)
 	if err != nil {
-		return "", nil, err
+		return "", notes, err
 	}
-
-	var notes []string
 
 	version := track.Current
 
@@ -248,6 +260,14 @@ func (c *Controller) applyPin(v view, language, name string, d config.Dependency
 	}
 
 	if compareVersions(d.Pin, track.Current) > 0 {
+		// A cache materialisation takes no filings: the pin still floors the
+		// track, and the retire request waits for a real checkout's sync.
+		if c.cacheCheckout(v.dir) {
+			return d.Pin, []string{fmt.Sprintf(
+				"soft pin %s %s (reason: %s) is ahead of track %s (%s)",
+				where, d.Pin, d.Reason, track.Prefix, track.Current)}, nil
+		}
+
 		key, err := c.fileRequest(v.dir, language, name, request{
 			kind: spec.Upgrade, version: d.Pin, track: track.Prefix, reason: d.Reason,
 		})
@@ -326,6 +346,10 @@ func (c *Controller) track(v view, language, name string, d config.DependencySpe
 	}
 
 	if !found {
+		if c.cacheCheckout(v.dir) {
+			return spec.Track{}, unfiledError(v, language, name, ErrUnregistered)
+		}
+
 		// The package may carry other tracks: then this is an open-track
 		// request, judged by the deny policies, not an admission.
 		kind := spec.Admission
@@ -375,6 +399,10 @@ func (c *Controller) defaultTrack(v view, language, name string) (string, error)
 	}
 
 	if best == "" {
+		if c.cacheCheckout(v.dir) {
+			return "", unfiledError(v, language, name, ErrUnregistered)
+		}
+
 		key, ferr := c.fileRequest(v.dir, language, name, request{kind: spec.Admission})
 		if ferr != nil {
 			return "", ferr
@@ -401,6 +429,60 @@ type request struct {
 	track   string
 	version string
 	reason  string
+}
+
+// cacheCheckout reports whether the register checkout is a materialisation
+// under the run cache rather than a checkout a person works in: a cache
+// materialisation is a git worktree, whose .git is a link file, while a real
+// checkout carries a .git directory. A request filed into the cache is
+// answered by nothing, so filing there is worse than refusing.
+func (c *Controller) cacheCheckout(dir string) bool {
+	gitPath := filepath.Join(dir, ".git")
+
+	exists, err := c.fs.Exists(gitPath)
+	if err != nil || !exists {
+		return false
+	}
+
+	isDir, err := c.fs.IsDir(gitPath)
+
+	return err == nil && !isDir
+}
+
+// unpushedNote warns once per register checkout when its entries exist only
+// locally: a colleague's fresh clone resolves against origin, so an
+// admission that never left this machine reads as "not in the register"
+// everywhere else. A cache materialisation is detached and skipped, and a
+// checkout that cannot answer (offline, no origin) stays silent.
+func (c *Controller) unpushedNote(ctx context.Context, v view) string {
+	if v.rev != "" || c.warnedUnpushed[v.dir] || c.cacheCheckout(v.dir) {
+		return ""
+	}
+
+	c.warnedUnpushed[v.dir] = true
+
+	ahead, _, err := c.git.AheadBehind(ctx, v.dir, "origin/main")
+	if err != nil || ahead == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf(
+		"the register checkout %s is %d commit(s) ahead of origin/main - its entries are local-only until pushed, and a fresh clone will not see them",
+		v.dir, ahead)
+}
+
+// unfiledError is the honest failure for a cache materialisation: nothing is
+// filed, because nothing would ever answer it, and the message names the
+// real register and the commands that admit the package there.
+func unfiledError(v view, language, name string, cause error) error {
+	where := v.url
+	if where == "" {
+		where = v.dir
+	}
+
+	return fmt.Errorf(
+		"%s:%s is %w at %s. This register copy is a cache materialisation, so filing a request here would reach nothing: admit the package from a real checkout of %s (forge-register add %s:%s --reason \"...\", run its pipeline, push), then rerun",
+		language, name, cause, revLabel(v.rev), where, language, name)
 }
 
 // fileRequest writes a request into the register checkout's worktree. Filing

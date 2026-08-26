@@ -561,3 +561,91 @@ func TestVersionTailsCombineAndOrder(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, notes[0], "remove this pin")
 }
+
+// A lone checkout resolves through a cache materialisation of the register: a
+// git worktree, whose .git is a link file. A request filed there is answered
+// by nothing, so a missing package fails honestly instead - naming the real
+// register and the commands that admit the package - and files nothing.
+// Live case: a fresh bootstrap hard-blocked on the toolchain binaries with a
+// message promising a self-heal that could never happen.
+func TestACacheRegisterFilesNothingAndPointsAtTheRealOne(t *testing.T) {
+	f, root := register(t, nil)
+	dir := filepath.Join(root, "golden-register")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git"),
+		[]byte("gitdir: /elsewhere/.git/worktrees/x\n"), 0o600))
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"github.com/vektra/mockery/v3": {}})
+	require.Error(t, err)
+	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
+	require.Contains(t, err.Error(), "cache materialisation")
+	require.Contains(t, err.Error(), "forge-register add go:github.com/vektra/mockery/v3")
+	require.Contains(t, err.Error(), "git@github.com:example/golden-register.git")
+	require.NotContains(t, err.Error(), "then sync again")
+
+	_, statErr := os.Stat(filepath.Join(dir, "request"))
+	require.True(t, os.IsNotExist(statErr), "no request may be filed into the cache")
+}
+
+// The toolchain path goes through the same door.
+func TestACacheRegisterFailsAToolchainTrackHonestly(t *testing.T) {
+	f, root := register(t, nil)
+	dir := filepath.Join(root, "golden-register")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git"),
+		[]byte("gitdir: /elsewhere/.git/worktrees/x\n"), 0o600))
+
+	_, _, err := newController().ResolveTool(context.Background(), f, root,
+		"go:github.com/vektra/mockery/v3")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cache materialisation")
+
+	_, statErr := os.Stat(filepath.Join(dir, "request"))
+	require.True(t, os.IsNotExist(statErr))
+}
+
+// A real checkout still files the request visibly, exactly as before.
+func TestARealCheckoutStillFilesTheRequest(t *testing.T) {
+	f, root := register(t, nil)
+	dir := filepath.Join(root, "golden-register")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git"), 0o750))
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {}})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "the register pipeline answers it, then sync again")
+
+	entries, readErr := os.ReadDir(filepath.Join(dir, "request", "go", "example.com", "pkg"))
+	require.NoError(t, readErr)
+	require.Len(t, entries, 1)
+}
+
+// An admission committed locally but never pushed reads as "not in the
+// register" on every other machine. The sync that resolves against such a
+// checkout says so once. Live case: sixty local-only commits carried the
+// toolchain admissions and a colleague's fresh clone blocked on them.
+func TestAnUnpushedRegisterIsNamedInTheNotes(t *testing.T) {
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+	dir := filepath.Join(root, "golden-register")
+
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	gitIn(t, root, "init", "-q", "--bare", origin)
+
+	gitIn(t, dir, "init", "-q", "-b", "main")
+	gitIn(t, dir, "add", ".")
+	gitIn(t, dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "seed")
+	gitIn(t, dir, "remote", "add", "origin", origin)
+	gitIn(t, dir, "push", "-q", "origin", "main")
+	gitIn(t, dir, "fetch", "-q", "origin")
+
+	// One admission lands locally and never leaves the machine.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "local-only.json"), []byte("{}"), 0o600))
+	gitIn(t, dir, "add", ".")
+	gitIn(t, dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "local admission")
+
+	_, notes, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {Track: "1"}})
+	require.NoError(t, err)
+	require.Len(t, notes, 1)
+	require.Contains(t, notes[0], "ahead of origin/main")
+	require.Contains(t, notes[0], "a fresh clone will not see them")
+}
