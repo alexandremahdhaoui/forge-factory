@@ -46,6 +46,9 @@ var (
 // Resolver resolves one language's dependency entries to versions.
 type Resolver interface {
 	Resolve(ctx context.Context, f config.Factory, root, language string, deps map[string]config.DependencySpec) (map[string]string, []string, error)
+	// ResolveTool answers the version pinning one toolchain binary from a
+	// register track named "<ecosystem>:<package>".
+	ResolveTool(ctx context.Context, f config.Factory, root, track string) (string, []string, error)
 }
 
 type Controller struct {
@@ -141,6 +144,19 @@ func (c *Controller) Resolve(ctx context.Context, f config.Factory, root, langua
 	}
 
 	return out, notes, nil
+}
+
+// ResolveTool answers the version pinning one toolchain binary: the named
+// track's current version, under the same advisory and deprecation rules
+// every dependency resolves under. A missing package files an admission
+// request, exactly like a dependency would.
+func (c *Controller) ResolveTool(ctx context.Context, f config.Factory, root, track string) (string, []string, error) {
+	ecosystem, pkg, ok := strings.Cut(track, ":")
+	if !ok || ecosystem == "" || pkg == "" {
+		return "", nil, fmt.Errorf("toolchain track %q is named <ecosystem>:<package>", track)
+	}
+
+	return c.resolveEntry(ctx, f, root, ecosystem, pkg, config.DependencySpec{})
 }
 
 func (c *Controller) resolveEntry(ctx context.Context, f config.Factory, root, language, name string, d config.DependencySpec) (string, []string, error) {

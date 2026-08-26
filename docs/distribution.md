@@ -90,3 +90,28 @@ forge-ci's engines), one rule applies, canonical in forge's
 3. the pinned store view,
 4. PATH - only when nothing pins,
 5. `go run module@pinnedVersion` - never `@latest`.
+
+## The toolchain section
+
+Third-party generators and linters - or a user's own engines - join the
+same store through `forge-factory.yaml`:
+
+```yaml
+toolchain:
+  binaries:
+    - name: mockery
+      module: github.com/vektra/mockery/v3
+      track: go:github.com/vektra/mockery/v3   # register-governed
+    - name: my-engine
+      module: github.com/me/my-engines/cmd/my-engine
+      version: v1.4.0                           # literal pin, register-less
+```
+
+Exactly one of `track` | `version` pins each entry: a track resolves from
+the register's index under the same advisory and deprecation rules as
+every dependency (a missing package files an admission request), a literal
+version serves a workspace without a register. sync builds each pinned
+(module, version) once - `go install` into the store, content-addressed
+like a distributed binary - links it into `.forge/bin`, and reuses it
+forever after. This is the one governed place tool versions live, instead
+of an env var here and a code default there.

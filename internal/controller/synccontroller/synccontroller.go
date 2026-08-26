@@ -13,6 +13,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/repoadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/resolvecontroller"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/toolingcontroller"
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
 )
 
@@ -48,6 +49,9 @@ type Report struct {
 	Settled   []string `json:"settled"`
 	Unsettled []string `json:"unsettled"`
 	Notes     []string `json:"notes,omitempty"`
+	// Toolchain is every declared binary resolved to its pinned version;
+	// the driver provisions them into the store.
+	Toolchain []toolingcontroller.Binary `json:"toolchain,omitempty"`
 }
 
 type repoWire struct {
@@ -146,6 +150,30 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 	// and the rest of the file is never touched.
 	if err := c.ensureEnvrcs(f, root, &report); err != nil {
 		return Report{}, err
+	}
+
+	// Toolchain binaries resolve here - a literal pin as written, a track
+	// through the register like any dependency - and the driver provisions
+	// what this reports into the store.
+	if f.Toolchain != nil {
+		for _, b := range f.Toolchain.Binaries {
+			version := b.Version
+
+			if b.Track != "" {
+				resolved, toolNotes, err := c.resolver.ResolveTool(ctx, f, root, b.Track)
+				report.Notes = append(report.Notes, toolNotes...)
+
+				if err != nil {
+					return Report{}, fmt.Errorf("resolving toolchain binary %s: %w", b.Name, err)
+				}
+
+				version = resolved
+			}
+
+			report.Toolchain = append(report.Toolchain, toolingcontroller.Binary{
+				Name: b.Name, Module: b.Module, Version: version,
+			})
+		}
 	}
 
 	var settle []commandWire

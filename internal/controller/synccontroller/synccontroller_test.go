@@ -8,6 +8,7 @@ import (
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/toolingcontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/engineadaptermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/execadaptermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/fsadaptermock"
@@ -52,6 +53,12 @@ func (passthrough) Resolve(_ context.Context, _ config.Factory, _, _ string, dep
 	}
 
 	return out, nil, nil
+}
+
+// ResolveTool answers a fixed version, so tests can see a track resolve
+// without a register checkout.
+func (passthrough) ResolveTool(context.Context, config.Factory, string, string) (string, []string, error) {
+	return "v9.9.9", []string{"tool note"}, nil
 }
 
 type harness struct {
@@ -524,6 +531,33 @@ func TestSyncOnlyRendersTheOneMemberAndTheRoot(t *testing.T) {
 	assert.Equal(t, []string{"/w/go.work", "/w/golden-go/go.mod"}, report.Written,
 		"the one member and the root land; the absent member never does")
 	assert.NotContains(t, h.wrote, "/w/other-go/go.mod")
+}
+
+// Toolchain binaries resolve during sync: a literal pin as written, a
+// track through the register like any dependency, with the notes surfaced.
+func TestSyncResolvesTheToolchainBinaries(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.envrcExists(true)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
+
+	f := config.Factory{
+		Repos: []config.Repo{{Name: "member-a"}},
+		Toolchain: &config.Toolchain{Binaries: []config.ToolchainBinary{
+			{Name: "pinned-tool", Module: "example.com/x/cmd/pinned-tool", Version: "v1.2.3"},
+			{Name: "tracked-tool", Module: "example.com/y/cmd/tracked-tool", Track: "go:example.com/y"},
+		}},
+	}
+
+	report, err := h.c.Sync(context.Background(), f, "/w", "")
+	require.NoError(t, err)
+
+	require.Equal(t, []toolingcontroller.Binary{
+		{Name: "pinned-tool", Module: "example.com/x/cmd/pinned-tool", Version: "v1.2.3"},
+		{Name: "tracked-tool", Module: "example.com/y/cmd/tracked-tool", Version: "v9.9.9"},
+	}, report.Toolchain)
+	require.Contains(t, report.Notes, "tool note")
 }
 
 // TestSyncCreatesAMissingEnvrc: forge sources a .envrc in every repo it

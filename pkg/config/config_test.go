@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
@@ -176,4 +177,115 @@ modules:
 `))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "modules")
+}
+
+// The toolchain section is the one governed place standalone tool versions
+// live. Exactly one of track or version pins each entry.
+func TestToolchainValidation(t *testing.T) {
+	t.Parallel()
+
+	base := `version: "1"
+name: w
+repos:
+  - name: r
+    url: u
+engines:
+  - alias: go
+    engine: forge://example.com/lang-go
+register:
+  url: git@example.com:owner/register.git
+toolchain:
+  binaries:
+%s`
+
+	cases := map[string]struct {
+		binaries string
+		want     string
+	}{
+		"a literal pin parses": {
+			binaries: `    - name: mockery
+      module: github.com/vektra/mockery/v3
+      version: v3.5.5`,
+		},
+		"a track parses": {
+			binaries: `    - name: mockery
+      module: github.com/vektra/mockery/v3
+      track: go:github.com/vektra/mockery/v3`,
+		},
+		"no pin at all": {
+			binaries: `    - name: mockery
+      module: github.com/vektra/mockery/v3`,
+			want: "exactly one of track or version",
+		},
+		"both pins": {
+			binaries: `    - name: mockery
+      module: github.com/vektra/mockery/v3
+      track: go:x
+      version: v1`,
+			want: "not both",
+		},
+		"no module": {
+			binaries: `    - name: mockery
+      version: v1`,
+			want: "module path",
+		},
+		"no name": {
+			binaries: `    - module: m/x
+      version: v1`,
+			want: "needs a name",
+		},
+		"malformed track": {
+			binaries: `    - name: x
+      module: m/x
+      track: not-a-track`,
+			want: "<ecosystem>:<package>",
+		},
+		"duplicate names": {
+			binaries: `    - name: x
+      module: m/x
+      version: v1
+    - name: x
+      module: m/y
+      version: v1`,
+			want: "duplicate binary name",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := config.Parse([]byte(fmt.Sprintf(base, tc.binaries)))
+
+			if tc.want == "" {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
+// A track resolves from the register, so declaring one without a register
+// block is a config error.
+func TestAToolchainTrackNeedsARegister(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.Parse([]byte(`version: "1"
+name: w
+repos:
+  - name: r
+    url: u
+engines:
+  - alias: go
+    engine: forge://example.com/lang-go
+toolchain:
+  binaries:
+    - name: x
+      module: m/x
+      track: go:m/x
+`))
+	require.ErrorContains(t, err, "no register: block")
 }

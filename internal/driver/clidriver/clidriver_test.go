@@ -185,6 +185,28 @@ func TestSyncConsumesTheMirrorNamedByTheEnvironment(t *testing.T) {
 	assert.Contains(t, h.out.String(), "tooling abc123def456")
 }
 
+// Toolchain binaries sync resolved are provisioned into the store, and
+// the report says what was built and what was reused.
+func TestSyncProvisionsTheResolvedToolchainBinaries(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+
+	binaries := []toolingcontroller.Binary{
+		{Name: "mockery", Module: "github.com/vektra/mockery/v3", Version: "v3.5.5"},
+	}
+
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(synccontroller.Report{Root: "/w", Toolchain: binaries}, nil).Once()
+	h.tooling.EXPECT().ProvisionBinaries(mock.Anything, "/w", "", binaries).
+		Return(toolingcontroller.BinaryReport{Installed: []string{"mockery"}}, nil).Once()
+
+	require.NoError(t, h.driver.Run(t.Context(), []string{"sync", "--root", "/w"}))
+	assert.Contains(t, h.out.String(), "toolchain binaries")
+	assert.Contains(t, h.out.String(), "installed mockery")
+}
+
 func TestAFailingDistributionFailsTheSync(t *testing.T) {
 	t.Parallel()
 

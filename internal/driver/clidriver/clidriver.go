@@ -170,33 +170,66 @@ func (d *Driver) runSync(ctx context.Context, f config.Factory, path, root strin
 		return fmt.Errorf("%w: %s", ErrUnsettled, report.Unsettled[0])
 	}
 
-	return d.applyTooling(root)
+	return d.applyTooling(ctx, root, report)
 }
 
-// applyTooling consumes a distribution into the store and links the
-// workspace to it, when a source is in reach: the --tooling-from flag, else
-// the FORGE_DIST_MIRROR environment - the airgap door, where the mirrored
-// release assets ARE the bundle.
-func (d *Driver) applyTooling(root string) error {
+// applyTooling provisions what sync resolved: a distribution when a source
+// is in reach (the --tooling-from flag, else the FORGE_DIST_MIRROR
+// environment - the airgap door, where the mirrored release assets ARE the
+// bundle), and every declared toolchain binary at its pinned version.
+func (d *Driver) applyTooling(ctx context.Context, root string, sync synccontroller.Report) error {
+	if d.tooling == nil {
+		return nil
+	}
+
 	base := d.toolingFrom
 	if base == "" {
 		base = os.Getenv("FORGE_DIST_MIRROR")
 	}
 
-	if base == "" || d.tooling == nil {
-		return nil
+	if base != "" {
+		report, err := d.tooling.Apply(toolingcontroller.Request{
+			Root:       root,
+			Source:     distadapter.New(base),
+			SourceName: base,
+		})
+		if err != nil {
+			return fmt.Errorf("consuming the distribution from %s: %w", base, err)
+		}
+
+		if err := d.write(renderTooling(report)); err != nil {
+			return err
+		}
 	}
 
-	report, err := d.tooling.Apply(toolingcontroller.Request{
-		Root:       root,
-		Source:     distadapter.New(base),
-		SourceName: base,
-	})
-	if err != nil {
-		return fmt.Errorf("consuming the distribution from %s: %w", base, err)
+	if len(sync.Toolchain) > 0 {
+		report, err := d.tooling.ProvisionBinaries(ctx, root, "", sync.Toolchain)
+		if err != nil {
+			return fmt.Errorf("provisioning the toolchain: %w", err)
+		}
+
+		if err := d.write(renderBinaries(report)); err != nil {
+			return err
+		}
 	}
 
-	return d.write(renderTooling(report))
+	return nil
+}
+
+func renderBinaries(report toolingcontroller.BinaryReport) string {
+	var b strings.Builder
+
+	b.WriteString("toolchain binaries\n")
+
+	for _, name := range report.Installed {
+		fmt.Fprintf(&b, "  installed %s\n", name)
+	}
+
+	for _, name := range report.Reused {
+		fmt.Fprintf(&b, "  reused %s\n", name)
+	}
+
+	return b.String()
 }
 
 func renderTooling(report toolingcontroller.Report) string {

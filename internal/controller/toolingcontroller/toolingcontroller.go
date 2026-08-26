@@ -17,6 +17,7 @@
 package toolingcontroller
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -26,6 +27,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/types/disttypes"
 )
@@ -62,20 +64,23 @@ type Report struct {
 	BinDir    string
 }
 
-// Applier consumes a distribution into the store, declared in the package
-// that implements it.
+// Applier provisions tooling into the store, declared in the package that
+// implements it: distributions by digest, toolchain binaries by pinned
+// build.
 type Applier interface {
 	Apply(req Request) (Report, error)
+	ProvisionBinaries(ctx context.Context, root, storeDir string, binaries []Binary) (BinaryReport, error)
 }
 
 type Controller struct {
-	fs fsadapter.FS
+	fs     fsadapter.FS
+	runner execadapter.Runner
 }
 
 var _ Applier = (*Controller)(nil)
 
-func New(fs fsadapter.FS) *Controller {
-	return &Controller{fs: fs}
+func New(fs fsadapter.FS, runner execadapter.Runner) *Controller {
+	return &Controller{fs: fs, runner: runner}
 }
 
 // Apply consumes the source's index: verify every blob into the store,
@@ -229,9 +234,10 @@ func (c *Controller) installBlob(
 	return c.fs.Rename(staging, blob)
 }
 
-// linkWorkspace points the workspace's .forge/bin at the revision view and
-// records what it pinned, so status and a later doctor can say which
-// revision this workspace runs.
+// linkWorkspace links every distributed tool into the workspace's
+// .forge/bin - a real directory, so provisioned toolchain binaries can sit
+// beside the distribution - and records what it pinned, so status and a
+// later doctor can say which revision this workspace runs.
 func (c *Controller) linkWorkspace(req Request, index disttypes.Index, viewBin string) (string, error) {
 	root, err := filepath.Abs(req.Root)
 	if err != nil {
@@ -244,8 +250,14 @@ func (c *Controller) linkWorkspace(req Request, index disttypes.Index, viewBin s
 	}
 
 	binDir := filepath.Join(root, ".forge", "bin")
-	if err := c.fs.Symlink(absView, binDir); err != nil {
+	if err := c.fs.MkdirAll(binDir); err != nil {
 		return "", fmt.Errorf("linking the workspace tooling: %w", err)
+	}
+
+	for _, tool := range index.Tools {
+		if err := c.fs.Symlink(filepath.Join(absView, tool.Name), filepath.Join(binDir, tool.Name)); err != nil {
+			return "", fmt.Errorf("linking the workspace tooling: %w", err)
+		}
 	}
 
 	pin := map[string]string{
@@ -264,6 +276,160 @@ func (c *Controller) linkWorkspace(req Request, index disttypes.Index, viewBin s
 	}
 
 	return binDir, nil
+}
+
+// Binary is one toolchain binary to provision, already resolved to a
+// version: the config's literal pin, or the register track's current.
+type Binary struct {
+	Name    string
+	Module  string
+	Version string
+}
+
+// BinaryReport says what provisioning did.
+type BinaryReport struct {
+	Installed []string
+	Reused    []string
+}
+
+// ProvisionBinaries builds each binary at its pinned version into the
+// store and links it into the workspace's .forge/bin. The build is
+// `go install module@version` into a staging GOBIN; the result is hashed
+// into the content-addressed blobs like a distributed binary, and a
+// (module, version) already built is reused without touching the network.
+func (c *Controller) ProvisionBinaries(
+	ctx context.Context, root, storeDir string, binaries []Binary,
+) (BinaryReport, error) {
+	report := BinaryReport{Installed: []string{}, Reused: []string{}}
+
+	if len(binaries) == 0 {
+		return report, nil
+	}
+
+	store, err := resolveStoreDir(storeDir)
+	if err != nil {
+		return BinaryReport{}, err
+	}
+
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return BinaryReport{}, fmt.Errorf("resolving the workspace root: %w", err)
+	}
+
+	binDir := filepath.Join(absRoot, ".forge", "bin")
+	if err := c.fs.MkdirAll(binDir); err != nil {
+		return BinaryReport{}, fmt.Errorf("provisioning the toolchain: %w", err)
+	}
+
+	for _, binary := range binaries {
+		built, reused, err := c.buildBinary(ctx, store, binary)
+		if err != nil {
+			return BinaryReport{}, err
+		}
+
+		if err := c.fs.Symlink(built, filepath.Join(binDir, binary.Name)); err != nil {
+			return BinaryReport{}, fmt.Errorf("linking %s: %w", binary.Name, err)
+		}
+
+		if reused {
+			report.Reused = append(report.Reused, binary.Name)
+		} else {
+			report.Installed = append(report.Installed, binary.Name)
+		}
+	}
+
+	return report, nil
+}
+
+// buildBinary answers the absolute store path of one (module, version)
+// build, building it when the store does not carry it yet.
+func (c *Controller) buildBinary(
+	ctx context.Context, store string, binary Binary,
+) (string, bool, error) {
+	if binary.Version == "" || binary.Version == "latest" {
+		return "", false, fmt.Errorf(
+			"toolchain binary %s: nothing pins a version; latest is never a fallback", binary.Name)
+	}
+
+	tool := filepath.Join(store, "tools",
+		sanitize(binary.Module)+"@"+sanitize(binary.Version), binary.Name)
+
+	absTool, err := filepath.Abs(tool)
+	if err != nil {
+		return "", false, fmt.Errorf("resolving the store: %w", err)
+	}
+
+	if ok, _ := c.fs.Exists(absTool); ok {
+		return absTool, true, nil
+	}
+
+	staging := filepath.Join(store, "tmp", "gobin-"+sanitize(binary.Name))
+
+	absStaging, err := filepath.Abs(staging)
+	if err != nil {
+		return "", false, fmt.Errorf("resolving the staging dir: %w", err)
+	}
+
+	if err := c.fs.MkdirAll(absStaging); err != nil {
+		return "", false, err
+	}
+
+	env := map[string]string{"GOBIN": absStaging, "GOWORK": "off", "GOFLAGS": ""}
+
+	res, err := c.runner.RunEnv(ctx, "", env, "go", "install", binary.Module+"@"+binary.Version)
+	if err != nil {
+		return "", false, fmt.Errorf("building %s: %w", binary.Name, err)
+	}
+
+	if res.ExitCode != 0 {
+		return "", false, fmt.Errorf("building %s: go install %s@%s exited %d: %s",
+			binary.Name, binary.Module, binary.Version, res.ExitCode, strings.TrimSpace(res.Stderr))
+	}
+
+	builtName := filepath.Base(binary.Module)
+
+	data, err := c.fs.ReadFile(filepath.Join(absStaging, builtName))
+	if err != nil {
+		return "", false, fmt.Errorf("reading what go install built for %s: %w", binary.Name, err)
+	}
+
+	// The blob is content-addressed like a distributed binary; the tools
+	// path is the (module, version) name resolution finds it under.
+	sum := sha256.Sum256(data)
+	blob := filepath.Join(store, "blobs", "sha256", hex.EncodeToString(sum[:]))
+
+	if ok, _ := c.fs.Exists(blob); !ok {
+		stagedBlob := filepath.Join(store, "tmp", hex.EncodeToString(sum[:]))
+		if err := c.fs.WriteExecutable(stagedBlob, data); err != nil {
+			return "", false, err
+		}
+
+		if err := c.fs.Rename(stagedBlob, blob); err != nil {
+			return "", false, err
+		}
+	}
+
+	absBlob, err := filepath.Abs(blob)
+	if err != nil {
+		return "", false, fmt.Errorf("resolving the store: %w", err)
+	}
+
+	if err := c.fs.Symlink(absBlob, absTool); err != nil {
+		return "", false, err
+	}
+
+	return absTool, false, nil
+}
+
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '/', ':', '@', '~':
+			return '-'
+		default:
+			return r
+		}
+	}, s)
 }
 
 func resolveStoreDir(override string) (string, error) {

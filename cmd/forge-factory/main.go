@@ -56,7 +56,7 @@ func run(ctx context.Context, args []string) error {
 		revisioncontroller.New(caller, git),
 		statuscontroller.New(fs, git),
 		runcontroller.New(fs, git, execadapter.New(), sync, os.Stderr),
-		toolingcontroller.New(fs),
+		toolingcontroller.New(fs, execadapter.New()),
 		os.Exit,
 	)
 

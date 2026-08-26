@@ -24,6 +24,29 @@ type Factory struct {
 	Dev          map[string]map[string]DependencySpec `json:"devDependencies,omitempty"`
 	Engines      []Engine                             `json:"engines"`
 	State        *State                               `json:"state,omitempty"`
+	Toolchain    *Toolchain                           `json:"toolchain,omitempty"`
+}
+
+// Toolchain declares the standalone binaries a workspace provisions into
+// the store and exposes on .forge/bin: third-party generators and linters,
+// or a user's own engines - the one governed place their versions live,
+// instead of an env var here and a code default there.
+type Toolchain struct {
+	Binaries []ToolchainBinary `json:"binaries"`
+}
+
+// ToolchainBinary is one provisioned tool. Exactly one of track or version
+// pins it: a track resolves from the register's index (its current
+// version), a literal version serves a workspace without a register.
+type ToolchainBinary struct {
+	// Name is the binary's base name as it appears on PATH.
+	Name string `json:"name"`
+	// Module is the full main-package module path `go install` builds.
+	Module string `json:"module"`
+	// Track names a register track as "<ecosystem>:<package>".
+	Track string `json:"track,omitempty"`
+	// Version is the literal pin.
+	Version string `json:"version,omitempty"`
 }
 
 // Register names the catalog this workspace resolves versions from. The local
@@ -250,6 +273,41 @@ func (f Factory) Validate() error {
 
 	validateDeps("dependencies", f.Dependencies)
 	validateDeps("devDependencies", f.Dev)
+
+	if f.Toolchain != nil {
+		names := map[string]bool{}
+
+		for i, b := range f.Toolchain.Binaries {
+			where := fmt.Sprintf("toolchain.binaries[%d]", i)
+
+			if strings.TrimSpace(b.Name) == "" {
+				add("%s: a binary needs a name", where)
+			} else if names[b.Name] {
+				add("%s: duplicate binary name %q", where, b.Name)
+			}
+
+			names[b.Name] = true
+
+			if strings.TrimSpace(b.Module) == "" {
+				add("%s: a binary needs the module path go install builds", where)
+			}
+
+			switch {
+			case b.Track == "" && b.Version == "":
+				add("%s: exactly one of track or version pins a binary; neither means nothing resolves it", where)
+			case b.Track != "" && b.Version != "":
+				add("%s: exactly one of track or version pins a binary, not both", where)
+			case b.Track != "":
+				if !strings.Contains(b.Track, ":") {
+					add("%s: a track is named <ecosystem>:<package>", where)
+				}
+
+				if f.Register == nil {
+					add("%s: resolves from the register and no register: block is declared", where)
+				}
+			}
+		}
+	}
 
 	if len(errs) == 0 {
 		return nil
