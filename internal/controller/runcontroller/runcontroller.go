@@ -349,6 +349,8 @@ func (c *Controller) materialiseRemote(
 		return 0, fmt.Errorf("resolving the register at %s: %w", registerRev, err)
 	}
 
+	pinnedVersion := ""
+
 	if repoSha == "" {
 		c.say(req.Quiet, "resolve-version: the internal track of %s at %s", module, shortSha(registerSha))
 
@@ -358,6 +360,8 @@ func (c *Controller) materialiseRemote(
 		}
 
 		c.say(req.Quiet, "pin: %s %s proven by revision %s", module, version, provenance)
+
+		pinnedVersion = version
 
 		pinned := c.provenancePins(ctx, req, factory.Factory, provenance)
 
@@ -387,12 +391,12 @@ func (c *Controller) materialiseRemote(
 		}
 
 		if code, err := c.syncWorkspace(ctx, root, member.Name); err != nil {
-			return code, err
+			return code, staleTupleHint(err, module, pinnedVersion)
 		}
 	}
 
 	if err := c.checkInputs(repoDir, target); err != nil {
-		return 0, err
+		return 0, staleTupleHint(err, module, pinnedVersion)
 	}
 
 	if key := warmTupleKey(req); key != "" {
@@ -401,7 +405,32 @@ func (c *Controller) materialiseRemote(
 
 	c.say(req.Quiet, "exec: forge run %s in %s", target.Name, repoDir)
 
-	return c.exec(ctx, repoDir, target.Name, req.Args)
+	code, err := c.exec(ctx, repoDir, target.Name, req.Args)
+	if (err != nil || code != 0) && pinnedVersion != "" {
+		// The run executed the tuple the register last proved, which may
+		// be older than the repo's head: a failure here is often the
+		// register's staleness, not the operator's mistake. One line
+		// names the check and the cure.
+		c.say(req.Quiet,
+			"note: this ran %s at %s, the tuple the register last proved; `forge-register status` marks stale internal tracks, and a green workspace pipeline republishes them",
+			module, pinnedVersion)
+	}
+
+	return code, err
+}
+
+// staleTupleHint wraps a failure inside a register-resolved run context
+// with the one likely cause the raw error never names: the proven tuple
+// is older than the repo's head. Runs pinned by the caller pass through
+// untouched.
+func staleTupleHint(err error, module, pinnedVersion string) error {
+	if err == nil || pinnedVersion == "" {
+		return err
+	}
+
+	return fmt.Errorf(
+		"%w (this is the tuple the register last proved: %s at %s; if the repo moved since, `forge-register status` marks the stale track and a green workspace pipeline republishes it)",
+		err, module, pinnedVersion)
 }
 
 // warmTuple is the marker a fully pinned run leaves behind: enough to

@@ -230,3 +230,21 @@ func TestWriteWarmTupleRoundTrips(t *testing.T) {
 	require.Equal(t, "server", mark.Target.Name)
 	require.Equal(t, "./cmd/server", mark.Target.Src)
 }
+
+// The hint decorates only failures inside a register-resolved context:
+// a tuple the caller pinned is the caller's to debug.
+func TestStaleTupleHintDecoratesOnlyRegisterResolvedRuns(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, staleTupleHint(nil, "m", "v1"))
+	require.NoError(t, staleTupleHint(nil, "m", ""))
+
+	base := errors.New("resolving go dependencies: boom")
+	require.Same(t, base, staleTupleHint(base, "m", ""))
+
+	hinted := staleTupleHint(base, "github.com/o/m", "v0.1.0-dev.r1.gabc")
+	require.ErrorIs(t, hinted, base)
+	require.ErrorContains(t, hinted, "the tuple the register last proved")
+	require.ErrorContains(t, hinted, "github.com/o/m at v0.1.0-dev.r1.gabc")
+	require.ErrorContains(t, hinted, "forge-register status")
+}
