@@ -19,6 +19,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/driver/clidriver"
+	"github.com/alexandremahdhaoui/forge/pkg/engineversion"
 )
 
 var version = "dev"
@@ -38,7 +39,10 @@ func main() {
 func run(ctx context.Context, args []string) error {
 	fs := fsadapter.New()
 	git := gitadapter.New(execadapter.New())
-	caller := engineadapter.NewMCPCaller(".", version, os.Stderr)
+	// The effective version pins engine go-run fallbacks: a go-install build
+	// carries its module version in build info even when ldflags stamped
+	// nothing, so every engine matches the CLI that spawned it.
+	caller := engineadapter.NewMCPCaller(".", engineversion.GetEffectiveVersion(version), os.Stderr)
 
 	sync := synccontroller.New(caller, fs, repoadapter.New(fs), execadapter.New(),
 		resolvecontroller.New(fs, git, time.Now))

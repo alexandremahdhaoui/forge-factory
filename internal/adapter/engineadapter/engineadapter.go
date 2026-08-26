@@ -28,7 +28,7 @@ func NewMCPCaller(sourceDir, version string, stderr io.Writer) *MCPCaller {
 		stderr = io.Discard
 	}
 
-	return &MCPCaller{resolver: NewResolver(sourceDir), version: version, stderr: stderr}
+	return &MCPCaller{resolver: NewResolver(sourceDir, version), version: version, stderr: stderr}
 }
 
 func (c *MCPCaller) Call(ctx context.Context, uri, tool string, in, out any) error {

@@ -73,6 +73,16 @@ for dir in $(find internal/types -mindepth 1 -maxdepth 1 -type d 2>/dev/null); d
     fi
 done
 
+# Latest is never a fallback: every go-run carries a pin, so a floating
+# version in production code is a regression.
+latest_files=$(find internal pkg cmd -name '*.go' ! -name '*_test.go' ! -path 'internal/mocks/*' 2>/dev/null)
+latest_hits=$(grep -rn "@latest" $latest_files || true)
+if [ -n "$latest_hits" ]; then
+    echo "forge-factory must never float to @latest; a go run carries a pinned version." >&2
+    echo "$latest_hits" >&2
+    fail=1
+fi
+
 if [ "$fail" -eq 0 ]; then
     echo "every layer depends only on the layers below it, and types are plain data"
 fi

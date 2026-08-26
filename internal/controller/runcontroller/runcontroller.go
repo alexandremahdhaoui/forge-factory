@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 
@@ -677,8 +678,54 @@ func (c *Controller) exec(ctx context.Context, repoDir, name string, args []stri
 	full := append([]string{"run", name}, "--")
 	full = append(full, args...)
 
+	bin, pre := c.forgeCommand()
+
 	return c.runner.RunAttached(ctx, repoDir,
-		map[string]string{"FORGE_RUN_MATERIALIZED": "1"}, "forge", full...)
+		map[string]string{"FORGE_RUN_MATERIALIZED": "1"}, bin, append(pre, full...)...)
+}
+
+// forgeCommand answers how to exec forge at the boundary: PATH when
+// installed, else go run pinned to the forge this binary was built against -
+// never latest. A workspace build records no dependency version and keeps
+// the bare name, whose failure names the missing install.
+func (c *Controller) forgeCommand() (string, []string) {
+	if _, ok := c.runner.LookPath("forge"); ok {
+		return "forge", nil
+	}
+
+	if v := forgeDepVersion(); v != "" {
+		return "go", []string{"run", "github.com/alexandremahdhaoui/forge/cmd/forge@" + v}
+	}
+
+	return "forge", nil
+}
+
+// forgeDepVersion answers the forge version this binary was built against,
+// from build info; "" for workspace builds, which carry "(devel)".
+func forgeDepVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+
+	for _, dep := range info.Deps {
+		if dep == nil || dep.Path != "github.com/alexandremahdhaoui/forge" {
+			continue
+		}
+
+		m := dep
+		if m.Replace != nil {
+			m = m.Replace
+		}
+
+		if m.Version == "" || m.Version == "(devel)" {
+			return ""
+		}
+
+		return m.Version
+	}
+
+	return ""
 }
 
 func (c *Controller) walkUpFor(start, name string) (string, error) {

@@ -136,6 +136,10 @@ func newRig(t *testing.T) *rig {
 	}
 	r.c = New(r.fs, r.git, r.exec, r.sync, r.out)
 
+	// The exec boundary asks PATH for forge before picking a pinned go-run
+	// fallback; answering yes keeps the bare form every expectation pins.
+	r.exec.EXPECT().LookPath("forge").Return("/usr/bin/forge", true).Maybe()
+
 	return r
 }
 

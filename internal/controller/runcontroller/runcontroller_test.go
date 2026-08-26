@@ -41,6 +41,10 @@ func newHarness(t *testing.T) *harness {
 	h.c = runcontroller.New(fsadapter.New(), gitadapter.New(execadapter.New()),
 		h.runner, h.sync, h.progress)
 
+	// The exec boundary asks PATH for forge before picking a pinned go-run
+	// fallback; answering yes keeps the bare form every expectation pins.
+	h.runner.EXPECT().LookPath("forge").Return("/usr/bin/forge", true).Maybe()
+
 	return h
 }
 

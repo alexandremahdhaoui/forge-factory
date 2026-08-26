@@ -13,7 +13,7 @@ import (
 func notOnPath(string) (string, error) { return "", errors.New("not found") }
 
 func TestAnInstalledBinaryWins(t *testing.T) {
-	r := engineadapter.NewResolver("")
+	r := engineadapter.NewResolver("", "")
 	r.LookPath = func(name string) (string, error) {
 		require.Equal(t, "ci-compute-local", name)
 
@@ -30,7 +30,7 @@ func TestTheSourceTreeIsUsedWhenNothingIsInstalled(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "cmd", "ci-state-git"), 0o750))
 
-	r := engineadapter.NewResolver(dir)
+	r := engineadapter.NewResolver(dir, "")
 	r.LookPath = notOnPath
 
 	cmd, err := r.Resolve("forge://github.com/x/forge-factory/cmd/ci-state-git@v0.1.0")
@@ -39,8 +39,23 @@ func TestTheSourceTreeIsUsedWhenNothingIsInstalled(t *testing.T) {
 	require.Equal(t, []string{"run", "./cmd/ci-state-git"}, cmd.Args)
 }
 
+// The source tree outranks an installed binary: a dev naming a source dir
+// means it, and a stale install must not shadow it.
+func TestTheSourceTreeWinsOverAnInstalledBinary(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "cmd", "ci-state-git"), 0o750))
+
+	r := engineadapter.NewResolver(dir, "")
+	r.LookPath = func(string) (string, error) { return "/usr/local/bin/ci-state-git", nil }
+
+	cmd, err := r.Resolve("forge://github.com/x/forge-factory/cmd/ci-state-git@v0.1.0")
+	require.NoError(t, err)
+	require.Equal(t, "go", cmd.Path)
+	require.Equal(t, []string{"run", "./cmd/ci-state-git"}, cmd.Args)
+}
+
 func TestAModuleFallsBackToGoRun(t *testing.T) {
-	r := engineadapter.NewResolver("")
+	r := engineadapter.NewResolver("", "")
 	r.LookPath = notOnPath
 
 	cmd, err := r.Resolve("forge://github.com/x/forge-factory/cmd/ci-gate-manual@v0.2.0")
@@ -49,40 +64,58 @@ func TestAModuleFallsBackToGoRun(t *testing.T) {
 	require.Equal(t, []string{"run", "github.com/x/forge-factory/cmd/ci-gate-manual@v0.2.0"}, cmd.Args)
 }
 
-func TestAShortNameResolvesToOurOwnModule(t *testing.T) {
-	r := engineadapter.NewResolver("")
+// A bare name without a version pins to the running binary's own version,
+// so every engine matches the CLI that spawned it.
+func TestAShortNameResolvesToOurOwnModuleAtOurOwnVersion(t *testing.T) {
+	r := engineadapter.NewResolver("", "v0.2.0")
 	r.LookPath = notOnPath
 
 	cmd, err := r.Resolve("forge://ci-promotion-all")
 	require.NoError(t, err)
 	require.Equal(t,
-		[]string{"run", "github.com/alexandremahdhaoui/forge-factory/cmd/ci-promotion-all@latest"},
+		[]string{"run", "github.com/alexandremahdhaoui/forge-factory/cmd/ci-promotion-all@v0.2.0"},
 		cmd.Args)
 }
 
-func TestAMissingVersionBecomesLatest(t *testing.T) {
-	r := engineadapter.NewResolver("")
+// Latest is never a fallback: a dev build off PATH fails loud and names the
+// fix instead of floating to whatever the proxy serves.
+func TestAMissingVersionOnADevBuildFailsLoud(t *testing.T) {
+	for _, version := range []string{"", "dev"} {
+		r := engineadapter.NewResolver("", version)
+		r.LookPath = notOnPath
+
+		_, err := r.Resolve("forge://github.com/x/y/cmd/z")
+		require.ErrorIs(t, err, engineadapter.ErrNoVersion, version)
+		require.NotContains(t, err.Error(), "latest")
+	}
+}
+
+// A dirty own version still pins: the suffix is stripped for go run.
+func TestADirtyOwnVersionIsStrippedForGoRun(t *testing.T) {
+	r := engineadapter.NewResolver("", "v0.2.0-dirty")
 	r.LookPath = notOnPath
 
-	cmd, err := r.Resolve("forge://github.com/x/y/cmd/z")
+	cmd, err := r.Resolve("forge://ci-state-git")
 	require.NoError(t, err)
-	require.Equal(t, []string{"run", "github.com/x/y/cmd/z@latest"}, cmd.Args)
+	require.Equal(t,
+		[]string{"run", "github.com/alexandremahdhaoui/forge-factory/cmd/ci-state-git@v0.2.0"},
+		cmd.Args)
 }
 
 func TestAliasMustBeResolvedFirst(t *testing.T) {
-	_, err := engineadapter.NewResolver("").Resolve("alias://my-engine")
+	_, err := engineadapter.NewResolver("", "").Resolve("alias://my-engine")
 	require.ErrorIs(t, err, engineadapter.ErrAlias)
 }
 
 func TestOtherSchemesAreRefused(t *testing.T) {
 	for _, uri := range []string{"https://example.com/x", "ci-compute-local", "forge://", ""} {
-		_, err := engineadapter.NewResolver("").Resolve(uri)
+		_, err := engineadapter.NewResolver("", "").Resolve(uri)
 		require.ErrorIs(t, err, engineadapter.ErrScheme, uri)
 	}
 }
 
 func TestASourceDirWithoutTheCommandFallsThrough(t *testing.T) {
-	r := engineadapter.NewResolver(t.TempDir())
+	r := engineadapter.NewResolver(t.TempDir(), "")
 	r.LookPath = notOnPath
 
 	cmd, err := r.Resolve("forge://github.com/x/y/cmd/missing@v1")
@@ -91,7 +124,7 @@ func TestASourceDirWithoutTheCommandFallsThrough(t *testing.T) {
 }
 
 func TestANilLookPathIsSkipped(t *testing.T) {
-	r := engineadapter.NewResolver("")
+	r := engineadapter.NewResolver("", "")
 	r.LookPath = nil
 
 	cmd, err := r.Resolve("forge://github.com/x/y/cmd/z@v1")

@@ -38,6 +38,66 @@ func (_m *MockRunner) EXPECT() *MockRunner_Expecter {
 	return &MockRunner_Expecter{mock: &_m.Mock}
 }
 
+// LookPath provides a mock function for the type MockRunner
+func (_mock *MockRunner) LookPath(name string) (string, bool) {
+	ret := _mock.Called(name)
+
+	if len(ret) == 0 {
+		panic("no return value specified for LookPath")
+	}
+
+	var r0 string
+	var r1 bool
+	if returnFunc, ok := ret.Get(0).(func(string) (string, bool)); ok {
+		return returnFunc(name)
+	}
+	if returnFunc, ok := ret.Get(0).(func(string) string); ok {
+		r0 = returnFunc(name)
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+	if returnFunc, ok := ret.Get(1).(func(string) bool); ok {
+		r1 = returnFunc(name)
+	} else {
+		r1 = ret.Get(1).(bool)
+	}
+	return r0, r1
+}
+
+// MockRunner_LookPath_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'LookPath'
+type MockRunner_LookPath_Call struct {
+	*mock.Call
+}
+
+// LookPath is a helper method to define mock.On call
+//   - name string
+func (_e *MockRunner_Expecter) LookPath(name any) *MockRunner_LookPath_Call {
+	return &MockRunner_LookPath_Call{Call: _e.mock.On("LookPath", name)}
+}
+
+func (_c *MockRunner_LookPath_Call) Run(run func(name string)) *MockRunner_LookPath_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 string
+		if args[0] != nil {
+			arg0 = args[0].(string)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockRunner_LookPath_Call) Return(s string, b bool) *MockRunner_LookPath_Call {
+	_c.Call.Return(s, b)
+	return _c
+}
+
+func (_c *MockRunner_LookPath_Call) RunAndReturn(run func(name string) (string, bool)) *MockRunner_LookPath_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Run provides a mock function for the type MockRunner
 func (_mock *MockRunner) Run(ctx context.Context, dir string, name string, args ...string) (execadapter.Result, error) {
 	// string

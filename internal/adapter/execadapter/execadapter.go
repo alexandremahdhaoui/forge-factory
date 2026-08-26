@@ -21,6 +21,9 @@ type Runner interface {
 	// RunAttached wires the command to the caller's stdio and answers its
 	// exit code. It is how a run hands the terminal to the program.
 	RunAttached(ctx context.Context, dir string, env map[string]string, name string, args ...string) (int, error)
+	// LookPath answers whether PATH carries the binary, so a caller can
+	// pick a pinned fallback before the exec fails.
+	LookPath(name string) (string, bool)
 }
 
 type OS struct{}
@@ -72,6 +75,12 @@ func (OS) RunEnv(
 	}
 
 	return res, nil
+}
+
+func (OS) LookPath(name string) (string, bool) {
+	path, err := exec.LookPath(name)
+
+	return path, err == nil
 }
 
 func (OS) RunAttached(
