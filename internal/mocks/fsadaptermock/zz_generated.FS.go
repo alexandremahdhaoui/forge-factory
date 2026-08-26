@@ -381,6 +381,177 @@ func (_c *MockFS_Remove_Call) RunAndReturn(run func(path string) error) *MockFS_
 	return _c
 }
 
+// Rename provides a mock function for the type MockFS
+func (_mock *MockFS) Rename(old string, new string) error {
+	ret := _mock.Called(old, new)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Rename")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(string, string) error); ok {
+		r0 = returnFunc(old, new)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockFS_Rename_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Rename'
+type MockFS_Rename_Call struct {
+	*mock.Call
+}
+
+// Rename is a helper method to define mock.On call
+//   - old string
+//   - new string
+func (_e *MockFS_Expecter) Rename(old any, new any) *MockFS_Rename_Call {
+	return &MockFS_Rename_Call{Call: _e.mock.On("Rename", old, new)}
+}
+
+func (_c *MockFS_Rename_Call) Run(run func(old string, new string)) *MockFS_Rename_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 string
+		if args[0] != nil {
+			arg0 = args[0].(string)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockFS_Rename_Call) Return(err error) *MockFS_Rename_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockFS_Rename_Call) RunAndReturn(run func(old string, new string) error) *MockFS_Rename_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// Symlink provides a mock function for the type MockFS
+func (_mock *MockFS) Symlink(target string, link string) error {
+	ret := _mock.Called(target, link)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Symlink")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(string, string) error); ok {
+		r0 = returnFunc(target, link)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockFS_Symlink_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Symlink'
+type MockFS_Symlink_Call struct {
+	*mock.Call
+}
+
+// Symlink is a helper method to define mock.On call
+//   - target string
+//   - link string
+func (_e *MockFS_Expecter) Symlink(target any, link any) *MockFS_Symlink_Call {
+	return &MockFS_Symlink_Call{Call: _e.mock.On("Symlink", target, link)}
+}
+
+func (_c *MockFS_Symlink_Call) Run(run func(target string, link string)) *MockFS_Symlink_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 string
+		if args[0] != nil {
+			arg0 = args[0].(string)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockFS_Symlink_Call) Return(err error) *MockFS_Symlink_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockFS_Symlink_Call) RunAndReturn(run func(target string, link string) error) *MockFS_Symlink_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// WriteExecutable provides a mock function for the type MockFS
+func (_mock *MockFS) WriteExecutable(path string, data []byte) error {
+	ret := _mock.Called(path, data)
+
+	if len(ret) == 0 {
+		panic("no return value specified for WriteExecutable")
+	}
+
+	var r0 error
+	if returnFunc, ok := ret.Get(0).(func(string, []byte) error); ok {
+		r0 = returnFunc(path, data)
+	} else {
+		r0 = ret.Error(0)
+	}
+	return r0
+}
+
+// MockFS_WriteExecutable_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'WriteExecutable'
+type MockFS_WriteExecutable_Call struct {
+	*mock.Call
+}
+
+// WriteExecutable is a helper method to define mock.On call
+//   - path string
+//   - data []byte
+func (_e *MockFS_Expecter) WriteExecutable(path any, data any) *MockFS_WriteExecutable_Call {
+	return &MockFS_WriteExecutable_Call{Call: _e.mock.On("WriteExecutable", path, data)}
+}
+
+func (_c *MockFS_WriteExecutable_Call) Run(run func(path string, data []byte)) *MockFS_WriteExecutable_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 string
+		if args[0] != nil {
+			arg0 = args[0].(string)
+		}
+		var arg1 []byte
+		if args[1] != nil {
+			arg1 = args[1].([]byte)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockFS_WriteExecutable_Call) Return(err error) *MockFS_WriteExecutable_Call {
+	_c.Call.Return(err)
+	return _c
+}
+
+func (_c *MockFS_WriteExecutable_Call) RunAndReturn(run func(path string, data []byte) error) *MockFS_WriteExecutable_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // WriteFile provides a mock function for the type MockFS
 func (_mock *MockFS) WriteFile(path string, data []byte) error {
 	ret := _mock.Called(path, data)

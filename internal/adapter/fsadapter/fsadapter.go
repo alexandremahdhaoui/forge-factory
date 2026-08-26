@@ -10,11 +10,19 @@ import (
 type FS interface {
 	ReadFile(path string) ([]byte, error)
 	WriteFile(path string, data []byte) error
+	// WriteExecutable writes an executable file. The store's blobs are
+	// written this way: immutable once in place.
+	WriteExecutable(path string, data []byte) error
 	MkdirAll(path string) error
 	Exists(path string) (bool, error)
 	IsDir(path string) (bool, error)
 	List(dir string) ([]string, error)
 	Remove(path string) error
+	// Rename moves a file atomically; the store stages into tmp and renames
+	// into the blob tree so a half-written blob is never visible.
+	Rename(old, new string) error
+	// Symlink links newname to target, replacing an existing link.
+	Symlink(target, link string) error
 }
 
 type OS struct{}
@@ -41,6 +49,46 @@ func (OS) WriteFile(path string, data []byte) error {
 
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
+	}
+
+	return nil
+}
+
+func (OS) WriteExecutable(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return fmt.Errorf("creating directory for %s: %w", path, err)
+	}
+
+	if err := os.WriteFile(path, data, 0o555); err != nil { //nolint:gosec // executables are meant to execute
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+
+	return nil
+}
+
+func (OS) Rename(oldPath, newPath string) error {
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o750); err != nil {
+		return fmt.Errorf("creating directory for %s: %w", newPath, err)
+	}
+
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return fmt.Errorf("moving %s to %s: %w", oldPath, newPath, err)
+	}
+
+	return nil
+}
+
+func (OS) Symlink(target, link string) error {
+	if err := os.MkdirAll(filepath.Dir(link), 0o750); err != nil {
+		return fmt.Errorf("creating directory for %s: %w", link, err)
+	}
+
+	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("replacing %s: %w", link, err)
+	}
+
+	if err := os.Symlink(target, link); err != nil {
+		return fmt.Errorf("linking %s to %s: %w", link, target, err)
 	}
 
 	return nil

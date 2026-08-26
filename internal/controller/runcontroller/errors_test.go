@@ -115,6 +115,21 @@ func (f *fakeFS) List(dir string) ([]string, error) { return nil, nil }
 
 func (f *fakeFS) Remove(path string) error { return nil }
 
+func (f *fakeFS) WriteExecutable(path string, data []byte) error { return f.WriteFile(path, data) }
+
+func (f *fakeFS) Rename(oldPath, newPath string) error {
+	f.writes[newPath] = f.writes[oldPath]
+	delete(f.writes, oldPath)
+
+	return nil
+}
+
+func (f *fakeFS) Symlink(target, link string) error {
+	f.writes[link] = "-> " + target
+
+	return nil
+}
+
 type rig struct {
 	fs   *fakeFS
 	git  *gitadaptermock.MockGit

@@ -13,6 +13,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/speccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/toolingcontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/driver/clidriver"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/clonecontrollermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/fsadaptermock"
@@ -20,6 +21,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/runcontrollermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/statuscontrollermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/synccontrollermock"
+	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/toolingcontrollermock"
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -48,6 +50,7 @@ type harness struct {
 	revise   *revisioncontrollermock.MockReviser
 	state    *statuscontrollermock.MockStater
 	runner   *runcontrollermock.MockRunner
+	tooling  *toolingcontrollermock.MockApplier
 	driver   *clidriver.Driver
 	wrote    map[string]string
 	exitCode *int
@@ -63,11 +66,12 @@ func newHarness(t *testing.T) *harness {
 		sync:   synccontrollermock.NewMockSyncer(t),
 		revise: revisioncontrollermock.NewMockReviser(t),
 		state:  statuscontrollermock.NewMockStater(t),
-		runner: runcontrollermock.NewMockRunner(t),
-		wrote:  map[string]string{},
+		runner:  runcontrollermock.NewMockRunner(t),
+		tooling: toolingcontrollermock.NewMockApplier(t),
+		wrote:   map[string]string{},
 	}
 
-	h.driver = clidriver.New(h.out, h.fs, h.clone, h.sync, h.revise, h.state, h.runner,
+	h.driver = clidriver.New(h.out, h.fs, h.clone, h.sync, h.revise, h.state, h.runner, h.tooling,
 		func(code int) {
 			if h.exitCode != nil {
 				*h.exitCode = code
@@ -140,6 +144,59 @@ func TestSyncPrintsWhatItWrote(t *testing.T) {
 	assert.Contains(t, h.out.String(), "wrote go.work")
 	assert.Contains(t, h.out.String(), "wrote golden-go/go.mod")
 	assert.Contains(t, h.out.String(), "ignored in golden-go/.gitignore")
+}
+
+// The sync verb consumes a distribution when a source is named: the flag
+// form here, the FORGE_DIST_MIRROR environment form below - the airgap
+// door, where the mirrored release assets are the bundle.
+func TestSyncConsumesADistributionWhenAsked(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.expectSync()
+	h.tooling.EXPECT().Apply(mock.MatchedBy(func(req toolingcontroller.Request) bool {
+		return req.Root == "/w" && req.SourceName == "/mirror" && req.Source != nil
+	})).Return(toolingcontroller.Report{
+		Revision: "abc123def456", Platform: "linux/amd64",
+		Installed: []string{"forge"}, Reused: []string{"forge-factory"},
+		BinDir: "/w/.forge/bin",
+	}, nil).Once()
+
+	require.NoError(t, h.driver.Run(t.Context(),
+		[]string{"sync", "--root", "/w", "--tooling-from", "/mirror"}))
+	assert.Contains(t, h.out.String(), "tooling abc123def456 (linux/amd64)")
+	assert.Contains(t, h.out.String(), "installed forge")
+	assert.Contains(t, h.out.String(), "reused forge-factory")
+	assert.Contains(t, h.out.String(), "linked /w/.forge/bin")
+}
+
+func TestSyncConsumesTheMirrorNamedByTheEnvironment(t *testing.T) {
+	t.Setenv("FORGE_DIST_MIRROR", "/mirror-from-env")
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.expectSync()
+	h.tooling.EXPECT().Apply(mock.MatchedBy(func(req toolingcontroller.Request) bool {
+		return req.SourceName == "/mirror-from-env"
+	})).Return(toolingcontroller.Report{Revision: "abc123def456"}, nil).Once()
+
+	require.NoError(t, h.driver.Run(t.Context(), []string{"sync", "--root", "/w"}))
+	assert.Contains(t, h.out.String(), "tooling abc123def456")
+}
+
+func TestAFailingDistributionFailsTheSync(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.expectSync()
+	h.tooling.EXPECT().Apply(mock.Anything).
+		Return(toolingcontroller.Report{}, assert.AnError).Once()
+
+	err := h.driver.Run(t.Context(), []string{"sync", "--root", "/w", "--tooling-from", "/m"})
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Contains(t, err.Error(), "consuming the distribution from /m")
 }
 
 func TestSyncReportsAFailure(t *testing.T) {
@@ -399,7 +456,7 @@ func TestAReportThatCannotBePrintedIsAnError(t *testing.T) {
 	driver := clidriver.New(brokenWriter{}, fs,
 		clonecontrollermock.NewMockCloner(t),
 		synccontrollermock.NewMockSyncer(t), revisioncontrollermock.NewMockReviser(t),
-		statuscontrollermock.NewMockStater(t), nil, func(int) {})
+		statuscontrollermock.NewMockStater(t), nil, nil, func(int) {})
 
 	err := driver.Run(t.Context(), []string{"validate"})
 	require.ErrorIs(t, err, assert.AnError)

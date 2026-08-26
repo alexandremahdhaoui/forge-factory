@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/distadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/clonecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/resolvecontroller"
@@ -19,6 +20,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/speccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/toolingcontroller"
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
 )
 
@@ -34,17 +36,19 @@ var (
 )
 
 type Driver struct {
-	offline bool
-	prune   bool
-	only    string
-	out     io.Writer
-	fs      fsadapter.FS
-	clone   clonecontroller.Cloner
-	sync    synccontroller.Syncer
-	revise  revisioncontroller.Reviser
-	state   statuscontroller.Stater
-	run     runcontroller.Runner
-	exit    func(int)
+	offline     bool
+	prune       bool
+	only        string
+	toolingFrom string
+	out         io.Writer
+	fs          fsadapter.FS
+	clone       clonecontroller.Cloner
+	sync        synccontroller.Syncer
+	revise      revisioncontroller.Reviser
+	state       statuscontroller.Stater
+	run         runcontroller.Runner
+	tooling     toolingcontroller.Applier
+	exit        func(int)
 }
 
 func New(
@@ -55,11 +59,12 @@ func New(
 	revise revisioncontroller.Reviser,
 	state statuscontroller.Stater,
 	run runcontroller.Runner,
+	tooling toolingcontroller.Applier,
 	exit func(int),
 ) *Driver {
 	return &Driver{
 		out: out, fs: fs, clone: clone, sync: sync,
-		revise: revise, state: state, run: run, exit: exit,
+		revise: revise, state: state, run: run, tooling: tooling, exit: exit,
 	}
 }
 
@@ -165,7 +170,53 @@ func (d *Driver) runSync(ctx context.Context, f config.Factory, path, root strin
 		return fmt.Errorf("%w: %s", ErrUnsettled, report.Unsettled[0])
 	}
 
-	return nil
+	return d.applyTooling(root)
+}
+
+// applyTooling consumes a distribution into the store and links the
+// workspace to it, when a source is in reach: the --tooling-from flag, else
+// the FORGE_DIST_MIRROR environment - the airgap door, where the mirrored
+// release assets ARE the bundle.
+func (d *Driver) applyTooling(root string) error {
+	base := d.toolingFrom
+	if base == "" {
+		base = os.Getenv("FORGE_DIST_MIRROR")
+	}
+
+	if base == "" || d.tooling == nil {
+		return nil
+	}
+
+	report, err := d.tooling.Apply(toolingcontroller.Request{
+		Root:       root,
+		Source:     distadapter.New(base),
+		SourceName: base,
+	})
+	if err != nil {
+		return fmt.Errorf("consuming the distribution from %s: %w", base, err)
+	}
+
+	return d.write(renderTooling(report))
+}
+
+func renderTooling(report toolingcontroller.Report) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "tooling %s (%s)\n", report.Revision, report.Platform)
+
+	for _, name := range report.Installed {
+		fmt.Fprintf(&b, "  installed %s\n", name)
+	}
+
+	for _, name := range report.Reused {
+		fmt.Fprintf(&b, "  reused %s\n", name)
+	}
+
+	if report.BinDir != "" {
+		fmt.Fprintf(&b, "  linked %s\n", report.BinDir)
+	}
+
+	return b.String()
 }
 
 // pruneDeadPins deletes the soft pins the resolver named dead, so the factory
@@ -439,6 +490,8 @@ func (d *Driver) load(
 		"delete the soft pins the resolver names dead, then sync again")
 	only := fs.String("only", "",
 		"restrict sync writes and settle commands to one member")
+	toolingFrom := fs.String("tooling-from", "",
+		"consume a distribution (a directory or an http(s) base URL) into the store and link .forge/bin; FORGE_DIST_MIRROR is the environment form")
 
 	if err := fs.Parse(args); err != nil {
 		return config.Factory{}, "", "", nil, fmt.Errorf("parsing flags: %w", err)
@@ -447,6 +500,7 @@ func (d *Driver) load(
 	d.offline = *offline
 	d.prune = *prune
 	d.only = *only
+	d.toolingFrom = *toolingFrom
 
 	raw, err := d.fs.ReadFile(*path)
 	if err != nil {

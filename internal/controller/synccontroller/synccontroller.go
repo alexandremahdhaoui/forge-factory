@@ -139,20 +139,13 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 	ignores := map[string][]string{}
 
 	// forge sources a .envrc in every repo it builds, so the file must
-	// exist; its content is the machine's own (gitignored) and is never
-	// touched once present. Creating it here retires the touch-loop every
-	// fresh workspace used to need.
-	for _, r := range f.Repos {
-		envrc := filepath.Join(root, r.Name, ".envrc")
-		if ok, _ := c.fs.Exists(envrc); ok {
-			continue
-		}
-
-		if err := c.fs.WriteFile(envrc, []byte("")); err != nil {
-			return Report{}, fmt.Errorf("creating %s: %w", envrc, err)
-		}
-
-		report.Written = append(report.Written, envrc)
+	// exist; its content is the machine's own (gitignored). Creating it here
+	// retires the touch-loop every fresh workspace used to need. One managed
+	// line is kept present in every file - the workspace tooling PATH entry,
+	// which puts the pinned store's view ahead of whatever a user installed -
+	// and the rest of the file is never touched.
+	if err := c.ensureEnvrcs(f, root, &report); err != nil {
+		return Report{}, err
 	}
 
 	var settle []commandWire
@@ -256,6 +249,57 @@ func underMemberOrRoot(root, only, path string) bool {
 // restrictTo narrows the factory to one member. The ephemeral run context
 // holds only that member and the register, so rendering the others would
 // read identities that are not on disk.
+// ensureEnvrcs creates each member's .envrc when missing and keeps exactly
+// one managed line present: the PATH entry for the workspace's .forge/bin,
+// where sync links the pinned tooling. Everything else in the file is the
+// machine's own and stays untouched.
+func (c *Controller) ensureEnvrcs(f config.Factory, root string, report *Report) error {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolving the workspace root: %w", err)
+	}
+
+	line := fmt.Sprintf("export PATH=\"%s:$PATH\" # forge-factory: workspace tooling",
+		filepath.Join(absRoot, ".forge", "bin"))
+
+	for _, r := range f.Repos {
+		envrc := filepath.Join(root, r.Name, ".envrc")
+
+		ok, _ := c.fs.Exists(envrc)
+		if !ok {
+			if err := c.fs.WriteFile(envrc, []byte(line+"\n")); err != nil {
+				return fmt.Errorf("creating %s: %w", envrc, err)
+			}
+
+			report.Written = append(report.Written, envrc)
+
+			continue
+		}
+
+		raw, err := c.fs.ReadFile(envrc)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", envrc, err)
+		}
+
+		if strings.Contains(string(raw), "/.forge/bin") {
+			continue
+		}
+
+		content := string(raw)
+		if content != "" && !strings.HasSuffix(content, "\n") {
+			content += "\n"
+		}
+
+		if err := c.fs.WriteFile(envrc, []byte(content+line+"\n")); err != nil {
+			return fmt.Errorf("extending %s: %w", envrc, err)
+		}
+
+		report.Written = append(report.Written, envrc)
+	}
+
+	return nil
+}
+
 func restrictTo(f config.Factory, only string) config.Factory {
 	if only == "" {
 		return f

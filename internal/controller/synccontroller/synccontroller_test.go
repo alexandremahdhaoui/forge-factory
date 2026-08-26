@@ -80,11 +80,20 @@ func newHarness(t *testing.T) *harness {
 }
 
 // envrcExists answers the pre-sync existence probe for every member's
-// .envrc; most tests want them present so no create is recorded.
+// .envrc; most tests want them present, already carrying the managed
+// tooling PATH line, so no write is recorded.
 func (h *harness) envrcExists(exists bool) {
-	h.fs.EXPECT().Exists(mock.MatchedBy(func(path string) bool {
+	isEnvrc := func(path string) bool {
 		return strings.HasSuffix(path, "/.envrc")
-	})).Return(exists, nil).Maybe()
+	}
+
+	h.fs.EXPECT().Exists(mock.MatchedBy(isEnvrc)).Return(exists, nil).Maybe()
+
+	if exists {
+		h.fs.EXPECT().ReadFile(mock.MatchedBy(isEnvrc)).
+			Return([]byte("export PATH=\"/w/.forge/bin:$PATH\" # forge-factory: workspace tooling\n"), nil).
+			Maybe()
+	}
 }
 
 func (h *harness) recordWrites() {
@@ -519,8 +528,8 @@ func TestSyncOnlyRendersTheOneMemberAndTheRoot(t *testing.T) {
 
 // TestSyncCreatesAMissingEnvrc: forge sources a .envrc in every repo it
 // builds, so a fresh workspace used to need a hand-run touch loop. Sync
-// creates the missing file empty and never touches one that exists -
-// its content is the machine's own.
+// creates the missing file carrying exactly the managed tooling PATH line;
+// everything else in an existing file is the machine's own.
 func TestSyncCreatesAMissingEnvrc(t *testing.T) {
 	t.Parallel()
 
@@ -534,7 +543,34 @@ func TestSyncCreatesAMissingEnvrc(t *testing.T) {
 	report, err := h.c.Sync(context.Background(), f, "/w", "")
 	require.NoError(t, err)
 
-	require.Equal(t, "", h.wrote["/w/member-a/.envrc"])
+	require.Equal(t, "export PATH=\"/w/.forge/bin:$PATH\" # forge-factory: workspace tooling\n",
+		h.wrote["/w/member-a/.envrc"])
 	require.Contains(t, report.Written, "/w/member-a/.envrc")
 	require.Contains(t, report.Written, "/w/member-b/.envrc")
+}
+
+// TestSyncAppendsTheToolingLineToAnExistingEnvrc: an existing .envrc keeps
+// every line the machine put there; sync appends only the managed tooling
+// PATH entry, once.
+func TestSyncAppendsTheToolingLineToAnExistingEnvrc(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.fs.EXPECT().Exists(mock.MatchedBy(func(path string) bool {
+		return strings.HasSuffix(path, "/.envrc")
+	})).Return(true, nil).Maybe()
+	h.fs.EXPECT().ReadFile("/w/member-a/.envrc").
+		Return([]byte("export MY_OWN=1"), nil).Once()
+	h.recordWrites()
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
+
+	f := config.Factory{Repos: []config.Repo{{Name: "member-a"}}}
+
+	report, err := h.c.Sync(context.Background(), f, "/w", "")
+	require.NoError(t, err)
+
+	require.Equal(t,
+		"export MY_OWN=1\nexport PATH=\"/w/.forge/bin:$PATH\" # forge-factory: workspace tooling\n",
+		h.wrote["/w/member-a/.envrc"])
+	require.Contains(t, report.Written, "/w/member-a/.envrc")
 }
