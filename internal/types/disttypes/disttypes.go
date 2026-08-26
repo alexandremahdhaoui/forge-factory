@@ -48,7 +48,4 @@ type Platform struct {
 	Size int64 `json:"size,omitempty"`
 	// Asset is the file name in the release or mirror.
 	Asset string `json:"asset"`
-	// Runner names an interpreter for non-native tools (e.g. "java -jar");
-	// empty means the asset executes directly.
-	Runner string `json:"runner,omitempty"`
 }
