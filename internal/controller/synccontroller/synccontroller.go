@@ -138,6 +138,23 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 
 	ignores := map[string][]string{}
 
+	// forge sources a .envrc in every repo it builds, so the file must
+	// exist; its content is the machine's own (gitignored) and is never
+	// touched once present. Creating it here retires the touch-loop every
+	// fresh workspace used to need.
+	for _, r := range f.Repos {
+		envrc := filepath.Join(root, r.Name, ".envrc")
+		if ok, _ := c.fs.Exists(envrc); ok {
+			continue
+		}
+
+		if err := c.fs.WriteFile(envrc, []byte("")); err != nil {
+			return Report{}, fmt.Errorf("creating %s: %w", envrc, err)
+		}
+
+		report.Written = append(report.Written, envrc)
+	}
+
 	var settle []commandWire
 
 	for _, language := range f.Languages() {

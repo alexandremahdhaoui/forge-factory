@@ -79,6 +79,14 @@ func newHarness(t *testing.T) *harness {
 	return h
 }
 
+// envrcExists answers the pre-sync existence probe for every member's
+// .envrc; most tests want them present so no create is recorded.
+func (h *harness) envrcExists(exists bool) {
+	h.fs.EXPECT().Exists(mock.MatchedBy(func(path string) bool {
+		return strings.HasSuffix(path, "/.envrc")
+	})).Return(exists, nil).Maybe()
+}
+
 func (h *harness) recordWrites() {
 	h.fs.EXPECT().WriteFile(mock.Anything, mock.Anything).
 		RunAndReturn(func(path string, data []byte) error {
@@ -104,6 +112,7 @@ func TestSyncWritesWhatTheEngineAsksForAndIgnoresIt(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity("/w/golden-go").
 		Return(map[string]string{"module": "example.com/g"}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
@@ -128,6 +137,7 @@ func TestSyncSendsTheDependenciesAndIdentityToTheEngine(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity("/w/golden-go").
 		Return(map[string]string{"module": "example.com/g"}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
@@ -163,6 +173,7 @@ func TestSyncRefusesAnEngineThatSpeaksAnotherLanguage(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "rust"})
 
@@ -175,6 +186,7 @@ func TestSyncAddsToAGitignoreWithoutDisturbingIt(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
@@ -197,6 +209,7 @@ func TestSyncLeavesAGitignoreAloneWhenItAlreadyNamesEverything(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
@@ -215,6 +228,7 @@ func TestSyncFailsWhenARepoCannotBeRead(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(nil, assert.AnError).Once()
 
 	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
@@ -225,6 +239,7 @@ func TestSyncFailsWhenAnEngineFails(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.caller.EXPECT().Call(mock.Anything, mock.Anything, "render", mock.Anything, mock.Anything).
@@ -239,6 +254,7 @@ func TestSyncFailsWhenTheLanguageProbeFails(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.caller.EXPECT().Call(mock.Anything, mock.Anything, "language", mock.Anything, mock.Anything).
 		Return(assert.AnError).Once()
@@ -252,6 +268,7 @@ func TestSyncFailsWhenAFileCannotBeWritten(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
@@ -267,6 +284,7 @@ func TestSyncFailsWhenAGitignoreCannotBeRead(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
@@ -283,6 +301,7 @@ func TestSyncRefusesALanguageWithNoEngine(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 
 	f := parse(t, factory)
@@ -297,6 +316,7 @@ func TestTheLanguageProbeNeverSendsNull(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 
 	var raw []byte
@@ -323,6 +343,7 @@ func TestSyncRunsWhatAnEngineAsksForAfterTheFilesLand(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
@@ -346,6 +367,7 @@ func TestAnOptionalCommandThatFailsIsReportedAndTheSyncStillPasses(t *testing.T)
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
@@ -367,6 +389,7 @@ func TestACommandThatIsNotOptionalStopsTheSync(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
@@ -385,6 +408,7 @@ func TestACommandThatExitsNonZeroCountsAsAFailure(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
@@ -404,6 +428,7 @@ func TestALongFailureIsTrimmedToItsReason(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
@@ -426,6 +451,7 @@ func TestAFileCanNameMoreThanItselfToIgnore(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{{
@@ -461,6 +487,7 @@ func TestSyncOnlyRendersTheOneMemberAndTheRoot(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
+	h.envrcExists(true)
 	h.repos.EXPECT().Identity("/w/golden-go").
 		Return(map[string]string{"module": "example.com/g"}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
@@ -488,4 +515,26 @@ func TestSyncOnlyRendersTheOneMemberAndTheRoot(t *testing.T) {
 	assert.Equal(t, []string{"/w/go.work", "/w/golden-go/go.mod"}, report.Written,
 		"the one member and the root land; the absent member never does")
 	assert.NotContains(t, h.wrote, "/w/other-go/go.mod")
+}
+
+// TestSyncCreatesAMissingEnvrc: forge sources a .envrc in every repo it
+// builds, so a fresh workspace used to need a hand-run touch loop. Sync
+// creates the missing file empty and never touches one that exists -
+// its content is the machine's own.
+func TestSyncCreatesAMissingEnvrc(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.envrcExists(false)
+	h.recordWrites()
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
+
+	f := config.Factory{Repos: []config.Repo{{Name: "member-a"}, {Name: "member-b"}}}
+
+	report, err := h.c.Sync(context.Background(), f, "/w", "")
+	require.NoError(t, err)
+
+	require.Equal(t, "", h.wrote["/w/member-a/.envrc"])
+	require.Contains(t, report.Written, "/w/member-a/.envrc")
+	require.Contains(t, report.Written, "/w/member-b/.envrc")
 }
