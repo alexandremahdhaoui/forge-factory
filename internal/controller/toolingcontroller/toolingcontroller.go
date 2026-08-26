@@ -370,6 +370,13 @@ func (c *Controller) buildBinary(
 		return "", false, fmt.Errorf("resolving the staging dir: %w", err)
 	}
 
+	// The staging GOBIN starts empty so whatever go install leaves there is
+	// the build - its own naming rules (a /vN module installs under the
+	// unversioned name) never have to be guessed.
+	if err := c.fs.Remove(absStaging); err != nil {
+		return "", false, err
+	}
+
 	if err := c.fs.MkdirAll(absStaging); err != nil {
 		return "", false, err
 	}
@@ -386,9 +393,17 @@ func (c *Controller) buildBinary(
 			binary.Name, binary.Module, binary.Version, res.ExitCode, strings.TrimSpace(res.Stderr))
 	}
 
-	builtName := filepath.Base(binary.Module)
+	built, err := c.fs.List(absStaging)
+	if err != nil {
+		return "", false, fmt.Errorf("reading what go install built for %s: %w", binary.Name, err)
+	}
 
-	data, err := c.fs.ReadFile(filepath.Join(absStaging, builtName))
+	if len(built) != 1 {
+		return "", false, fmt.Errorf(
+			"building %s: go install left %d files in the staging GOBIN, want exactly the binary", binary.Name, len(built))
+	}
+
+	data, err := c.fs.ReadFile(filepath.Join(absStaging, built[0]))
 	if err != nil {
 		return "", false, fmt.Errorf("reading what go install built for %s: %w", binary.Name, err)
 	}
