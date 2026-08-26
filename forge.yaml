@@ -124,6 +124,15 @@ test:
       command: sh
       args: ["hack/coverage.sh", "95"]
 
+  # The distribution build: every command cross-built CGO-off for the
+  # release, named by the <name>_<os>_<arch> travel convention. The
+  # pipeline's release stage globs build/dist into the aggregated release.
+  - name: dist
+    runner: forge://generic-test-runner
+    spec:
+      command: sh
+      args: ["hack/build-dist.sh"]
+
 # forge-factory keeps its own go.mod. It is what materialises everything else,
 # so it is the one repo that has to build from a lone checkout. Membership is
 # still generated.
