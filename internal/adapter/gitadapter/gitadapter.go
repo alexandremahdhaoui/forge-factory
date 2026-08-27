@@ -27,6 +27,7 @@ type Git interface {
 	Show(ctx context.Context, dir, rev, path string) (string, bool, error)
 	ResolveRev(ctx context.Context, dir, rev string) (string, error)
 	WorktreeAdd(ctx context.Context, dir, sha, dest string) error
+	WorktreePrune(ctx context.Context, dir string) error
 	LsTree(ctx context.Context, dir, rev, path string) ([]string, error)
 	AheadBehind(ctx context.Context, dir, ref string) (int, int, error)
 }
@@ -237,6 +238,15 @@ func (g *CLI) ResolveRev(ctx context.Context, dir, rev string) (string, error) {
 // clone serves every rev through cheap checkouts; nothing is ever shallow.
 func (g *CLI) WorktreeAdd(ctx context.Context, dir, sha, dest string) error {
 	_, err := g.run(ctx, dir, "adding worktree "+dest, "worktree", "add", "--detach", dest, sha)
+
+	return err
+}
+
+// WorktreePrune clears worktree registrations whose directories are gone.
+// A checkout deleted by hand leaves one behind, and git then refuses to
+// register the same path again.
+func (g *CLI) WorktreePrune(ctx context.Context, dir string) error {
+	_, err := g.run(ctx, dir, "pruning worktrees of "+dir, "worktree", "prune")
 
 	return err
 }

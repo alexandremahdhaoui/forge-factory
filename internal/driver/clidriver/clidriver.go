@@ -28,7 +28,7 @@ const DefaultPath = "forge-factory.yaml"
 
 var (
 	ErrUsage = errors.New(
-		"usage: forge-factory <clone|sync|add|bump|checkout|status|validate|run|bootstrap> [args] " +
+		"usage: forge-factory <clone|sync|add|bump|checkout|status|validate|run|bootstrap|cache> [args] " +
 			"[--config path] [--root dir] [--offline] [--register-head]")
 	ErrDrift = errors.New("the workspace disagrees with the factory")
 
@@ -75,13 +75,15 @@ func (d *Driver) Run(ctx context.Context, args []string) error {
 
 	verb := args[0]
 
-	// run and bootstrap need no local factory file: the target or the
-	// bootstrap URL names everything.
+	// run, bootstrap and cache need no local factory file: the target,
+	// the bootstrap URL or the cache directory names everything.
 	switch verb {
 	case "run":
 		return d.runRun(ctx, args[1:])
 	case "bootstrap":
 		return d.runBootstrap(ctx, args[1:])
+	case "cache":
+		return d.runCache(args[1:])
 	}
 
 	f, path, root, rest, err := d.load(verb, args[1:])
@@ -298,6 +300,48 @@ func (d *Driver) pruneDeadPins(
 	}
 
 	return updated, true, nil
+}
+
+// runCache owns the derived cache: mirrors, run materialisations and warm
+// markers under the user cache. clean removes the whole thing; every entry
+// rebuilds itself on the next run, so the command needs no flags and asks
+// no questions. The verified tool store is not the cache and stays.
+func (d *Driver) runCache(args []string) error {
+	if len(args) == 0 || args[0] != "clean" {
+		return errors.New("usage: forge-factory cache clean")
+	}
+
+	fs := flag.NewFlagSet("cache", flag.ContinueOnError)
+	fs.SetOutput(d.out)
+	cache := fs.String("cache", "", "cache directory, defaults to the user cache")
+
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	if len(fs.Args()) != 0 {
+		return errors.New("usage: forge-factory cache clean")
+	}
+
+	dir := *cache
+	if dir == "" {
+		base, err := os.UserCacheDir()
+		if err != nil {
+			return fmt.Errorf("finding the cache directory: %w", err)
+		}
+
+		dir = filepath.Join(base, "forge-factory")
+	}
+
+	if ok, _ := d.fs.IsDir(dir); !ok {
+		return d.write(fmt.Sprintf("cache: nothing at %s", dir))
+	}
+
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("removing the cache %s: %w", dir, err)
+	}
+
+	return d.write(fmt.Sprintf("cache: removed %s - the next run rebuilds it", dir))
 }
 
 // runRun materialises the context a runnable needs and delegates execution

@@ -366,8 +366,8 @@ func (c *Controller) track(v view, language, name string, d config.DependencySpe
 		}
 
 		return spec.Track{}, fmt.Errorf(
-			"%s:%s track %q is %w at %s; filed %s - the register pipeline answers it, then sync again",
-			language, name, prefix, ErrUnregistered, revLabel(v.rev), key)
+			"%s:%s track %q is %w at %s; filed %s - the register pipeline answers it, then sync again%s",
+			language, name, prefix, ErrUnregistered, revLabel(v.rev), key, c.staleHint(v))
 	}
 
 	var track spec.Track
@@ -409,8 +409,8 @@ func (c *Controller) defaultTrack(v view, language, name string) (string, error)
 		}
 
 		return "", fmt.Errorf(
-			"%s:%s is %w at %s; filed %s - the register pipeline answers it, then sync again",
-			language, name, ErrUnregistered, revLabel(v.rev), key)
+			"%s:%s is %w at %s; filed %s - the register pipeline answers it, then sync again%s",
+			language, name, ErrUnregistered, revLabel(v.rev), key, c.staleHint(v))
 	}
 
 	return best, nil
@@ -469,6 +469,26 @@ func (c *Controller) unpushedNote(ctx context.Context, v view) string {
 	return fmt.Sprintf(
 		"the register checkout %s is %d commit(s) ahead of origin/main - its entries are local-only until pushed, and a fresh clone will not see them",
 		v.dir, ahead)
+}
+
+// staleHint names the second reason a package reads as unregistered: the
+// checkout is behind its origin and the admission may already sit there.
+// A fetch only updates remote-tracking refs, so it is safe on the user's
+// checkout; a checkout that cannot answer (offline, no origin) stays
+// silent and the plain failure stands.
+func (c *Controller) staleHint(v view) string {
+	if err := c.git.Fetch(v.ctx, v.dir); err != nil {
+		return ""
+	}
+
+	_, behind, err := c.git.AheadBehind(v.ctx, v.dir, "origin/main")
+	if err != nil || behind == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf(
+		" (this checkout is %d commit(s) behind origin/main and the admission may already be there: git pull in %s, then rerun)",
+		behind, v.dir)
 }
 
 // unfiledError is the honest failure for a cache materialisation: nothing is

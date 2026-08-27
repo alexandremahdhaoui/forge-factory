@@ -57,7 +57,13 @@ func (h *harness) expectExec(dir string, code int) {
 func gitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 
-	full := append([]string{"-c", "user.email=t@t", "-c", "user.name=t"}, args...)
+	// Signing off explicitly: a developer machine's global tag.gpgsign or
+	// commit.gpgsign would otherwise turn these plain commands into signed
+	// ones that demand a message or a key the test does not have.
+	full := append([]string{
+		"-c", "user.email=t@t", "-c", "user.name=t",
+		"-c", "tag.gpgsign=false", "-c", "commit.gpgsign=false",
+	}, args...)
 
 	res, err := execadapter.New().Run(context.Background(), dir, "git", full...)
 	require.NoError(t, err)
@@ -703,4 +709,70 @@ func TestTheDefaultCacheDirComesFromTheUserCache(t *testing.T) {
 		Target: "/nowhere/repo", Name: "x",
 	})
 	require.Error(t, err, "the run proceeds far enough to fail on the clone, proving the cache dir resolved")
+}
+
+// A materialisation that died halfway leaves a run root without its
+// marker. Trusting it fails later and deeper (a missing .envrc, a manifest
+// with no workspace root), so the root is discarded and rebuilt instead.
+// Live case: a hand-recreated checkout broke a cargo build with an error
+// that never named the cache.
+func TestAnIncompleteCheckoutIsDiscardedAndRebuilt(t *testing.T) {
+	h := newHarness(t)
+
+	member, _, _ := remoteUniverse(t)
+
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, "member-a").
+		Return(synccontroller.Report{}, nil).Twice()
+	h.runner.EXPECT().
+		RunAttached(mock.Anything, mock.Anything, mock.Anything, "forge", mock.Anything, mock.Anything, mock.Anything).
+		Return(0, nil).Twice()
+
+	req := runcontroller.Request{Target: member, Name: "tool-a", CacheDir: h.cache}
+
+	_, err := h.c.Run(context.Background(), req)
+	require.NoError(t, err)
+
+	// The interruption: the root stands, the marker never landed.
+	markers, err := filepath.Glob(filepath.Join(h.cache, "run", "*", ".forge-materialised"))
+	require.NoError(t, err)
+	require.Len(t, markers, 1)
+	require.NoError(t, os.Remove(markers[0]))
+
+	_, err = h.c.Run(context.Background(), req)
+	require.NoError(t, err)
+	require.Contains(t, h.progress.String(), "incomplete checkout")
+	require.FileExists(t, markers[0], "the rebuild must finish and mark itself")
+}
+
+// A checkout deleted by hand leaves its worktree registration dangling in
+// the cached clone, and git then refuses to register the same path again.
+// The registration points at nothing, so the controller prunes and
+// retries instead of surfacing git's error. Live case: the only fix was
+// running git worktree prune by hand against the tool's own cache.
+func TestADeletedCheckoutHealsItsDanglingWorktree(t *testing.T) {
+	h := newHarness(t)
+
+	member, _, _ := remoteUniverse(t)
+
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, "member-a").
+		Return(synccontroller.Report{}, nil).Twice()
+	h.runner.EXPECT().
+		RunAttached(mock.Anything, mock.Anything, mock.Anything, "forge", mock.Anything, mock.Anything, mock.Anything).
+		Return(0, nil).Twice()
+
+	req := runcontroller.Request{Target: member, Name: "tool-a", CacheDir: h.cache}
+
+	_, err := h.c.Run(context.Background(), req)
+	require.NoError(t, err)
+
+	// The wound: the whole run root removed outside the tool.
+	roots, err := filepath.Glob(filepath.Join(h.cache, "run", "*"))
+	require.NoError(t, err)
+	for _, root := range roots {
+		require.NoError(t, os.RemoveAll(root))
+	}
+
+	_, err = h.c.Run(context.Background(), req)
+	require.NoError(t, err)
+	require.Contains(t, h.progress.String(), "pruned a dangling worktree registration")
 }

@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -80,7 +81,7 @@ func TestAWarmTupleEntersAtTheInputsStep(t *testing.T) {
 		Target:   "github.com/x/repo@" + fullShaA,
 		Name:     "server",
 		Factory:  "git@github.com:x/factory.git@" + fullShaB,
-		CacheDir: "/cache",
+		CacheDir: filepath.Join(t.TempDir(), "cache"),
 		Args:     []string{"--flag"},
 	}
 
@@ -148,7 +149,7 @@ func TestACorruptOrHomelessMarkerFallsThrough(t *testing.T) {
 				Target:   "github.com/x/repo@" + fullShaA,
 				Name:     "server",
 				Factory:  "git@github.com:x/factory.git@" + fullShaB,
-				CacheDir: "/cache",
+				CacheDir: filepath.Join(t.TempDir(), "cache"),
 			}
 
 			mutate(r, warmTuplePath(req.CacheDir, warmTupleKey(req)))
@@ -170,7 +171,7 @@ func TestAWarmTupleStillChecksItsInputs(t *testing.T) {
 		Target:   "github.com/x/repo@" + fullShaA,
 		Name:     "server",
 		Factory:  "git@github.com:x/factory.git@" + fullShaB,
-		CacheDir: "/cache",
+		CacheDir: filepath.Join(t.TempDir(), "cache"),
 	}
 
 	mark := warmTuple{RepoDir: "/cache/run/tuple/repo"}
@@ -196,7 +197,7 @@ func TestAForcedRunIgnoresTheWarmTuple(t *testing.T) {
 		Target:   "github.com/x/repo@" + fullShaA,
 		Name:     "server",
 		Factory:  "git@github.com:x/factory.git@" + fullShaB,
-		CacheDir: "/cache",
+		CacheDir: filepath.Join(t.TempDir(), "cache"),
 		Force:    true,
 	}
 

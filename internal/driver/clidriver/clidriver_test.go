@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -854,4 +856,36 @@ func TestBootstrapNeedsAFactoryURL(t *testing.T) {
 	h := newHarness(t)
 
 	require.ErrorIs(t, h.driver.Run(t.Context(), []string{"bootstrap"}), clidriver.ErrUsage)
+}
+
+// cache clean is the one last-resort verb: everything under the cache is
+// derived, so removing it is always safe and the next run rebuilds it.
+func TestCacheCleanRemovesTheCacheDir(t *testing.T) {
+	h := newHarness(t)
+
+	dir := filepath.Join(t.TempDir(), "forge-factory")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "run", "some-root"), 0o750))
+
+	h.fs.EXPECT().IsDir(dir).Return(true, nil).Once()
+
+	require.NoError(t, h.driver.Run(context.Background(), []string{"cache", "clean", "--cache", dir}))
+	require.NoDirExists(t, dir)
+	require.Contains(t, h.out.String(), "removed "+dir)
+}
+
+func TestCacheCleanOnNothingSaysSo(t *testing.T) {
+	h := newHarness(t)
+
+	dir := filepath.Join(t.TempDir(), "absent")
+	h.fs.EXPECT().IsDir(dir).Return(false, nil).Once()
+
+	require.NoError(t, h.driver.Run(context.Background(), []string{"cache", "clean", "--cache", dir}))
+	require.Contains(t, h.out.String(), "nothing at "+dir)
+}
+
+func TestCacheWithoutCleanIsAUsageError(t *testing.T) {
+	h := newHarness(t)
+
+	err := h.driver.Run(context.Background(), []string{"cache"})
+	require.ErrorContains(t, err, "usage: forge-factory cache clean")
 }

@@ -326,7 +326,11 @@ func TestEqualVersionsCompareEqualThroughAPin(t *testing.T) {
 func gitIn(t *testing.T, dir string, args ...string) {
 	t.Helper()
 
-	res, err := execadapter.New().Run(context.Background(), dir, "git", args...)
+	// Signing off explicitly, so a machine's global tag.gpgsign or
+	// commit.gpgsign cannot turn these plain commands into signed ones.
+	full := append([]string{"-c", "tag.gpgsign=false", "-c", "commit.gpgsign=false"}, args...)
+
+	res, err := execadapter.New().Run(context.Background(), dir, "git", full...)
 	require.NoError(t, err)
 	require.Zero(t, res.ExitCode, "%v: %s", args, res.Stderr)
 }
@@ -648,4 +652,39 @@ func TestAnUnpushedRegisterIsNamedInTheNotes(t *testing.T) {
 	require.Len(t, notes, 1)
 	require.Contains(t, notes[0], "ahead of origin/main")
 	require.Contains(t, notes[0], "a fresh clone will not see them")
+}
+
+// A checkout behind its origin reads a missing admission as "not in the
+// register" when it may already sit upstream. The failure names that
+// second cause and the pull that resolves it. Live case: sixty unpushed
+// commits made three tools read as unadmitted on every other machine.
+func TestABehindCheckoutNamesThePullInTheFailure(t *testing.T) {
+	f, root := register(t, nil)
+	dir := filepath.Join(root, "golden-register")
+
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	gitIn(t, root, "init", "-q", "--bare", origin)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("seed\n"), 0o600))
+	gitIn(t, dir, "init", "-q", "-b", "main")
+	gitIn(t, dir, "add", ".")
+	gitIn(t, dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "seed")
+	gitIn(t, dir, "remote", "add", "origin", origin)
+	gitIn(t, dir, "push", "-q", "origin", "main")
+
+	// The admission lands upstream through another clone; this checkout
+	// never pulls it.
+	other := filepath.Join(t.TempDir(), "other")
+	gitIn(t, root, "clone", "-q", "-b", "main", origin, other)
+	require.NoError(t, os.MkdirAll(filepath.Join(other, "index"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(other, "index", "admitted.json"), []byte("{}"), 0o600))
+	gitIn(t, other, "add", ".")
+	gitIn(t, other, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "admit upstream")
+	gitIn(t, other, "push", "-q", "origin", "main")
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {}})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "behind origin/main")
+	require.Contains(t, err.Error(), "git pull in")
 }

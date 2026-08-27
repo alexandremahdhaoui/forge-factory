@@ -118,6 +118,35 @@ func (c *Controller) say(quiet bool, format string, args ...interface{}) {
 	_, _ = fmt.Fprintf(c.progress, "forge-factory run: "+format+"\n", args...)
 }
 
+// warn is for self-heal actions the user should know about. It ignores
+// quiet: a heal changed cache state, and silence there breeds mistrust.
+func (c *Controller) warn(format string, args ...interface{}) {
+	_, _ = fmt.Fprintf(c.progress, "WARN: "+format+"\n", args...)
+}
+
+// worktreeAdd registers a worktree, healing the one wound git names but
+// never fixes on its own: a registration whose directory was removed by
+// hand. The registration points at nothing, so prune-and-retry is safe.
+func (c *Controller) worktreeAdd(ctx context.Context, clone, sha, dest string) error {
+	err := c.git.WorktreeAdd(ctx, clone, sha, dest)
+	if err == nil || !strings.Contains(err.Error(), "already registered worktree") {
+		return err
+	}
+
+	if perr := c.git.WorktreePrune(ctx, clone); perr != nil {
+		return err
+	}
+
+	c.warn("healed the run cache: pruned a dangling worktree registration in %s", clone)
+
+	return c.git.WorktreeAdd(ctx, clone, sha, dest)
+}
+
+// materialisedMarker is the proof a run context was built to the end. A
+// root without it is a checkout that died halfway - resuming it fails
+// later and deeper, so it is discarded and rebuilt instead.
+const materialisedMarker = ".forge-materialised"
+
 func (c *Controller) Run(ctx context.Context, req Request) (int, error) {
 	if req.CacheDir == "" {
 		base, err := os.UserCacheDir()
@@ -384,6 +413,20 @@ func (c *Controller) materialiseRemote(
 	repoDir := filepath.Join(root, member.Name)
 
 	warm, _ := c.fs.IsDir(repoDir)
+
+	if marked, _ := c.fs.Exists(filepath.Join(root, materialisedMarker)); warm && !marked {
+		// The root exists but its materialisation never finished: a partial
+		// checkout half-trusted here fails later and deeper (a missing
+		// .envrc, a manifest with no workspace root), with no trace back.
+		c.warn("healed the run cache: %s was an incomplete checkout - discarded and rebuilt", root)
+
+		if err := os.RemoveAll(root); err != nil {
+			return 0, fmt.Errorf("discarding the incomplete checkout %s: %w (try: forge-factory cache clean)", root, err)
+		}
+
+		warm = false
+	}
+
 	if warm && !req.Force {
 		c.say(req.Quiet, "cache: warm at %s", root)
 	} else {
@@ -393,6 +436,10 @@ func (c *Controller) materialiseRemote(
 
 		if code, err := c.syncWorkspace(ctx, root, member.Name); err != nil {
 			return code, staleTupleHint(err, module, pinnedVersion)
+		}
+
+		if err := c.fs.WriteFile(filepath.Join(root, materialisedMarker), []byte("")); err != nil {
+			return 0, fmt.Errorf("marking %s materialised: %w", root, err)
 		}
 	}
 
@@ -565,7 +612,7 @@ func (c *Controller) checkoutContext(
 
 	repoDir := filepath.Join(root, member.Name)
 	if ok, _ := c.fs.IsDir(repoDir); !ok {
-		if err := c.git.WorktreeAdd(ctx, repoClone, repoSha, repoDir); err != nil {
+		if err := c.worktreeAdd(ctx, repoClone, repoSha, repoDir); err != nil {
 			return err
 		}
 	}
@@ -574,7 +621,7 @@ func (c *Controller) checkoutContext(
 
 	registerDir := filepath.Join(root, registerName)
 	if ok, _ := c.fs.IsDir(registerDir); !ok {
-		if err := c.git.WorktreeAdd(ctx, registerClone, registerSha, registerDir); err != nil {
+		if err := c.worktreeAdd(ctx, registerClone, registerSha, registerDir); err != nil {
 			return err
 		}
 	}
@@ -655,7 +702,7 @@ func (c *Controller) materialiseAndExec(
 
 		registerDir := filepath.Join(root, registerName)
 		if ok, _ := c.fs.IsDir(registerDir); !ok {
-			if err := c.git.WorktreeAdd(ctx, registerClone, registerSha, registerDir); err != nil {
+			if err := c.worktreeAdd(ctx, registerClone, registerSha, registerDir); err != nil {
 				return 0, err
 			}
 		}
@@ -848,7 +895,9 @@ func (c *Controller) cloneOrFetch(ctx context.Context, cacheDir, url string) (st
 
 	if ok, _ := c.fs.IsDir(dir); ok {
 		if err := c.git.Fetch(ctx, dir); err != nil {
-			return "", err
+			// A broken mirror is cache state, not the user's work: name
+			// the directory and the way out instead of the raw git error.
+			return "", fmt.Errorf("refreshing the cached mirror %s: %w (try: forge-factory cache clean)", dir, err)
 		}
 
 		return dir, nil

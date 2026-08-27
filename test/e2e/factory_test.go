@@ -344,6 +344,9 @@ func gitInit(t *testing.T, dir string) {
 		{"init", "--quiet"},
 		{"config", "user.email", "t@example.com"},
 		{"config", "user.name", "t"},
+		// A machine's global signing config must not reach test repos.
+		{"config", "tag.gpgsign", "false"},
+		{"config", "commit.gpgsign", "false"},
 		{"add", "-A"},
 		{"commit", "--quiet", "-m", "first"},
 	} {
