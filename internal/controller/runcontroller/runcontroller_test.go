@@ -830,3 +830,95 @@ func (s *syncWriter) Write(p []byte) (int, error) {
 
 	return s.w.Write(p)
 }
+
+// Provenance pins the answers, never the phonebook: member shas are build
+// inputs and stay pinned, but the register is the catalog of what exists.
+// A provenance record structurally predates its own run's publish stage,
+// so honoring a register sha from it froze every consumer onto a catalog
+// already missing that run's admissions. Live case: mockery, admitted six
+// hours after a workspace's only revision, was invisible to it forever.
+func TestAPackageAdmittedAfterTheProvenanceRecordIsStillSeen(t *testing.T) {
+	h := newHarness(t)
+
+	base := t.TempDir()
+	member := filepath.Join(base, "member-a")
+	factoryDir := filepath.Join(base, "fixture-factory")
+	register := filepath.Join(base, "fixture-register")
+	state := filepath.Join(base, "fixture-state")
+
+	registerRepo(t, register)
+	repoWithRunnable(t, member, factoryDir)
+
+	memberSha := gitIn(t, member, "rev-parse", "HEAD")
+	staleRegisterSha := gitIn(t, register, "rev-parse", "HEAD")
+
+	// The record pins the member (right) AND the register (the bug): the
+	// register sha it names predates the admission below.
+	write(t, filepath.Join(state, "revisions", "cafe02.json"),
+		`{"id":"cafe02","repos":{"member-a":"`+memberSha+`","fixture-register":"`+staleRegisterSha+`"}}`)
+	gitIn(t, state, "init", "-q", "-b", "main")
+	gitIn(t, state, "add", ".")
+	gitIn(t, state, "commit", "-qm", "record")
+
+	write(t, filepath.Join(factoryDir, "workspace", "forge-factory.yaml"), `version: "1"
+name: fixture
+repos:
+  - name: member-a
+    url: `+member+`
+    languages: [go]
+  - name: fixture-register
+    url: `+register+`
+  - name: fixture-state
+    url: `+state+`
+engines:
+  - alias: go
+    engine: forge://example.com/lang-go
+register:
+  url: `+register+`
+state:
+  engine: forge://example.com/state
+  spec:
+    path: ./fixture-state
+`)
+	gitIn(t, factoryDir, "init", "-q", "-b", "main")
+	gitIn(t, factoryDir, "add", ".")
+	gitIn(t, factoryDir, "commit", "-qm", "seed")
+
+	// The publish that makes the member resolvable, and - after the
+	// record's register sha - a brand new admission.
+	write(t, filepath.Join(register, "index", "internal", member, "0.json"),
+		`{"current":"v0.9.9","history":[{"version":"v0.9.9","provenance":"cafe02"}]}`)
+	write(t, filepath.Join(register, "index", "go", "example.com", "admitted-later", "1.json"),
+		`{"package":"admitted-later","ecosystem":"go","prefix":"1","current":"v1.0.0"}`)
+	gitIn(t, register, "add", ".")
+	gitIn(t, register, "commit", "-qm", "publish and admit")
+	gitIn(t, member, "tag", "v0.9.9")
+
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, "member-a").
+		Return(synccontroller.Report{}, nil).Once()
+
+	var execDir string
+
+	h.runner.EXPECT().
+		RunAttached(mock.Anything, mock.Anything, mock.Anything, "forge", mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, dir string, _ map[string]string, _ string, _ ...string) (int, error) {
+			execDir = dir
+
+			return 0, nil
+		}).Once()
+
+	_, err := h.c.Run(context.Background(), runcontroller.Request{
+		Target: member, Name: "tool-a", CacheDir: h.cache,
+	})
+	require.NoError(t, err)
+
+	// The member ran at its pinned sha - provenance still owns the code.
+	require.Equal(t, memberSha, gitIn(t, execDir, "rev-parse", "HEAD"))
+
+	// And the catalog is the catalog: the run's register worktree carries
+	// the entry admitted AFTER the provenance record was written.
+	registerDir := filepath.Join(filepath.Dir(execDir), "fixture-register")
+	require.FileExists(t,
+		filepath.Join(registerDir, "index", "go", "example.com", "admitted-later", "1.json"),
+		"a package admitted after the record must be visible without re-proving the workspace")
+}

@@ -414,9 +414,14 @@ func (c *Controller) materialiseRemote(
 			return 0, fmt.Errorf("pinning %s: the revision names no sha and the tag %s is not in the clone", module, version)
 		}
 
-		if sha, ok := pinned[path.Base(strings.TrimSuffix(registerURL, ".git"))]; ok {
-			registerSha = sha
-		}
+		// The register is deliberately NOT pinned by provenance: provenance
+		// answers what a repo's build inputs were when proven, and members
+		// above are pinned for exactly that. The register is the catalog of
+		// what exists - and the pipeline records repo heads before its own
+		// publish stage writes into the register, so a provenance-pinned
+		// register predates its own run's admissions by construction. Pin
+		// the answers, never the phonebook: the catalog reads at the
+		// resolved head (or the factory's explicit register.revision).
 	}
 
 	root := filepath.Join(req.CacheDir, "run",
