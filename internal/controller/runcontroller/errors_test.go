@@ -150,7 +150,7 @@ func newRig(t *testing.T) *rig {
 		sync: synccontrollermock.NewMockSyncer(t),
 		out:  &bytes.Buffer{},
 	}
-	r.c = New(r.fs, r.git, r.exec, r.sync, lockadapter.New(), r.out)
+	r.c = New(r.fs, r.git, r.exec, r.sync, nopLocker{}, r.out)
 
 	// The exec boundary asks PATH for forge before picking a pinned go-run
 	// fallback; answering yes keeps the bare form every expectation pins.
@@ -561,6 +561,7 @@ func TestCloneOrFetchShapes(t *testing.T) {
 
 	t.Run("an uncreatable cache fails", func(t *testing.T) {
 		r := newRig(t)
+		r.withRealLock()
 		cache := filepath.Join(t.TempDir(), "blocked")
 		require.NoError(t, os.WriteFile(cache, []byte(""), 0o600))
 
@@ -577,13 +578,19 @@ func TestCheckoutContextErrorShapes(t *testing.T) {
 	member := config.Repo{Name: "tool", URL: "git@example.com:org/tool.git"}
 	registerURL := "git@example.com:org/register.git"
 
+	// Directories, not decoration: a real adapter may reach these, and a
+	// literal "/clone" is only writable for root.
+	shared := t.TempDir()
+	clone := filepath.Join(shared, "clone")
+	register := filepath.Join(shared, "register")
+
 	t.Run("an uncreatable root fails", func(t *testing.T) {
 		r := newRig(t)
 		blocked := filepath.Join(t.TempDir(), "blocked")
 		require.NoError(t, os.WriteFile(blocked, []byte(""), 0o600))
 
 		err := r.c.checkoutContext(ctx, Request{Quiet: true}, filepath.Join(blocked, "root"),
-			factory, member, "/clone", shaA, "/register", shaB, registerURL)
+			factory, member, clone, shaA, register, shaB, registerURL)
 		require.ErrorContains(t, err, "creating the run context")
 	})
 
@@ -593,18 +600,18 @@ func TestCheckoutContextErrorShapes(t *testing.T) {
 		r.fs.writeErr[filepath.Join(root, "forge-factory.yaml")] = errors.New("read only")
 
 		err := r.c.checkoutContext(ctx, Request{Quiet: true}, root,
-			factory, member, "/clone", shaA, "/register", shaB, registerURL)
+			factory, member, clone, shaA, register, shaB, registerURL)
 		require.ErrorContains(t, err, "placing the factory file")
 	})
 
 	t.Run("a failing repo worktree fails", func(t *testing.T) {
 		r := newRig(t)
 		root := t.TempDir()
-		r.git.EXPECT().WorktreeAdd(mock.Anything, "/clone", shaA, filepath.Join(root, "tool")).
+		r.git.EXPECT().WorktreeAdd(mock.Anything, clone, shaA, filepath.Join(root, "tool")).
 			Return(errors.New("worktree refused"))
 
 		err := r.c.checkoutContext(ctx, Request{Quiet: true}, root,
-			factory, member, "/clone", shaA, "/register", shaB, registerURL)
+			factory, member, clone, shaA, register, shaB, registerURL)
 		require.ErrorContains(t, err, "worktree refused")
 	})
 
@@ -612,11 +619,11 @@ func TestCheckoutContextErrorShapes(t *testing.T) {
 		r := newRig(t)
 		root := t.TempDir()
 		r.fs.dirs[filepath.Join(root, "tool")] = true
-		r.git.EXPECT().WorktreeAdd(mock.Anything, "/register", shaB, filepath.Join(root, "register")).
+		r.git.EXPECT().WorktreeAdd(mock.Anything, register, shaB, filepath.Join(root, "register")).
 			Return(errors.New("register worktree refused"))
 
 		err := r.c.checkoutContext(ctx, Request{Quiet: true}, root,
-			factory, member, "/clone", shaA, "/register", shaB, registerURL)
+			factory, member, clone, shaA, register, shaB, registerURL)
 		require.ErrorContains(t, err, "register worktree refused")
 	})
 
@@ -628,7 +635,7 @@ func TestCheckoutContextErrorShapes(t *testing.T) {
 		r.fs.writeErr[filepath.Join(root, "tool", ".envrc")] = errors.New("read only")
 
 		err := r.c.checkoutContext(ctx, Request{Quiet: true}, root,
-			factory, member, "/clone", shaA, "/register", shaB, registerURL)
+			factory, member, clone, shaA, register, shaB, registerURL)
 		require.ErrorContains(t, err, "creating "+filepath.Join(root, "tool", ".envrc"))
 	})
 }
@@ -646,6 +653,7 @@ func TestMaterialiseAndExecErrorShapes(t *testing.T) {
 
 	t.Run("an uncreatable context root fails", func(t *testing.T) {
 		r := newRig(t)
+		r.withRealLock()
 		factoryFlow(r, claimingFactoryYaml)
 		r.git.EXPECT().ResolveRev(mock.Anything, mock.Anything, "origin/HEAD").Return(shaA, nil)
 
@@ -809,4 +817,21 @@ func TestBootstrapErrorShapes(t *testing.T) {
 		})
 		require.ErrorContains(t, err, "placing forge-ci.yaml")
 	})
+}
+
+// nopLocker is what a unit rig locks with. The real lock writes a file
+// beside every directory a controller names, so wiring it by default made
+// unit tests depend on the privileges of whatever path a fixture invented
+// - literal "/clone" passed for years as an opaque name and then started
+// failing for everyone who is not root. Serialization is proved where it
+// is the subject (the lockadapter suite, and the concurrent
+// materialisation test), not incidentally everywhere else.
+type nopLocker struct{}
+
+func (nopLocker) Lock(string) (func(), error) { return func() {}, nil }
+
+// withRealLock swaps in the file lock for the subtests whose subject IS
+// the lock's failure on an unusable path.
+func (r *rig) withRealLock() {
+	r.c = New(r.fs, r.git, r.exec, r.sync, lockadapter.New(), r.out)
 }
