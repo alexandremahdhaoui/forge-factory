@@ -3,9 +3,11 @@ package runcontroller_test
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -14,6 +16,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/gitadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/lockadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/runcontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/execadaptermock"
@@ -39,7 +42,7 @@ func newHarness(t *testing.T) *harness {
 	}
 
 	h.c = runcontroller.New(fsadapter.New(), gitadapter.New(execadapter.New()),
-		h.runner, h.sync, h.progress)
+		h.runner, h.sync, lockadapter.New(), h.progress)
 
 	// The exec boundary asks PATH for forge before picking a pinned go-run
 	// fallback; answering yes keeps the bare form every expectation pins.
@@ -775,4 +778,55 @@ func TestADeletedCheckoutHealsItsDanglingWorktree(t *testing.T) {
 	_, err = h.c.Run(context.Background(), req)
 	require.NoError(t, err)
 	require.Contains(t, h.progress.String(), "pruned a dangling worktree registration")
+}
+
+// Two runs of the same tuple at once - a second workspace, an orphaned
+// child, or plain bad luck - must queue on the run root's lock and both
+// finish against a whole checkout. Before the lock existed this raced on
+// git refs and half-built roots. Run under -race.
+func TestConcurrentRunsOfTheSameTupleSerialise(t *testing.T) {
+	h := newHarness(t)
+
+	// The shared bytes.Buffer in the harness is not goroutine-safe; real
+	// use writes to os.Stderr. Guard it for this concurrent test only.
+	h.c = runcontroller.New(fsadapter.New(), gitadapter.New(execadapter.New()),
+		h.runner, h.sync, lockadapter.New(), &syncWriter{w: h.progress})
+
+	member, _, _ := remoteUniverse(t)
+
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, "member-a").
+		Return(synccontroller.Report{}, nil).Maybe()
+	h.runner.EXPECT().
+		RunAttached(mock.Anything, mock.Anything, mock.Anything, "forge", mock.Anything, mock.Anything, mock.Anything).
+		Return(0, nil).Times(2)
+
+	req := runcontroller.Request{Target: member, Name: "tool-a", CacheDir: h.cache}
+
+	errs := make(chan error, 2)
+
+	for i := 0; i < 2; i++ {
+		go func() {
+			_, err := h.c.Run(context.Background(), req)
+			errs <- err
+		}()
+	}
+
+	require.NoError(t, <-errs)
+	require.NoError(t, <-errs)
+
+	markers, err := filepath.Glob(filepath.Join(h.cache, "run", "*", ".forge-materialised"))
+	require.NoError(t, err)
+	require.Len(t, markers, 1, "one whole root, never a half-built second")
+}
+
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.w.Write(p)
 }

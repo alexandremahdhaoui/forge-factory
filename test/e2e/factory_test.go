@@ -334,7 +334,7 @@ func TestForgeFactoryWithNoVerbPrintsItsUsage(t *testing.T) {
 
 	out, err := run(t, root)
 	require.Error(t, err)
-	assert.Contains(t, out, "usage: forge-factory")
+	assert.Contains(t, out, "forge-factory <command>")
 }
 
 func gitInit(t *testing.T, dir string) {

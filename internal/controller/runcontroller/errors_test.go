@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/lockadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/execadaptermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/gitadaptermock"
@@ -149,7 +150,7 @@ func newRig(t *testing.T) *rig {
 		sync: synccontrollermock.NewMockSyncer(t),
 		out:  &bytes.Buffer{},
 	}
-	r.c = New(r.fs, r.git, r.exec, r.sync, r.out)
+	r.c = New(r.fs, r.git, r.exec, r.sync, lockadapter.New(), r.out)
 
 	// The exec boundary asks PATH for forge before picking a pinned go-run
 	// fallback; answering yes keeps the bare form every expectation pins.
@@ -223,7 +224,7 @@ func TestRuleTwoFailsWhenTheWorkspaceFactoryVanishes(t *testing.T) {
 	}
 	r.fs.readErr["/ws/forge-factory.yaml"] = nil
 	gated := &gatedFS{fakeFS: r.fs, gate: map[string]func(string) ([]byte, error){"/ws/forge-factory.yaml": readGate}}
-	r.c = New(gated, r.git, r.exec, r.sync, r.out)
+	r.c = New(gated, r.git, r.exec, r.sync, lockadapter.New(), r.out)
 
 	_, err := r.c.Run(context.Background(), Request{Target: "tool", WorkDir: "/ws/tool", CacheDir: t.TempDir()})
 	require.ErrorContains(t, err, "factory vanished")
@@ -563,8 +564,10 @@ func TestCloneOrFetchShapes(t *testing.T) {
 		cache := filepath.Join(t.TempDir(), "blocked")
 		require.NoError(t, os.WriteFile(cache, []byte(""), 0o600))
 
+		// The lock is the first thing to touch the blocked path now, and
+		// its failure names the same uncreatable directory.
 		_, err := r.c.cloneOrFetch(ctx, cache, "git@example.com:org/tool.git")
-		require.ErrorContains(t, err, "creating the clone cache")
+		require.ErrorContains(t, err, "preparing the lock")
 	})
 }
 
@@ -650,8 +653,10 @@ func TestMaterialiseAndExecErrorShapes(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(cache, "git"), 0o750))
 		require.NoError(t, os.WriteFile(filepath.Join(cache, "run"), []byte(""), 0o600))
 
+		// The lock is the first thing to touch the blocked path now, and
+		// its failure names the same uncreatable directory.
 		_, err := r.c.materialiseAndExec(ctx, Request{Quiet: true, CacheDir: cache}, "/ws/tool", target, factoryURL, "", "")
-		require.ErrorContains(t, err, "creating the run context")
+		require.ErrorContains(t, err, "preparing the lock")
 	})
 
 	t.Run("an unplaceable factory file fails", func(t *testing.T) {

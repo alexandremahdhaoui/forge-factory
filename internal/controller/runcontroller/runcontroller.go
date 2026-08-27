@@ -23,6 +23,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/gitadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/lockadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
 )
@@ -70,6 +71,7 @@ type Controller struct {
 	git      gitadapter.Git
 	runner   execadapter.Runner
 	sync     synccontroller.Syncer
+	lock     lockadapter.Locker
 	progress io.Writer
 }
 
@@ -80,9 +82,10 @@ func New(
 	git gitadapter.Git,
 	runner execadapter.Runner,
 	sync synccontroller.Syncer,
+	lock lockadapter.Locker,
 	progress io.Writer,
 ) *Controller {
-	return &Controller{fs: fs, git: git, runner: runner, sync: sync, progress: progress}
+	return &Controller{fs: fs, git: git, runner: runner, sync: sync, lock: lock, progress: progress}
 }
 
 // runnableFile is the slice of a repo's forge.yaml this controller reads.
@@ -128,6 +131,14 @@ func (c *Controller) warn(format string, args ...interface{}) {
 // never fixes on its own: a registration whose directory was removed by
 // hand. The registration points at nothing, so prune-and-retry is safe.
 func (c *Controller) worktreeAdd(ctx context.Context, clone, sha, dest string) error {
+	// Worktree registrations live inside the clone: serialize against any
+	// other process touching the same clone.
+	release, lerr := c.lock.Lock(clone)
+	if lerr != nil {
+		return lerr
+	}
+	defer release()
+
 	err := c.git.WorktreeAdd(ctx, clone, sha, dest)
 	if err == nil || !strings.Contains(err.Error(), "already registered worktree") {
 		return err
@@ -412,24 +423,37 @@ func (c *Controller) materialiseRemote(
 		sanitize(module)+"@"+shortSha(repoSha)+"+"+sanitize(factoryURL)+"@"+shortSha(factorySha))
 	repoDir := filepath.Join(root, member.Name)
 
-	warm, _ := c.fs.IsDir(repoDir)
+	// The whole examine-and-build of the run root sits under its lock, so
+	// a second process materialising the same tuple waits and then finds
+	// the finished root instead of half of one.
+	if code, err := func() (int, error) {
+		release, err := c.lock.Lock(root)
+		if err != nil {
+			return 0, err
+		}
+		defer release()
 
-	if marked, _ := c.fs.Exists(filepath.Join(root, materialisedMarker)); warm && !marked {
-		// The root exists but its materialisation never finished: a partial
-		// checkout half-trusted here fails later and deeper (a missing
-		// .envrc, a manifest with no workspace root), with no trace back.
-		c.warn("healed the run cache: %s was an incomplete checkout - discarded and rebuilt", root)
+		warm, _ := c.fs.IsDir(repoDir)
 
-		if err := os.RemoveAll(root); err != nil {
-			return 0, fmt.Errorf("discarding the incomplete checkout %s: %w (try: forge-factory cache clean)", root, err)
+		if marked, _ := c.fs.Exists(filepath.Join(root, materialisedMarker)); warm && !marked {
+			// The root exists but its materialisation never finished: a partial
+			// checkout half-trusted here fails later and deeper (a missing
+			// .envrc, a manifest with no workspace root), with no trace back.
+			c.warn("healed the run cache: %s was an incomplete checkout - discarded and rebuilt", root)
+
+			if err := os.RemoveAll(root); err != nil {
+				return 0, fmt.Errorf("discarding the incomplete checkout %s: %w (try: forge-factory cache clean)", root, err)
+			}
+
+			warm = false
 		}
 
-		warm = false
-	}
+		if warm && !req.Force {
+			c.say(req.Quiet, "cache: warm at %s", root)
 
-	if warm && !req.Force {
-		c.say(req.Quiet, "cache: warm at %s", root)
-	} else {
+			return 0, nil
+		}
+
 		if err := c.checkoutContext(ctx, req, root, factory, member, repoClone, repoSha, registerClone, registerSha, registerURL); err != nil {
 			return 0, err
 		}
@@ -441,6 +465,10 @@ func (c *Controller) materialiseRemote(
 		if err := c.fs.WriteFile(filepath.Join(root, materialisedMarker), []byte("")); err != nil {
 			return 0, fmt.Errorf("marking %s materialised: %w", root, err)
 		}
+
+		return 0, nil
+	}(); err != nil {
+		return code, err
 	}
 
 	if err := c.checkInputs(repoDir, target); err != nil {
@@ -667,6 +695,14 @@ func (c *Controller) materialiseAndExec(
 	root := filepath.Join(req.CacheDir, "run",
 		"local-"+sanitize(repoRoot)+"+"+sanitize(factoryURL)+"@"+shortSha(factorySha))
 
+	// The local run context is shared state too: hold its lock while
+	// building it, so a concurrent run of the same checkout queues.
+	release, err := c.lock.Lock(root)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+
 	if err := os.MkdirAll(root, 0o750); err != nil {
 		return 0, fmt.Errorf("creating the run context: %w", err)
 	}
@@ -892,6 +928,16 @@ func (c *Controller) factoryAt(ctx context.Context, cacheDir, url, rev string) (
 // materialises from it as a worktree; nothing is ever shallow.
 func (c *Controller) cloneOrFetch(ctx context.Context, cacheDir, url string) (string, error) {
 	dir := filepath.Join(cacheDir, "git", sanitize(url))
+
+	// The mirror is shared machine state: another process - this
+	// workspace's, a second workspace's, an orphaned child's - may be
+	// fetching or reading it right now. The lock turns the race into a
+	// queue.
+	release, err := c.lock.Lock(dir)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 
 	if ok, _ := c.fs.IsDir(dir); ok {
 		if err := c.git.Fetch(ctx, dir); err != nil {

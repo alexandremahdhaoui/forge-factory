@@ -741,5 +741,34 @@ func short(sha string) string {
 
 // Usage is what main prints when it is called with nothing.
 func Usage() string {
-	return ErrUsage.Error() + "\n"
+	return `forge-factory - one factory file, every workspace file generated from it
+
+Usage:
+  forge-factory <command> [args...]
+
+Workspace:
+  clone                        Fetch every member the factory names, then sync
+  sync [--only <member>]       Regenerate every workspace file and manifest;
+                               resolve versions; provision the toolchain
+  status                       Members, versions, pins and freshness at a glance
+  validate                     Describe what the factory file declares
+
+Versions:
+  add <eco>:<pkg>              Declare a dependency; the register answers its version
+  bump <eco>:<pkg> <version>   Move a verbatim-pinned version
+  checkout <revision>          Pin the workspace to a proven revision
+
+Run:
+  run <target> [-- args...]    Materialise the target's context and run it
+  bootstrap <factory-url>      Stand up a workspace from nothing
+
+Cache:
+  cache clean                  Remove the derived run cache; the next run rebuilds it
+
+Common flags:
+  --config <path>   The factory file (default forge-factory.yaml)
+  --root <dir>      The workspace root (default the file's directory)
+  --offline         Resolve without the network
+  --register-head   Resolve from the register checkout as it stands
+`
 }

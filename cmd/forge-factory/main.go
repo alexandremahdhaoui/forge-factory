@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/engineadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/gitadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/lockadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/repoadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/clonecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/resolvecontroller"
@@ -38,6 +40,13 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) error {
+	// The enclosing workspace's pinned tooling joins PATH for this whole
+	// process tree, so engines and the forge boundary resolve provisioned
+	// binaries with no .envrc sourced.
+	if wd, err := os.Getwd(); err == nil {
+		ensureWorkspaceBin(wd)
+	}
+
 	fs := fsadapter.New()
 	git := gitadapter.New(execadapter.New())
 	// The effective version pins engine go-run fallbacks: a go-install build
@@ -55,10 +64,47 @@ func run(ctx context.Context, args []string) error {
 		sync,
 		revisioncontroller.New(caller, git),
 		statuscontroller.New(fs, git),
-		runcontroller.New(fs, git, execadapter.New(), sync, os.Stderr),
+		runcontroller.New(fs, git, execadapter.New(), sync, lockadapter.New(), os.Stderr),
 		toolingcontroller.New(fs, execadapter.New()),
 		os.Exit,
 	)
 
 	return driver.Run(ctx, args)
+}
+
+// ensureWorkspaceBin puts the enclosing workspace's pinned tooling on this
+// process's PATH: it walks up from wd to the first directory carrying
+// forge-factory.yaml alongside a .forge/bin directory and prepends that bin
+// dir once. Aligned copy of forge's toolresolver.EnsureWorkspaceBin until
+// forge tags a release carrying the package - see FOLLOWUP.
+func ensureWorkspaceBin(wd string) {
+	dir := wd
+
+	for {
+		factory := filepath.Join(dir, "forge-factory.yaml")
+		bin := filepath.Join(dir, ".forge", "bin")
+
+		if info, err := os.Stat(factory); err == nil && !info.IsDir() {
+			if binInfo, err := os.Stat(bin); err == nil && binInfo.IsDir() {
+				current := os.Getenv("PATH")
+
+				for _, entry := range filepath.SplitList(current) {
+					if entry == bin {
+						return
+					}
+				}
+
+				_ = os.Setenv("PATH", bin+string(os.PathListSeparator)+current)
+
+				return
+			}
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return
+		}
+
+		dir = parent
+	}
 }
