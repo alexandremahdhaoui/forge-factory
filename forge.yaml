@@ -110,6 +110,16 @@ test:
   - name: unit
     runner: forge://go-test
 
+  # The same tests as somebody who cannot write to /. Three times now a unit
+  # test named an absolute path, passed here as root, and failed on a
+  # colleague's machine. A grep cannot tell a literal handed to a mock from
+  # the same literal handed to real code; this can.
+  - name: unit-nonroot
+    runner: forge://generic-test-runner
+    spec:
+      command: sh
+      args: ["hack/unit-nonroot.sh"]
+
   - name: integration
     runner: forge://go-test
     spec:
