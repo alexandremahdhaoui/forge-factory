@@ -56,10 +56,17 @@ func register(t *testing.T, tracks map[string]string) (config.Factory, string) {
 	return f, root
 }
 
+// track is a measured-clean record: the feed answered and no published
+// range covers this version. The outcome is not decoration - it is what
+// separates that from a package nobody ever asked about, and leaving it
+// out of every fixture is why nothing noticed the consumer accepted an
+// absent one.
 func track(current string) string {
 	raw, _ := json.Marshal(map[string]any{
 		"package": "p", "ecosystem": "go", "prefix": "1",
 		"current": current, "updatedAt": now,
+		"vulns":   map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0},
+		"outcome": "clean",
 	})
 
 	return string(raw)
@@ -145,6 +152,8 @@ func TestAnAdvisoryPiercesEveryPin(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"package": "p", "ecosystem": "go", "prefix": "1",
 		"current": "v1.6.0", "updatedAt": now,
+		"vulns":   map[string]int{"critical": 1, "high": 0, "medium": 0, "low": 0},
+		"outcome": "findings",
 		"advisory": map[string]any{
 			"vulnIds": []string{"CVE-2026-1"}, "severity": "critical", "since": now,
 		},
@@ -165,6 +174,8 @@ func TestADeprecatedTrackWarns(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"package": "p", "ecosystem": "go", "prefix": "1",
 		"current": "v1.6.0", "updatedAt": now,
+		"vulns":      map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0},
+		"outcome":    "clean",
 		"deprecated": map[string]any{"reason": "stale", "since": now},
 	})
 
@@ -435,6 +446,8 @@ func TestADeprecationPastGraceIsAnError(t *testing.T) {
 		raw, _ := json.Marshal(map[string]any{
 			"package": "p", "ecosystem": "go", "prefix": "1",
 			"current": "v1.6.0", "updatedAt": now,
+			"vulns":      map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0},
+			"outcome":    "clean",
 			"deprecated": map[string]any{"reason": "stale", "since": since},
 		})
 
@@ -463,6 +476,7 @@ func TestADeprecationPastGraceIsAnError(t *testing.T) {
 
 func TestTheRegisterSetsItsOwnGraceWindow(t *testing.T) {
 	deprecated := `{"package":"p","ecosystem":"go","prefix":"1","current":"v1.6.0",` +
+		`"vulns":{"critical":0,"high":0,"medium":0,"low":0},"outcome":"clean",` +
 		`"deprecated":{"reason":"superseded","since":"2026-06-01T00:00:00Z"}}`
 	f, root := register(t, map[string]string{"go/example.com/pkg/1": deprecated})
 
@@ -769,6 +783,8 @@ func TestAFindingWithAFixNamesTheVersionThatFixesIt(t *testing.T) {
 func TestAnAcknowledgementClearsOnlyTheFindingItNames(t *testing.T) {
 	one, _ := json.Marshal(map[string]any{
 		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
+		"vulns":   map[string]int{"critical": 1, "high": 0, "medium": 0, "low": 0},
+		"outcome": "findings",
 		"advisory": map[string]any{
 			"vulnIds": []string{"CVE-2026-1"}, "severity": "high", "since": now,
 		},
@@ -788,6 +804,8 @@ func TestAnAcknowledgementClearsOnlyTheFindingItNames(t *testing.T) {
 	// A second finding appears. The first acknowledgement does not cover it.
 	two, _ := json.Marshal(map[string]any{
 		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
+		"vulns":   map[string]int{"critical": 1, "high": 0, "medium": 0, "low": 0},
+		"outcome": "findings",
 		"advisory": map[string]any{
 			"vulnIds": []string{"CVE-2026-1", "CVE-2026-2"}, "severity": "high", "since": now,
 		},
@@ -860,6 +878,8 @@ func TestAnUnmeasuredPackageWarnsAndDoesNotBlock(t *testing.T) {
 func TestAnExpiredAcknowledgementBlocksAgain(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
+		"vulns":   map[string]int{"critical": 1, "high": 0, "medium": 0, "low": 0},
+		"outcome": "findings",
 		"advisory": map[string]any{
 			"vulnIds": []string{"CVE-2026-1"}, "severity": "high", "since": now,
 		},
@@ -940,6 +960,8 @@ func TestReachabilityEnrichesTheErrorAndNeverClearsIt(t *testing.T) {
 func TestAnUnavailableReachabilityEngineChangesNothingElse(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
+		"vulns":   map[string]int{"critical": 1, "high": 0, "medium": 0, "low": 0},
+		"outcome": "findings",
 		"advisory": map[string]any{
 			"vulnIds": []string{"CVE-2026-1"}, "severity": "high", "since": now,
 			"affectedImports": []string{"example.com/pkg/inner"},
@@ -1037,6 +1059,8 @@ func TestARecordThatContradictsItselfIsRefused(t *testing.T) {
 			doc := map[string]any{
 				"package": "p", "ecosystem": "go", "prefix": "1",
 				"current": "v1.6.0", "updatedAt": now,
+				"vulns":   map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0},
+				"outcome": "clean",
 			}
 			for k, v := range tc.doc {
 				doc[k] = v
@@ -1228,4 +1252,38 @@ func TestAnUnmeasuredRecordWithNoReasonStillReads(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, notes, 1)
 	require.Contains(t, notes[0], "The register does not say why.")
+}
+
+// The outcome is what tells a measured-clean package from one nobody ever
+// asked about, and every rule downstream switches on it. An absent or
+// misspelled one matched no case and resolved green with no note - the
+// "clean when nothing was measured" bug again, reachable by editing one
+// line of a file every consumer shares.
+func TestATrackWithNoReadableOutcomeIsRefused(t *testing.T) {
+	for name, outcome := range map[string]any{
+		"absent":     nil,
+		"empty":      "",
+		"misspelled": "cleen",
+		"invented":   "probably-fine",
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc := map[string]any{
+				"package": "p", "ecosystem": "go", "prefix": "1",
+				"current": "v1.6.0", "updatedAt": now,
+				"vulns": map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0},
+			}
+			if outcome != nil {
+				doc["outcome"] = outcome
+			}
+
+			raw, _ := json.Marshal(doc)
+			f, root := register(t, map[string]string{"go/example.com/pkg/1": string(raw)})
+
+			_, _, err := newController().Resolve(context.Background(), f, root, "go",
+				map[string]config.DependencySpec{"example.com/pkg": {Track: "1"}})
+			require.ErrorContains(t, err, "which is not one this can read")
+			// The four it does read, so the reader can fix the file.
+			require.ErrorContains(t, err, "findings, clean, not-found or unreachable")
+		})
+	}
 }

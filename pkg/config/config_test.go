@@ -387,3 +387,32 @@ func indentBlock(s string) string {
 
 	return out
 }
+
+// A dependency entry is parsed strictly, so a typo is reported rather than
+// dropped. The one that made this matter: "expres: 2027-01-01" parsed as
+// an acknowledgement with no expiry at all - a permanent acceptance of a
+// risk somebody meant to accept for four months, with nothing to read.
+func TestADependencyEntryRefusesAKeyItDoesNotKnow(t *testing.T) {
+	for name, entry := range map[string]string{
+		"a misspelled track":   `{ trak: "1" }`,
+		"a misspelled expiry":  `{ acknowledge: [{ id: X-1, reason: r, expres: "2027-01-01" }] }`,
+		"an invented key":      `{ track: "1", bogus: true }`,
+		"a misspelled version": `{ verison: "v1.0.0" }`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := config.Parse([]byte(`version: "1"
+name: w
+repos:
+  - name: m
+    url: u
+    languages: [go]
+register:
+  url: git@example.com:o/r.git
+dependencies:
+  go:
+    example.com/pkg: ` + entry + `
+`))
+			require.ErrorContains(t, err, "unknown field")
+		})
+	}
+}

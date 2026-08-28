@@ -449,6 +449,18 @@ func (c *Controller) track(v view, language, name string, d config.DependencySpe
 		return spec.Track{}, fmt.Errorf("decoding track %s: %w", rel, err)
 	}
 
+	// The outcome is what tells a measured-clean package from one nobody
+	// ever asked about, and every rule downstream switches on it. An absent
+	// or misspelled one matched no case and resolved green with no note -
+	// exactly the "clean when nothing was measured" this wave exists to
+	// remove, reachable by editing one line of a shared file.
+	if !track.Outcome.Valid() {
+		return spec.Track{}, fmt.Errorf(
+			"track %s records %q as its outcome, which is not one this can read; "+
+				"the register writes findings, clean, not-found or unreachable",
+			rel, string(track.Outcome))
+	}
+
 	return track, nil
 }
 
