@@ -2,6 +2,8 @@ package execadapter_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
@@ -50,4 +52,30 @@ func TestRunAttachedAnswersTheExitCode(t *testing.T) {
 
 	_, err = execadapter.New().RunAttached(context.Background(), "", nil, "/does/not/exist")
 	require.Error(t, err)
+}
+
+func TestLookPathAnswersWhatPATHHolds(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a-tool"), []byte("#!/bin/sh\n"), 0o700))
+	t.Setenv("PATH", dir)
+
+	got, ok := execadapter.New().LookPath("a-tool")
+	require.True(t, ok)
+	require.Equal(t, filepath.Join(dir, "a-tool"), got)
+
+	// Absent is false and never an error: the caller's whole question is
+	// whether to exec this or fall back, and a fallback is not a failure.
+	_, ok = execadapter.New().LookPath("no-such-tool")
+	require.False(t, ok)
+}
+
+func TestLookPathRefusesAFileItCannotRun(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a-tool"), []byte("x"), 0o600))
+	t.Setenv("PATH", dir)
+
+	// Present but not executable. Answering yes here would pick a command
+	// that fails at exec time, well past the point the fallback was possible.
+	_, ok := execadapter.New().LookPath("a-tool")
+	require.False(t, ok)
 }

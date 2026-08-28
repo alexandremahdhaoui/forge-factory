@@ -796,7 +796,14 @@ func forgeDepVersion() string {
 		return ""
 	}
 
-	for _, dep := range info.Deps {
+	return depVersion(info.Deps)
+}
+
+// depVersion is the reading, split from the reading of build info so it can
+// be driven over the shapes that matter: a replace directive, a workspace
+// build, and forge absent altogether.
+func depVersion(deps []*debug.Module) string {
+	for _, dep := range deps {
 		if dep == nil || dep.Path != "github.com/alexandremahdhaoui/forge" {
 			continue
 		}
