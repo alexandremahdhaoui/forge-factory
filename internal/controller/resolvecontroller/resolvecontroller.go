@@ -60,12 +60,38 @@ type Controller struct {
 	// checkout. Resolution runs sequentially within one sync, so a plain
 	// map is enough.
 	warnedUnpushed map[string]bool
+
+	// reach asks whether a finding's code is in the build at all. It runs
+	// only when a finding already blocks, and never changes whether it does.
+	reach reachability
 }
 
 var _ Resolver = (*Controller)(nil)
 
-func New(fs fsadapter.FS, git gitadapter.Git, now func() time.Time) *Controller {
-	return &Controller{fs: fs, git: git, now: now, warnedUnpushed: map[string]bool{}}
+func New(fs fsadapter.FS, git gitadapter.Git, now func() time.Time, opts ...Option) *Controller {
+	// No reachability by default. The driver wires it, because deciding to
+	// shell out to another binary belongs to the composition root rather
+	// than to a constructor everything calls.
+	c := &Controller{
+		fs: fs, git: git, now: now,
+		warnedUnpushed: map[string]bool{},
+	}
+
+	for _, o := range opts {
+		o(c)
+	}
+
+	return c
+}
+
+// Option configures the resolver.
+type Option func(*Controller)
+
+// WithReachability replaces how the reachability engine is run. The engine is
+// an enrichment on a failing path, so a test needs the seam more than
+// production does.
+func WithReachability(run func(ctx context.Context, dir string, stdin []byte) ([]byte, error)) Option {
+	return func(c *Controller) { c.reach = reachability{run: run} }
 }
 
 // registerParams is the slice of the register's own config a consumer reads.
@@ -207,6 +233,7 @@ func (c *Controller) resolveEntry(ctx context.Context, f config.Factory, root, l
 	gateNotes, gateErr := advisoryGate{
 		language: language, name: name, track: track,
 		acks: d.Acknowledge, now: c.now(),
+		dir: dir, reach: c.reach, ctx: ctx,
 	}.decide()
 
 	notes = append(notes, gateNotes...)

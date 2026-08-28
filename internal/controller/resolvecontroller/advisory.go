@@ -1,6 +1,7 @@
 package resolvecontroller
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -27,6 +28,13 @@ type advisoryGate struct {
 	track    spec.Track
 	acks     []config.Acknowledgement
 	now      time.Time
+
+	// dir is the module the finding would land in, and reach asks whether
+	// its build contains the vulnerable code at all. Both are optional: with
+	// no engine provisioned the error simply carries one line fewer.
+	dir   string
+	reach reachability
+	ctx   context.Context //nolint:containedctx // the gate is built per resolution
 }
 
 // decide answers the notes a resolution carries and, when it must stop, why.
@@ -141,8 +149,16 @@ func (g advisoryGate) report(unacknowledged, expired []string) string {
 		"A pin cannot silence this.\n\n",
 		g.language, g.name, g.track.Current, total)
 
+	// Asked only here, on the path that is already about to fail. A green
+	// resolution never pays for it.
+	reached := g.reach.lines(g.ctx, g.dir, unacknowledged, deref(adv.AffectedImports))
+
 	for _, id := range unacknowledged {
 		fmt.Fprintf(&b, "  %s\n", id)
+
+		if line := reached[id]; line != "" {
+			fmt.Fprintf(&b, "    %s\n", line)
+		}
 	}
 
 	for _, id := range expired {

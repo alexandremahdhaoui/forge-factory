@@ -83,6 +83,13 @@ for path in owned:
 
         hits = len(re.findall(r'[^\w.]%s\s*\(' % name, haystack))
         hits += len(re.findall(r'\.%s\s*\(' % name, haystack))
+
+        # Passed as a value rather than called. A function handed to a
+        # constructor is wired - that IS the wiring - and counting only the
+        # call sites reported it as decoration.
+        hits += len(re.findall(r'\.%s\b(?!\s*\()' % name, haystack))
+        hits += len(re.findall(r'[^\w.]%s\b(?!\s*\()' % name, haystack))
+
         defs = len(re.findall(r'^func\s+(?:\([^)]*\)\s*)?%s\s*\(' % name, haystack, re.M))
 
         if hits - defs <= 0:

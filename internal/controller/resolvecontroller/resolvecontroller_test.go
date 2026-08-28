@@ -3,6 +3,7 @@ package resolvecontroller_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,9 +21,11 @@ import (
 
 var now = time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
 
-func newController() *resolvecontroller.Controller {
+func newController(opts ...resolvecontroller.Option) *resolvecontroller.Controller {
+	// The driver wires the engine; a unit test does not shell out, and only
+	// the tests that name a runner get one.
 	return resolvecontroller.New(fsadapter.New(), gitadapter.New(execadapter.New()),
-		func() time.Time { return now })
+		func() time.Time { return now }, opts...)
 }
 
 // register materialises a register checkout with the given track files.
@@ -863,4 +866,68 @@ func TestAnExpiredAcknowledgementBlocksAgain(t *testing.T) {
 	require.ErrorIs(t, err, resolvecontroller.ErrAdvisory)
 	require.ErrorContains(t, err, "the acknowledgement expired")
 	require.ErrorContains(t, err, "accepted until 2020-01-01")
+}
+
+// The reachability line, when an engine can answer.
+//
+// It is an enrichment and never a gate: the finding blocks either way. That
+// ordering is the point - a reachability answer is a static approximation,
+// and an approximation must not be the thing that unblocks a release.
+func TestReachabilityEnrichesTheErrorAndNeverClearsIt(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"package": "golang.org/x/crypto", "ecosystem": "go", "prefix": "0",
+		"current": "v0.55.0", "updatedAt": now,
+		"vulns":   map[string]int{"critical": 0, "high": 1, "medium": 0, "low": 0},
+		"outcome": "findings",
+		"advisory": map[string]any{
+			"vulnIds": []string{"GO-2026-5932"}, "severity": "unknown", "since": now,
+			"fixedIn":         []string{},
+			"affectedImports": []string{"golang.org/x/crypto/openpgp"},
+		},
+	})
+
+	f, root := register(t, map[string]string{"go/golang.org/x/crypto/0": string(raw)})
+
+	answered := resolvecontroller.WithReachability(func(_ context.Context, _ string, in []byte) ([]byte, error) {
+		require.Contains(t, string(in), "GO-2026-5932")
+		require.Contains(t, string(in), "golang.org/x/crypto/openpgp")
+
+		return []byte(`{"depth":"imports","answers":[{"id":"GO-2026-5932",
+			"verdict":"not-reached",
+			"reason":"your build imports none of the 1 package(s) this advisory covers"}]}`), nil
+	})
+
+	_, _, err := newController(answered).Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"golang.org/x/crypto": {Track: "0"}})
+
+	require.ErrorIs(t, err, resolvecontroller.ErrAdvisory,
+		"knowing the code is not reached does not clear the finding")
+	require.ErrorContains(t, err, "your code does not reach it")
+	require.ErrorContains(t, err, "does not make it safe to ignore")
+	require.ErrorContains(t, err, "acknowledge:",
+		"the way out is still to name it on purpose")
+}
+
+// No engine, one line fewer. Nothing fails and nothing is invented.
+func TestAnUnavailableReachabilityEngineChangesNothingElse(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
+		"advisory": map[string]any{
+			"vulnIds": []string{"CVE-2026-1"}, "severity": "high", "since": now,
+			"affectedImports": []string{"example.com/pkg/inner"},
+		},
+	})
+
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": string(raw)})
+
+	missing := resolvecontroller.WithReachability(func(context.Context, string, []byte) ([]byte, error) {
+		return nil, errors.New("forge: go-vulncheck is not provisioned")
+	})
+
+	_, _, err := newController(missing).Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {Track: "1"}})
+
+	require.ErrorIs(t, err, resolvecontroller.ErrAdvisory)
+	require.ErrorContains(t, err, "CVE-2026-1")
+	require.NotContains(t, err.Error(), "your code")
 }

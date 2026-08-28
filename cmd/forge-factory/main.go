@@ -55,7 +55,12 @@ func run(ctx context.Context, args []string) error {
 	caller := engineadapter.NewMCPCaller(".", engineversion.GetEffectiveVersion(version), os.Stderr)
 
 	sync := synccontroller.New(caller, fs, repoadapter.New(fs), execadapter.New(),
-		resolvecontroller.New(fs, git, time.Now))
+		// The reachability engine is wired here, in the composition root,
+		// and nowhere else. It enriches a failing resolution with whether
+		// the vulnerable code is in the build at all; when it is not
+		// provisioned the error simply carries one line fewer.
+		resolvecontroller.New(fs, git, time.Now,
+			resolvecontroller.WithReachability(resolvecontroller.RunVulncheckEngine)))
 
 	driver := clidriver.New(
 		os.Stdout,
