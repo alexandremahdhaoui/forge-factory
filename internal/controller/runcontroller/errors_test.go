@@ -426,12 +426,14 @@ func TestRemoteFailsWhenNothingPinsTheVersion(t *testing.T) {
 	r.git.EXPECT().LsTree(mock.Anything, mock.Anything, shaA, "index/internal/example.com/org/tool").
 		Return([]string{"1.json"}, nil)
 	r.git.EXPECT().Show(mock.Anything, mock.Anything, shaA, "index/internal/example.com/org/tool/1.json").
-		Return(`{"current":"v1.0.0","history":[]}`, true, nil)
-	r.git.EXPECT().ResolveRev(mock.Anything, mock.Anything, "v1.0.0").
-		Return("", errors.New("no such tag"))
+		Return(`{"current":"v1.0.0"}`, true, nil)
 
+	// A track that names a version and no proving revision is not a run that
+	// can be pinned. Saying so here beats letting it fall through to "the
+	// revision names no sha", which names the symptom and sends the reader
+	// looking in the state repo instead of at the track.
 	_, err := r.c.Run(context.Background(), remoteReq(t, "example.com/org/tool"))
-	require.ErrorContains(t, err, "the revision names no sha and the tag v1.0.0 is not in the clone")
+	require.ErrorContains(t, err, "names v1.0.0 with no proving revision")
 }
 
 func TestProvenancePinShapes(t *testing.T) {

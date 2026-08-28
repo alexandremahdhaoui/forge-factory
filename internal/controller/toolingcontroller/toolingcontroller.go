@@ -363,7 +363,16 @@ func (c *Controller) buildBinary(
 		return absTool, true, nil
 	}
 
-	staging := filepath.Join(store, "tmp", "gobin-"+sanitize(binary.Name))
+	// Keyed by module, version AND process. The store is user-global and
+	// nothing locks it, so a staging dir keyed on the binary's name alone
+	// was shared by every concurrent build of that name: two workspaces
+	// syncing at once with different pins for one tool raced, and the loser
+	// symlinked the winner's binary under its own version - permanently,
+	// because the tools path is then "carried" and reused forever. Two
+	// workspaces on one machine, or two CI jobs sharing a cached store, is
+	// all it took.
+	staging := filepath.Join(store, "tmp", fmt.Sprintf("gobin-%s@%s-%d",
+		sanitize(binary.Module), sanitize(binary.Version), os.Getpid()))
 
 	absStaging, err := filepath.Abs(staging)
 	if err != nil {
@@ -408,13 +417,18 @@ func (c *Controller) buildBinary(
 		return "", false, fmt.Errorf("reading what go install built for %s: %w", binary.Name, err)
 	}
 
+	// The name is unique per process, so nothing else will ever reuse it.
+	// Leaving it would grow the store by one directory per build.
+	defer func() { _ = c.fs.Remove(absStaging) }()
+
 	// The blob is content-addressed like a distributed binary; the tools
 	// path is the (module, version) name resolution finds it under.
 	sum := sha256.Sum256(data)
 	blob := filepath.Join(store, "blobs", "sha256", hex.EncodeToString(sum[:]))
 
 	if ok, _ := c.fs.Exists(blob); !ok {
-		stagedBlob := filepath.Join(store, "tmp", hex.EncodeToString(sum[:]))
+		stagedBlob := filepath.Join(store, "tmp",
+			fmt.Sprintf("%s-%d", hex.EncodeToString(sum[:]), os.Getpid()))
 		if err := c.fs.WriteExecutable(stagedBlob, data); err != nil {
 			return "", false, err
 		}

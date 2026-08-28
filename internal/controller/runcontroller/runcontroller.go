@@ -1006,27 +1006,27 @@ func (c *Controller) internalCurrent(ctx context.Context, registerClone, sha, mo
 		return "", "", fmt.Errorf("reading the internal track of %s: %w", module, err)
 	}
 
+	// Provenance belongs to current, beside it. It used to be a row in a
+	// history array, and reading it from there kept compiling after the
+	// array was deleted: every remote run then pinned nothing and failed
+	// with "the revision names no sha", which names the symptom and not
+	// this.
 	var track struct {
-		Current string `json:"current"`
-		History []struct {
-			Version    string `json:"version"`
-			Provenance string `json:"provenance"`
-		} `json:"history"`
+		Current    string `json:"current"`
+		Provenance string `json:"provenance"`
 	}
 
 	if err := json.Unmarshal([]byte(raw), &track); err != nil {
 		return "", "", fmt.Errorf("decoding the internal track of %s: %w", module, err)
 	}
 
-	provenance := ""
-
-	for _, h := range track.History {
-		if h.Version == track.Current {
-			provenance = h.Provenance
-		}
+	if track.Provenance == "" {
+		return "", "", fmt.Errorf(
+			"the internal track of %s names %s with no proving revision; "+
+				"re-run the pipeline that publishes it", module, track.Current)
 	}
 
-	return track.Current, provenance, nil
+	return track.Current, track.Provenance, nil
 }
 
 // provenancePins reads the proving revision's record from the factory's

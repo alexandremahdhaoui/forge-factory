@@ -936,3 +936,35 @@ func TestCacheSaysSoWhenThereIsNoUserCache(t *testing.T) {
 	err := h.driver.Run(context.Background(), []string{"cache", "clean"})
 	require.ErrorContains(t, err, "finding the cache directory")
 }
+
+// --root arrives verbatim from a CI recipe, and ".." is the form the recipe
+// prints. It used to reach go work sync as GOWORK=../go.work, which go
+// refuses outright, so the sync reported the workspace unbuildable and
+// exited before provisioning any tooling.
+func TestARelativeRootIsMadeAbsolute(t *testing.T) {
+	h := newHarness(t)
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "member"), 0o750))
+	h.fs.EXPECT().ReadFile("../forge-factory.yaml").Return([]byte(factory), nil).Once()
+
+	var seen string
+
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, _ config.Factory, root, _ string) (synccontroller.Report, error) {
+			seen = root
+
+			return synccontroller.Report{Root: root}, nil
+		}).Once()
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(filepath.Join(dir, "member")))
+
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+
+	require.NoError(t, h.driver.Run(context.Background(),
+		[]string{"sync", "--config", "../forge-factory.yaml", "--root", ".."}))
+
+	require.True(t, filepath.IsAbs(seen), "the controller was handed %q", seen)
+}

@@ -301,7 +301,7 @@ func remoteUniverse(t *testing.T) (member, factoryDir, register string) {
 	gitIn(t, member, "tag", "v0.1.0")
 
 	write(t, filepath.Join(register, "index", "internal", member, "0.json"),
-		`{"current":"v0.1.0","history":[{"version":"v0.1.0","provenance":"cafe01"}]}`)
+		`{"current":"v0.1.0","provenance":"cafe01"}`)
 	gitIn(t, register, "add", ".")
 	gitIn(t, register, "commit", "-qm", "publish member-a v0.1.0")
 
@@ -550,7 +550,7 @@ state:
 	gitIn(t, factoryDir, "commit", "-qm", "seed")
 
 	write(t, filepath.Join(register, "index", "internal", member, "0.json"),
-		`{"current":"v0.9.9","history":[{"version":"v0.9.9","provenance":"cafe02"}]}`)
+		`{"current":"v0.9.9","provenance":"cafe02"}`)
 	gitIn(t, register, "add", ".")
 	gitIn(t, register, "commit", "-qm", "publish")
 
@@ -887,7 +887,7 @@ state:
 	// The publish that makes the member resolvable, and - after the
 	// record's register sha - a brand new admission.
 	write(t, filepath.Join(register, "index", "internal", member, "0.json"),
-		`{"current":"v0.9.9","history":[{"version":"v0.9.9","provenance":"cafe02"}]}`)
+		`{"current":"v0.9.9","provenance":"cafe02"}`)
 	write(t, filepath.Join(register, "index", "go", "example.com", "admitted-later", "1.json"),
 		`{"package":"admitted-later","ecosystem":"go","prefix":"1","current":"v1.0.0"}`)
 	gitIn(t, register, "add", ".")

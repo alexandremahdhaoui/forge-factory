@@ -106,3 +106,72 @@ func TestProvisionBinariesWithNothingDeclaredDoesNothing(t *testing.T) {
 	assert.Empty(t, report.Installed)
 	assert.Empty(t, report.Reused)
 }
+
+// Two workspaces on one machine, or two CI jobs sharing a cached store,
+// syncing at once with different pins for the same tool name. The staging
+// GOBIN was keyed on that name alone, so the two builds shared a directory:
+// the loser read the winner's binary and symlinked it under its own version,
+// permanently, because the tools path is reused forever after.
+func TestTwoVersionsOfOneToolDoNotShareAStagingDir(t *testing.T) {
+	t.Parallel()
+
+	store := t.TempDir()
+
+	// The fake blocks until both builds have staged, which is the interleave
+	// the shared directory made possible. With a shared dir this deadlocks or
+	// crosses; with a keyed one both proceed.
+	staged := make(chan string, 2)
+	release := make(chan struct{})
+
+	runner := execadaptermock.NewMockRunner(t)
+	runner.EXPECT().
+		RunEnv(mock.Anything, "", mock.Anything, "go", "install", mock.Anything).
+		RunAndReturn(func(_ context.Context, _ string, env map[string]string, _ string, args ...string) (execadapter.Result, error) {
+			version := args[len(args)-1]
+			staged <- env["GOBIN"]
+			<-release
+			require.NoError(t, os.WriteFile(filepath.Join(env["GOBIN"], "toolx"),
+				[]byte("built-"+version), 0o755))
+
+			return execadapter.Result{}, nil
+		}).Twice()
+
+	c := toolingcontroller.New(fsadapter.New(), runner)
+
+	type result struct {
+		root string
+		err  error
+	}
+
+	done := make(chan result, 2)
+
+	for _, v := range []string{"v1.0.0", "v2.0.0"} {
+		go func() {
+			root := t.TempDir()
+			_, err := c.ProvisionBinaries(context.Background(), root, store,
+				[]toolingcontroller.Binary{{
+					Name: "toolx", Module: "example.com/toolx", Version: v,
+				}})
+			done <- result{root: root, err: err}
+		}()
+	}
+
+	first, second := <-staged, <-staged
+	require.NotEqual(t, first, second, "both builds staged into one directory")
+
+	close(release)
+
+	for range 2 {
+		r := <-done
+		require.NoError(t, r.err)
+
+		got, err := os.ReadFile(filepath.Join(r.root, ".forge", "bin", "toolx"))
+		require.NoError(t, err)
+
+		// Each workspace gets the version it pinned. The store keeps a
+		// resolved path forever, so a crossed link here is not a slow run,
+		// it is the wrong binary for the life of the machine.
+		assert.Contains(t, []string{"built-example.com/toolx@v1.0.0", "built-example.com/toolx@v2.0.0"},
+			string(got))
+	}
+}

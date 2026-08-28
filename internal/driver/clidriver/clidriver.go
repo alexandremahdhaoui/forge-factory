@@ -595,6 +595,12 @@ func (d *Driver) load(
 		f.Register.Revision = ""
 	}
 
+	// The root is absolute from here on, whichever way it arrived. A
+	// relative --root reached go work sync as GOWORK=../go.work, which go
+	// refuses outright: "invalid GOWORK: not an absolute path". The sync
+	// then reported the workspace as unbuildable and exited before
+	// provisioning any tooling, so "--root .." - the form the CI recipe
+	// prints - skipped the whole toolchain step and failed.
 	if *root == "" {
 		abs, err := filepath.Abs(*path)
 		if err != nil {
@@ -602,6 +608,13 @@ func (d *Driver) load(
 		}
 
 		*root = filepath.Dir(abs)
+	} else {
+		abs, err := filepath.Abs(*root)
+		if err != nil {
+			return config.Factory{}, "", "", nil, fmt.Errorf("resolving %s: %w", *root, err)
+		}
+
+		*root = abs
 	}
 
 	return f, *path, *root, fs.Args(), nil
