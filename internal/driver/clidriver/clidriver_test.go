@@ -889,3 +889,50 @@ func TestCacheWithoutCleanIsAUsageError(t *testing.T) {
 	err := h.driver.Run(context.Background(), []string{"cache"})
 	require.ErrorContains(t, err, "usage: forge-factory cache clean")
 }
+
+func TestCacheRefusesAnythingButClean(t *testing.T) {
+	// clean is the only verb, and it deletes a directory. A misspelling that
+	// fell through to the default would delete the cache the user did not ask
+	// to delete.
+	for _, args := range [][]string{
+		{"cache", "wipe"},
+		{"cache", "clean", "extra"},
+	} {
+		h := newHarness(t)
+		require.ErrorContains(t, h.driver.Run(context.Background(), args),
+			"usage: forge-factory cache clean")
+	}
+}
+
+func TestCacheRefusesAnUnknownFlag(t *testing.T) {
+	h := newHarness(t)
+
+	// An ignored flag makes the operator think they cleaned a directory they
+	// did not clean.
+	require.Error(t, h.driver.Run(context.Background(), []string{"cache", "clean", "--nope"}))
+}
+
+func TestCacheFallsBackToTheUserCache(t *testing.T) {
+	h := newHarness(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+
+	dir := filepath.Join(home, "cache", "forge-factory")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	h.fs.EXPECT().IsDir(dir).Return(true, nil).Once()
+
+	require.NoError(t, h.driver.Run(context.Background(), []string{"cache", "clean"}))
+	require.NoDirExists(t, dir)
+}
+
+func TestCacheSaysSoWhenThereIsNoUserCache(t *testing.T) {
+	h := newHarness(t)
+
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CACHE_HOME", "")
+
+	err := h.driver.Run(context.Background(), []string{"cache", "clean"})
+	require.ErrorContains(t, err, "finding the cache directory")
+}
