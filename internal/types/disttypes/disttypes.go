@@ -28,13 +28,12 @@ type Release struct {
 type Tool struct {
 	// Name is the binary's base name, e.g. "forge-factory".
 	Name string `json:"name"`
-	// Module is the full main-package module path.
-	Module string `json:"module,omitempty"`
-	// Version is the human-readable version label.
-	Version string `json:"version,omitempty"`
-	// Kind says where the tool came from: "internal" for toolchain members,
-	// "go" for third-party register packages.
-	Kind string `json:"kind,omitempty"`
+	// The index carries no module, version or kind. All three were declared
+	// here with no producer on the other side: the pipeline tags each member
+	// on its own line and a binary's name says nothing about which member
+	// built it, so the only version available at index time was the
+	// release's own, stamped on every tool alike. A field that can only be
+	// filled in wrongly is better absent.
 	// Platforms maps "os/arch" to the concrete binary.
 	Platforms map[string]Platform `json:"platforms"`
 }

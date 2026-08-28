@@ -36,7 +36,7 @@ work="$home/forge-factory"
 # is enough and leaves the real checkout untouched.
 rm -rf "$work"
 mkdir -p "$work"
-tar -cf - --exclude=.git --exclude=build --exclude=.forge . | (cd "$work" && tar -xf -)
+tar -cf - --exclude=.git --exclude=build . | (cd "$work" && tar -xf -)
 mkdir -p "$home/go" "$home/.cache"
 chown -R "$NONROOT_USER" "$work" "$home/go" "$home/.cache"
 
