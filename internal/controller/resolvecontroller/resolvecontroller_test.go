@@ -43,8 +43,14 @@ func register(t *testing.T, tracks map[string]string) (config.Factory, string) {
 
 	require.NoError(t, os.MkdirAll(dir, 0o750))
 
+	// A member that speaks go, because the reachability question is asked of
+	// the repos that receive the dependency rather than of the register.
 	f := config.Factory{
 		Register: &config.Register{URL: "git@github.com:example/golden-register.git"},
+		Repos: []config.Repo{
+			{Name: "golden-go", URL: "u", Languages: []string{"go"}},
+			{Name: "golden-rust", URL: "u", Languages: []string{"rust"}},
+		},
 	}
 
 	return f, root
@@ -893,7 +899,11 @@ func TestReachabilityEnrichesTheErrorAndNeverClearsIt(t *testing.T) {
 
 	f, root := register(t, map[string]string{"go/golang.org/x/crypto/0": string(raw)})
 
-	answered := resolvecontroller.WithReachability(func(_ context.Context, _ string, in []byte) ([]byte, error) {
+	var asked []string
+
+	answered := resolvecontroller.WithReachability(func(_ context.Context, dirs []string, in []byte) ([]byte, error) {
+		asked = dirs
+
 		require.Contains(t, string(in), "GO-2026-5932")
 		require.Contains(t, string(in), "golang.org/x/crypto/openpgp")
 
@@ -911,6 +921,19 @@ func TestReachabilityEnrichesTheErrorAndNeverClearsIt(t *testing.T) {
 	require.ErrorContains(t, err, "does not make it safe to ignore")
 	require.ErrorContains(t, err, "acknowledge:",
 		"the way out is still to name it on purpose")
+
+	// The engine is asked about the members that receive the dependency, not
+	// about the register checkout. It used to be handed the register, so the
+	// sentence "your code does not reach it" was computed over a repo the
+	// operator was not asking about, and printed as a fact about theirs.
+	require.NotEmpty(t, asked)
+
+	for _, d := range asked {
+		require.NotContains(t, d, "golden-register",
+			"the register does not import the operator's dependencies")
+	}
+
+	require.Contains(t, asked[0], "golden-go", "a member that speaks go")
 }
 
 // No engine, one line fewer. Nothing fails and nothing is invented.
@@ -925,7 +948,7 @@ func TestAnUnavailableReachabilityEngineChangesNothingElse(t *testing.T) {
 
 	f, root := register(t, map[string]string{"go/example.com/pkg/1": string(raw)})
 
-	missing := resolvecontroller.WithReachability(func(context.Context, string, []byte) ([]byte, error) {
+	missing := resolvecontroller.WithReachability(func(context.Context, []string, []byte) ([]byte, error) {
 		return nil, errors.New("forge: go-vulncheck is not provisioned")
 	})
 
@@ -935,4 +958,200 @@ func TestAnUnavailableReachabilityEngineChangesNothingElse(t *testing.T) {
 	require.ErrorIs(t, err, resolvecontroller.ErrAdvisory)
 	require.ErrorContains(t, err, "CVE-2026-1")
 	require.NotContains(t, err.Error(), "your code")
+}
+
+// A reason that is only punctuation crashed the whole sync with a stack
+// trace. sentence() sliced the first byte off a string that was empty after
+// trimming, and split a multi-byte rune when it was not.
+func TestASloppyReasonDoesNotCrashTheSync(t *testing.T) {
+	for _, reason := range []string{" ", ".", ". ", "..", "  .  ", "élan is unmeasured"} {
+		t.Run(reason, func(t *testing.T) {
+			raw, _ := json.Marshal(map[string]any{
+				"package": "p", "ecosystem": "go", "prefix": "1",
+				"current": "v1.6.0", "updatedAt": now,
+				"vulns":   map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0},
+				"outcome": "not-found", "reason": reason,
+			})
+
+			f, root := register(t, map[string]string{"go/example.com/pkg/1": string(raw)})
+
+			require.NotPanics(t, func() {
+				_, notes, err := newController().Resolve(context.Background(), f, root, "go",
+					map[string]config.DependencySpec{"example.com/pkg": {Track: "1"}})
+				require.NoError(t, err)
+				require.Len(t, notes, 1)
+			})
+		})
+	}
+}
+
+// The quiet way past the gate was to delete the advisory block. Removing the
+// whole track file fails loud; removing the block left outcome: findings and
+// a non-zero vector behind, and resolved green with no note at all.
+func TestARecordThatContradictsItselfIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		doc  map[string]any
+		want string
+	}{
+		{
+			name: "findings with the advisory block deleted",
+			doc: map[string]any{
+				"vulns":   map[string]int{"critical": 2, "high": 0, "medium": 0, "low": 0},
+				"outcome": "findings",
+			},
+			want: "records findings and names none",
+		},
+		{
+			name: "findings that count nothing",
+			doc: map[string]any{
+				"vulns":   map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0},
+				"outcome": "findings",
+				"advisory": map[string]any{
+					"vulnIds": []string{"CVE-1"}, "severity": "high", "since": now,
+				},
+			},
+			want: "records findings and counts none",
+		},
+		{
+			name: "an advisory naming no vulnerability",
+			doc: map[string]any{
+				"vulns":   map[string]int{"critical": 1, "high": 0, "medium": 0, "low": 0},
+				"outcome": "findings",
+				"advisory": map[string]any{
+					"vulnIds": []string{}, "severity": "critical", "since": now,
+				},
+			},
+			want: "naming no vulnerability",
+		},
+		{
+			name: "clean that counts vulnerabilities",
+			doc: map[string]any{
+				"vulns":   map[string]int{"critical": 1, "high": 0, "medium": 0, "low": 0},
+				"outcome": "clean",
+			},
+			want: "records clean and counts 1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := map[string]any{
+				"package": "p", "ecosystem": "go", "prefix": "1",
+				"current": "v1.6.0", "updatedAt": now,
+			}
+			for k, v := range tc.doc {
+				doc[k] = v
+			}
+
+			raw, _ := json.Marshal(doc)
+			f, root := register(t, map[string]string{"go/example.com/pkg/1": string(raw)})
+
+			_, _, err := newController().Resolve(context.Background(), f, root, "go",
+				map[string]config.DependencySpec{"example.com/pkg": {Track: "1"}})
+			require.ErrorIs(t, err, resolvecontroller.ErrAdvisory)
+			require.ErrorContains(t, err, tc.want)
+			require.ErrorContains(t, err, "malformed")
+		})
+	}
+}
+
+// An expiry that cannot be read is not an expiry. Treating it as "never
+// expires" turned a typo into a permanent acceptance, silently.
+func TestAnUnreadableExpiryFailsClosed(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
+		"vulns":   map[string]int{"critical": 0, "high": 1, "medium": 0, "low": 0},
+		"outcome": "findings",
+		"advisory": map[string]any{
+			"vulnIds": []string{"CVE-2026-1"}, "severity": "high", "since": now,
+		},
+	})
+
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": string(raw)})
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {
+			Track: "1",
+			Acknowledge: []config.Acknowledgement{{
+				ID: "CVE-2026-1", Reason: "typo'd the date", Expires: "not-a-date",
+			}},
+		}})
+	require.ErrorIs(t, err, resolvecontroller.ErrAdvisory)
+	require.ErrorContains(t, err, "is not a date")
+}
+
+// "accepted until 2026-08-21" means through that day. time.Parse gives
+// midnight, so the acknowledgement used to die a day before the date it named
+// - and the error still printed that date back at the operator.
+func TestTheExpiryDateItselfIsStillAccepted(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
+		"vulns":   map[string]int{"critical": 0, "high": 1, "medium": 0, "low": 0},
+		"outcome": "findings",
+		"advisory": map[string]any{
+			"vulnIds": []string{"CVE-2026-1"}, "severity": "high", "since": now,
+		},
+	})
+
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": string(raw)})
+
+	// now is 2026-08-21T12:00Z.
+	for _, tc := range []struct {
+		expires string
+		blocked bool
+	}{
+		{"2026-08-19", true},
+		{"2026-08-20", true},
+		{"2026-08-21", false},
+		{"2026-08-22", false},
+	} {
+		t.Run(tc.expires, func(t *testing.T) {
+			_, _, err := newController().Resolve(context.Background(), f, root, "go",
+				map[string]config.DependencySpec{"example.com/pkg": {
+					Track: "1",
+					Acknowledge: []config.Acknowledgement{{
+						ID: "CVE-2026-1", Reason: "until the rewrite", Expires: tc.expires,
+					}},
+				}})
+
+			if tc.blocked {
+				require.ErrorIs(t, err, resolvecontroller.ErrAdvisory)
+				require.ErrorContains(t, err, "the acknowledgement expired")
+			} else {
+				require.NoError(t, err, "the named date is included")
+			}
+		})
+	}
+}
+
+// A finding on a toolchain binary was unrecoverable: the gate refused and the
+// error told the operator to write yaml the schema then rejected.
+func TestAToolchainBinaryCanBeAcknowledgedToo(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"package": "github.com/vektra/mockery/v3", "ecosystem": "go", "prefix": "3",
+		"current": "v3.7.3", "updatedAt": now,
+		"vulns":   map[string]int{"critical": 0, "high": 1, "medium": 0, "low": 0},
+		"outcome": "findings",
+		"advisory": map[string]any{
+			"vulnIds": []string{"CVE-2026-7"}, "severity": "high", "since": now,
+		},
+	})
+
+	f, root := register(t, map[string]string{"go/github.com/vektra/mockery/v3/3": string(raw)})
+
+	_, _, err := newController().ResolveTool(context.Background(), f, root,
+		"go:github.com/vektra/mockery/v3")
+	require.ErrorIs(t, err, resolvecontroller.ErrAdvisory, "unacknowledged, it blocks")
+
+	f.Toolchain = &config.Toolchain{Binaries: []config.ToolchainBinary{{
+		Name: "mockery", Module: "github.com/vektra/mockery/v3",
+		Track: "go:github.com/vektra/mockery/v3",
+		Acknowledge: []config.Acknowledgement{{
+			ID: "CVE-2026-7", Reason: "a build-time generator, not shipped",
+		}},
+	}}}
+
+	got, _, err := newController().ResolveTool(context.Background(), f, root,
+		"go:github.com/vektra/mockery/v3")
+	require.NoError(t, err, "named on purpose, it resolves")
+	require.Equal(t, "v3.7.3", got)
 }

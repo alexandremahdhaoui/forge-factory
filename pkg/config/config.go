@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -48,6 +49,12 @@ type ToolchainBinary struct {
 	Track string `json:"track,omitempty"`
 	// Version is the literal pin.
 	Version string `json:"version,omitempty"`
+
+	// Acknowledge accepts named findings on this binary, exactly as a
+	// dependency does. Without it a finding on a toolchain binary was
+	// unrecoverable: the gate refused, and the error told the operator to
+	// write yaml the schema then rejected.
+	Acknowledge []Acknowledgement `json:"acknowledge,omitempty"`
 }
 
 // Register names the catalog this workspace resolves versions from. The local
@@ -114,10 +121,20 @@ func (d *DependencySpec) UnmarshalJSON(data []byte) error {
 		return json.Unmarshal(data, &d.Version)
 	}
 
+	// Strict, like the document around it. Parse uses UnmarshalStrict, but a
+	// custom UnmarshalJSON gets raw bytes and a plain Unmarshal here dropped
+	// that strictness for the entry and everything nested in it: `trak:` and
+	// `expres:` were accepted and silently ignored. A typo'd expires meant a
+	// permanent, never-expiring acknowledgement with no diagnostic, so the
+	// feature simply did not exist for anyone who mistyped it.
 	type alias DependencySpec
 
 	var a alias
-	if err := json.Unmarshal(data, &a); err != nil {
+
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+
+	if err := dec.Decode(&a); err != nil {
 		return err
 	}
 
@@ -268,6 +285,37 @@ func (f Factory) Validate() error {
 		add("register: needs a url, a path, or both")
 	}
 
+	// One rule for accepting a risk, wherever it is accepted. A toolchain
+	// binary carries findings exactly as a dependency does.
+	validateAcks := func(where string, acks []Acknowledgement) {
+		seen := map[string]bool{}
+
+		for i, ack := range acks {
+			at := fmt.Sprintf("%s.acknowledge[%d]", where, i)
+
+			if strings.TrimSpace(ack.ID) == "" {
+				add("%s: names no advisory id, so it accepts everything and nothing", at)
+			}
+
+			if strings.TrimSpace(ack.Reason) == "" {
+				add("%s: accepting a risk without a reason is a config error, "+
+					"not a warning", at)
+			}
+
+			if seen[ack.ID] {
+				add("%s: %s is acknowledged twice", at, ack.ID)
+			}
+
+			seen[ack.ID] = true
+
+			if ack.Expires != "" {
+				if _, err := time.Parse("2006-01-02", ack.Expires); err != nil {
+					add("%s: expires must be a date, YYYY-MM-DD, got %q", at, ack.Expires)
+				}
+			}
+		}
+	}
+
 	validateDeps := func(section string, deps map[string]map[string]DependencySpec) {
 		for _, language := range sortedKeys(deps) {
 			for _, name := range sortedKeys(deps[language]) {
@@ -294,32 +342,7 @@ func (f Factory) Validate() error {
 					add("%s: wraps must contain %%s for the resolved version", where)
 				}
 
-				seen := map[string]bool{}
-
-				for i, ack := range d.Acknowledge {
-					at := fmt.Sprintf("%s.acknowledge[%d]", where, i)
-
-					if strings.TrimSpace(ack.ID) == "" {
-						add("%s: names no advisory id, so it accepts everything and nothing", at)
-					}
-
-					if strings.TrimSpace(ack.Reason) == "" {
-						add("%s: accepting a risk without a reason is a config error, "+
-							"not a warning", at)
-					}
-
-					if seen[ack.ID] {
-						add("%s: %s is acknowledged twice", at, ack.ID)
-					}
-
-					seen[ack.ID] = true
-
-					if ack.Expires != "" {
-						if _, err := time.Parse("2006-01-02", ack.Expires); err != nil {
-							add("%s: expires must be a date, YYYY-MM-DD, got %q", at, ack.Expires)
-						}
-					}
-				}
+				validateAcks(where, d.Acknowledge)
 			}
 		}
 	}
@@ -340,6 +363,8 @@ func (f Factory) Validate() error {
 			}
 
 			names[b.Name] = true
+
+			validateAcks(where, b.Acknowledge)
 
 			if strings.TrimSpace(b.Module) == "" {
 				add("%s: a binary needs the module path go install builds", where)

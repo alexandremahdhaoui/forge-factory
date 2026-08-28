@@ -1,12 +1,14 @@
 package resolvecontroller
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 )
 
 // reachability asks whether the module's build reaches an advisory at all.
@@ -22,7 +24,7 @@ import (
 // absent, which is why nothing here fails.
 type reachability struct {
 	// run executes the engine. A field so a test needs no binary.
-	run func(ctx context.Context, dir string, stdin []byte) ([]byte, error)
+	run func(ctx context.Context, dirs []string, stdin []byte) ([]byte, error)
 }
 
 // finding is what the engine is asked about.
@@ -46,8 +48,11 @@ type report struct {
 // nothing at all. Nothing at all is the normal case: the engine may not be
 // provisioned, the ecosystem may have no such tool, and most advisories
 // publish no import scope for anything to check against.
-func (r reachability) lines(ctx context.Context, dir string, ids, imports []string) map[string]string {
-	if len(ids) == 0 || len(imports) == 0 || r.run == nil {
+func (r reachability) lines(ctx context.Context, dirs, ids, imports []string) map[string]string {
+	// No modules to read, no scope to check against, or no engine: no line.
+	// Never a line saying not-reached, which would be a clear granted on the
+	// strength of having looked at nothing.
+	if len(dirs) == 0 || len(ids) == 0 || len(imports) == 0 || r.run == nil {
 		return nil
 	}
 
@@ -67,7 +72,7 @@ func (r reachability) lines(ctx context.Context, dir string, ids, imports []stri
 		return nil
 	}
 
-	raw, err := r.run(ctx, dir, payload)
+	raw, err := r.run(ctx, dirs, payload)
 	if err != nil {
 		return nil
 	}
@@ -96,16 +101,54 @@ func (r reachability) lines(ctx context.Context, dir string, ids, imports []stri
 // RunVulncheckEngine executes the engine through forge, so it resolves the
 // same way every other engine does. A missing engine is an error here and an
 // absent line in the report.
-func RunVulncheckEngine(ctx context.Context, dir string, stdin []byte) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "forge", "run",
-		"github.com/alexandremahdhaoui/forge-go-vulncheck", "go-vulncheck",
-		"--", "--dir", dir)
-	cmd.Stdin = strings.NewReader(string(stdin))
+func RunVulncheckEngine(ctx context.Context, dirs []string, stdin []byte) ([]byte, error) {
+	// A bounded wait. The engine is an enrichment on a path that is already
+	// failing; a hung one must not hang the sync, and there is nothing here
+	// worth waiting minutes for.
+	ctx, cancel := context.WithTimeout(ctx, engineTimeout)
+	defer cancel()
 
-	out, err := cmd.Output()
-	if err != nil {
+	args := []string{"run", "github.com/alexandremahdhaoui/forge-go-vulncheck",
+		"go-vulncheck", "--"}
+	for _, d := range dirs {
+		args = append(args, "--dir", d)
+	}
+
+	cmd := exec.CommandContext(ctx, "forge", args...)
+	cmd.Stdin = bytes.NewReader(stdin)
+
+	// A bounded read. A runaway engine should be an error, not an OOM.
+	var out bytes.Buffer
+
+	cmd.Stdout = &limitedWriter{w: &out, left: maxEngineOutput}
+
+	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("running the reachability engine: %w", err)
 	}
 
-	return out, nil
+	return out.Bytes(), nil
+}
+
+const (
+	// engineTimeout bounds the wait. Reading a package graph is seconds.
+	engineTimeout = 90 * time.Second
+	// maxEngineOutput bounds the read. A report is kilobytes.
+	maxEngineOutput = 4 << 20
+)
+
+// limitedWriter stops after n bytes and says so, rather than growing until
+// the machine gives up.
+type limitedWriter struct {
+	w    *bytes.Buffer
+	left int
+}
+
+func (l *limitedWriter) Write(p []byte) (int, error) {
+	if len(p) > l.left {
+		return 0, fmt.Errorf("the reachability engine wrote more than %d bytes", maxEngineOutput)
+	}
+
+	l.left -= len(p)
+
+	return l.w.Write(p)
 }

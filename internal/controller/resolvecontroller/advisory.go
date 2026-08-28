@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	spec "github.com/alexandremahdhaoui/forge-register-spec/pkg/registertypes"
 
@@ -29,12 +31,13 @@ type advisoryGate struct {
 	acks     []config.Acknowledgement
 	now      time.Time
 
-	// dir is the module the finding would land in, and reach asks whether
-	// its build contains the vulnerable code at all. Both are optional: with
-	// no engine provisioned the error simply carries one line fewer.
-	dir   string
-	reach reachability
-	ctx   context.Context //nolint:containedctx // the gate is built per resolution
+	// modules are the member repos that receive this dependency, and reach
+	// asks whether any of their builds contains the vulnerable code. Both
+	// are optional: with no engine provisioned the error carries one line
+	// fewer.
+	modules []string
+	reach   reachability
+	ctx     context.Context //nolint:containedctx // the gate is built per resolution
 }
 
 // decide answers the notes a resolution carries and, when it must stop, why.
@@ -44,6 +47,14 @@ func (g advisoryGate) decide() ([]string, error) {
 	// Nothing was measured. Say which kind of nothing, and continue.
 	if note := g.unmeasuredNote(); note != "" {
 		notes = append(notes, note)
+	}
+
+	// A record can be wrong in ways the schema forbids and nothing here
+	// checked: the quiet way past this gate was to delete the advisory block
+	// while leaving outcome: findings and a non-zero vector behind. Removing
+	// the whole track file fails loud; removing the block did not.
+	if err := g.contradiction(); err != nil {
+		return notes, err
 	}
 
 	if g.track.Advisory == nil {
@@ -71,7 +82,20 @@ func (g advisoryGate) decide() ([]string, error) {
 		}
 
 		at, err := time.Parse("2006-01-02", ack.Expires)
-		if err != nil || !g.now.After(at) {
+		if err != nil {
+			// A date nobody can read is not a date. Treating it as "never
+			// expires" made a typo into a permanent acceptance, silently -
+			// which is the opposite of what an expiry is for.
+			expired = append(expired,
+				fmt.Sprintf("%s (expires %q is not a date, YYYY-MM-DD)", id, ack.Expires))
+
+			continue
+		}
+
+		// The named date is included. "accepted until 2026-08-21" plainly
+		// means through that day, and time.Parse gives midnight, so the
+		// acknowledgement used to die a day before the date it named.
+		if !g.now.After(at.AddDate(0, 0, 1)) {
 			continue
 		}
 
@@ -86,6 +110,40 @@ func (g advisoryGate) decide() ([]string, error) {
 	}
 
 	return notes, fmt.Errorf("%w\n%s", ErrAdvisory, g.report(unacknowledged, expired))
+}
+
+// contradiction refuses a record whose own fields disagree. The register
+// writes these files and its schema forbids each of these shapes, but a
+// consumer that trusts a shared file to be well formed is a consumer that
+// can be walked past by editing it.
+func (g advisoryGate) contradiction() error {
+	counted := g.track.Vulns.Critical + g.track.Vulns.High +
+		g.track.Vulns.Medium + g.track.Vulns.Low
+
+	switch {
+	case g.track.Outcome == spec.Findings && g.track.Advisory == nil:
+		return fmt.Errorf("%w: %s:%s %s records findings and names none - "+
+			"the register record is malformed, re-run its pipeline",
+			ErrAdvisory, g.language, g.name, g.track.Current)
+
+	case g.track.Outcome == spec.Findings && counted == 0:
+		return fmt.Errorf("%w: %s:%s %s records findings and counts none - "+
+			"the register record is malformed, re-run its pipeline",
+			ErrAdvisory, g.language, g.name, g.track.Current)
+
+	case g.track.Advisory != nil && len(g.track.Advisory.VulnIds) == 0:
+		return fmt.Errorf("%w: %s:%s %s carries an advisory naming no "+
+			"vulnerability - there is nothing to acknowledge and nothing to "+
+			"fix, so the register record is malformed",
+			ErrAdvisory, g.language, g.name, g.track.Current)
+
+	case g.track.Outcome == spec.Clean && counted > 0:
+		return fmt.Errorf("%w: %s:%s %s records clean and counts %d "+
+			"vulnerabilities - the register record is malformed",
+			ErrAdvisory, g.language, g.name, g.track.Current, counted)
+	}
+
+	return nil
 }
 
 // unmeasuredNote says, in words, why a package carries no findings when
@@ -152,7 +210,7 @@ func (g advisoryGate) report(unacknowledged, expired []string) string {
 
 	// Asked only here, on the path that is already about to fail. A green
 	// resolution never pays for it.
-	reached := g.reach.lines(g.ctx, g.dir, unacknowledged, deref(adv.AffectedImports))
+	reached := g.reach.lines(g.ctx, g.modules, unacknowledged, deref(adv.AffectedImports))
 
 	for _, id := range unacknowledged {
 		fmt.Fprintf(&b, "  %s\n", id)
@@ -213,9 +271,19 @@ func sentence(reason string) string {
 		reason = reason[:i]
 	}
 
-	reason = strings.TrimRight(reason, ". ")
+	reason = strings.TrimSpace(strings.TrimRight(reason, ". "))
 
-	return strings.ToUpper(reason[:1]) + reason[1:] + "."
+	// A reason that was only punctuation and spaces is empty by now. Slicing
+	// it crashed the whole sync with a stack trace; and slicing a byte off a
+	// multi-byte first rune corrupted it. Neither is a thing to do to
+	// somebody's build because a register record was sloppy.
+	if reason == "" {
+		return "The register does not say why."
+	}
+
+	first, size := utf8.DecodeRuneInString(reason)
+
+	return string(unicode.ToUpper(first)) + reason[size:] + "."
 }
 
 func severityWord(s string) string {

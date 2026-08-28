@@ -90,7 +90,7 @@ type Option func(*Controller)
 // WithReachability replaces how the reachability engine is run. The engine is
 // an enrichment on a failing path, so a test needs the seam more than
 // production does.
-func WithReachability(run func(ctx context.Context, dir string, stdin []byte) ([]byte, error)) Option {
+func WithReachability(run func(ctx context.Context, dirs []string, stdin []byte) ([]byte, error)) Option {
 	return func(c *Controller) { c.reach = reachability{run: run} }
 }
 
@@ -190,7 +190,23 @@ func (c *Controller) ResolveTool(ctx context.Context, f config.Factory, root, tr
 		return "", nil, fmt.Errorf("toolchain track %q is named <ecosystem>:<package>", track)
 	}
 
-	return c.resolveEntry(ctx, f, root, ecosystem, pkg, config.DependencySpec{})
+	// A toolchain binary accepts a finding the same way a dependency does.
+	// Without this the gate refused and the error told the operator to write
+	// yaml the schema then rejected, so a finding on a toolchain binary
+	// bricked sync with no way out.
+	spec := config.DependencySpec{}
+
+	if f.Toolchain != nil {
+		for _, b := range f.Toolchain.Binaries {
+			if b.Track == ecosystem+":"+pkg {
+				spec.Acknowledge = b.Acknowledge
+
+				break
+			}
+		}
+	}
+
+	return c.resolveEntry(ctx, f, root, ecosystem, pkg, spec)
 }
 
 func (c *Controller) resolveEntry(ctx context.Context, f config.Factory, root, language, name string, d config.DependencySpec) (string, []string, error) {
@@ -233,7 +249,11 @@ func (c *Controller) resolveEntry(ctx context.Context, f config.Factory, root, l
 	gateNotes, gateErr := advisoryGate{
 		language: language, name: name, track: track,
 		acks: d.Acknowledge, now: c.now(),
-		dir: dir, reach: c.reach, ctx: ctx,
+		// The modules that would import this dependency, not the register
+		// checkout. Asking the register whether IT imports the vulnerable
+		// package answered a question nobody asked, and printed the answer
+		// as a fact about the operator's own code.
+		modules: memberDirs(f, root, language), reach: c.reach, ctx: ctx,
 	}.decide()
 
 	notes = append(notes, gateNotes...)
@@ -332,6 +352,27 @@ func DeadPin(note string) (string, bool) {
 	}
 
 	return fields[2], true
+}
+
+// memberDirs names every member repo that speaks a language, which is who
+// actually gets the dependency: a workspace declares it once and every member
+// of that language receives it. The reachability question spans all of them.
+func memberDirs(f config.Factory, root, language string) []string {
+	var dirs []string
+
+	for _, repo := range f.Repos {
+		for _, l := range repo.Languages {
+			if strings.EqualFold(l, language) {
+				dirs = append(dirs, filepath.Join(root, repo.Name))
+
+				break
+			}
+		}
+	}
+
+	sort.Strings(dirs)
+
+	return dirs
 }
 
 // registerDir finds the register checkout: an explicit path, or the directory
