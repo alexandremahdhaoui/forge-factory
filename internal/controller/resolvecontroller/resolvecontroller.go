@@ -200,13 +200,19 @@ func (c *Controller) resolveEntry(ctx context.Context, f config.Factory, root, l
 	}
 
 	// An advisory pierces every pin: whatever a pin froze, a track whose
-	// current carries an unfixed vulnerability fails the resolution.
-	if track.Advisory != nil {
-		return "", notes, fmt.Errorf(
-			"%s:%s track %s: %w %s (%s) since %s and no fix upstream - a pin cannot silence this",
-			language, name, track.Prefix, ErrAdvisory,
-			strings.Join(track.Advisory.VulnIds, ", "), track.Advisory.Severity,
-			track.Advisory.Since.Format("2006-01-02"))
+	// current carries a finding fails the resolution until the finding is
+	// acknowledged by name. The gate also says, out loud, when a package was
+	// never checked at all - which is not the same as being clean, and used
+	// to be recorded as if it were.
+	gateNotes, gateErr := advisoryGate{
+		language: language, name: name, track: track,
+		acks: d.Acknowledge, now: c.now(),
+	}.decide()
+
+	notes = append(notes, gateNotes...)
+
+	if gateErr != nil {
+		return "", notes, gateErr
 	}
 
 	if track.Deprecated != nil {

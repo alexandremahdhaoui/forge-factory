@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,7 +149,7 @@ func TestAnAdvisoryPiercesEveryPin(t *testing.T) {
 		}})
 	require.ErrorIs(t, err, resolvecontroller.ErrAdvisory)
 	require.ErrorContains(t, err, "CVE-2026-1")
-	require.ErrorContains(t, err, "a pin cannot silence this")
+	require.ErrorContains(t, err, "A pin cannot silence this")
 }
 
 func TestADeprecatedTrackWarns(t *testing.T) {
@@ -687,4 +688,179 @@ func TestABehindCheckoutNamesThePullInTheFailure(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "behind origin/main")
 	require.Contains(t, err.Error(), "git pull in")
+}
+
+// The finding golden-register actually carries, and the way out of it.
+//
+// GO-2026-5932 on golang.org/x/crypto has no severity, no fix upstream ever
+// because the package is unmaintained by design, and an import scope that
+// does not include anything this workspace uses. Upgrading cannot clear it,
+// so acknowledging it is the only way past - which is why the error has to
+// say all of that instead of a sentence somebody wrote once.
+func TestAFindingSaysEverythingNeededToActOnIt(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"package": "golang.org/x/crypto", "ecosystem": "go", "prefix": "0",
+		"current": "v0.55.0", "updatedAt": now,
+		"vulns":   map[string]int{"critical": 0, "high": 1, "medium": 0, "low": 0},
+		"outcome": "findings",
+		"advisory": map[string]any{
+			"vulnIds": []string{"GO-2026-5932"}, "severity": "unknown",
+			"since":           "2026-08-11T00:00:00Z",
+			"fixedIn":         []string{},
+			"affectedImports": []string{"golang.org/x/crypto/openpgp", "golang.org/x/crypto/openpgp/armor"},
+		},
+	})
+
+	f, root := register(t, map[string]string{"go/golang.org/x/crypto/0": string(raw)})
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"golang.org/x/crypto": {Track: "0"}})
+	require.ErrorIs(t, err, resolvecontroller.ErrAdvisory)
+
+	msg := err.Error()
+
+	require.Contains(t, msg, "GO-2026-5932")
+	require.Contains(t, msg, "severity  : not published by the feed",
+		"38 percent of real records publish no severity; inventing one is worse")
+	require.Contains(t, msg, "published : 2026-08-11",
+		"the advisory's own date, not the moment the pipeline ran")
+	require.Contains(t, msg, "golang.org/x/crypto/openpgp")
+	require.Contains(t, msg, "no newer version fixes this. The feed names none.",
+		"derived from an empty fixedIn, never asserted")
+	require.Contains(t, msg, "acknowledge:")
+	require.Contains(t, msg, "- id: GO-2026-5932")
+	require.Contains(t, msg, "reason:")
+}
+
+// When a fix exists the error names it, because that is the easiest way out
+// and the one a person should take. This line used to read "no fix upstream"
+// on every advisory, whether or not anyone had looked.
+func TestAFindingWithAFixNamesTheVersionThatFixesIt(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"package": "golang.org/x/net", "ecosystem": "go", "prefix": "0",
+		"current": "v0.16.0", "updatedAt": now,
+		"vulns":   map[string]int{"critical": 0, "high": 1, "medium": 0, "low": 0},
+		"outcome": "findings",
+		"advisory": map[string]any{
+			"vulnIds": []string{"GHSA-4374-p667-p6c8"}, "severity": "high",
+			"since": now, "fixedIn": []string{"0.17.0"},
+		},
+	})
+
+	f, root := register(t, map[string]string{"go/golang.org/x/net/0": string(raw)})
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"golang.org/x/net": {Track: "0"}})
+	require.ErrorContains(t, err, "upgrade. The feed names 0.17.0 as fixing this")
+	require.NotContains(t, err.Error(), "no newer version fixes this")
+}
+
+// Acknowledging the finding you looked at clears it. Acknowledging it does
+// not accept the next one.
+func TestAnAcknowledgementClearsOnlyTheFindingItNames(t *testing.T) {
+	one, _ := json.Marshal(map[string]any{
+		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
+		"advisory": map[string]any{
+			"vulnIds": []string{"CVE-2026-1"}, "severity": "high", "since": now,
+		},
+	})
+
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": string(one)})
+
+	ack := config.DependencySpec{Track: "1", Acknowledge: []config.Acknowledgement{{
+		ID: "CVE-2026-1", Reason: "we do not call the affected path",
+	}}}
+
+	got, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": ack})
+	require.NoError(t, err, "the finding was named on purpose, with a reason")
+	require.Equal(t, "v1.6.0", got["example.com/pkg"])
+
+	// A second finding appears. The first acknowledgement does not cover it.
+	two, _ := json.Marshal(map[string]any{
+		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
+		"advisory": map[string]any{
+			"vulnIds": []string{"CVE-2026-1", "CVE-2026-2"}, "severity": "high", "since": now,
+		},
+	})
+
+	f2, root2 := register(t, map[string]string{"go/example.com/pkg/1": string(two)})
+
+	_, _, err = newController().Resolve(context.Background(), f2, root2, "go",
+		map[string]config.DependencySpec{"example.com/pkg": ack})
+	require.ErrorIs(t, err, resolvecontroller.ErrAdvisory)
+	require.ErrorContains(t, err, "CVE-2026-2")
+	require.NotContains(t, err.Error(), "  CVE-2026-1\n", "the one that was named stays cleared")
+}
+
+// An acknowledgement that outlived its finding is named for removal, the same
+// way a dead soft pin is. An accepted risk that no longer exists is a line
+// nobody removes unless something says so.
+func TestAnAcknowledgementIsNamedDeadWhenTheFindingGoes(t *testing.T) {
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+
+	_, notes, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {
+			Track: "1",
+			Acknowledge: []config.Acknowledgement{{
+				ID: "CVE-2026-1", Reason: "accepted last year",
+			}},
+		}})
+	require.NoError(t, err)
+	require.Contains(t, strings.Join(notes, "\n"),
+		"acknowledges CVE-2026-1 and the register no longer reports it")
+	require.Contains(t, strings.Join(notes, "\n"), "remove the acknowledgement")
+}
+
+// A package the feed never carried is not a package known to be safe. It
+// warns, loudly, with the reason - and does not stop the build, because
+// refusing to build when a feed is down protects nobody.
+func TestAnUnmeasuredPackageWarnsAndDoesNotBlock(t *testing.T) {
+	for _, outcome := range []string{"not-found", "unreachable"} {
+		t.Run(outcome, func(t *testing.T) {
+			raw, _ := json.Marshal(map[string]any{
+				"package": "p", "ecosystem": "go", "prefix": "1",
+				"current": "v1.6.0", "updatedAt": now,
+				"vulns":   map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0},
+				"outcome": outcome,
+				"reason":  "the feed carries no record for example.com/pkg in Go",
+			})
+
+			f, root := register(t, map[string]string{"go/example.com/pkg/1": string(raw)})
+
+			got, notes, err := newController().Resolve(context.Background(), f, root, "go",
+				map[string]config.DependencySpec{"example.com/pkg": {Track: "1"}})
+			require.NoError(t, err, "an unchecked package must not stop the build")
+			require.Equal(t, "v1.6.0", got["example.com/pkg"])
+
+			joined := strings.Join(notes, "\n")
+			require.Contains(t, joined, "was not checked for vulnerabilities")
+			require.Contains(t, joined, "the feed carries no record")
+			require.Contains(t, joined, "not known to be safe, only unexamined")
+		})
+	}
+}
+
+// An expiry re-opens the decision. A risk accepted until something lands has
+// to stop being accepted when it does not.
+func TestAnExpiredAcknowledgementBlocksAgain(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
+		"advisory": map[string]any{
+			"vulnIds": []string{"CVE-2026-1"}, "severity": "high", "since": now,
+		},
+	})
+
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": string(raw)})
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {
+			Track: "1",
+			Acknowledge: []config.Acknowledgement{{
+				ID: "CVE-2026-1", Reason: "until the rewrite lands", Expires: "2020-01-01",
+			}},
+		}})
+	require.ErrorIs(t, err, resolvecontroller.ErrAdvisory)
+	require.ErrorContains(t, err, "the acknowledgement expired")
+	require.ErrorContains(t, err, "accepted until 2020-01-01")
 }

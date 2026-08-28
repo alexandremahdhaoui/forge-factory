@@ -62,12 +62,12 @@ func newHarness(t *testing.T) *harness {
 	t.Helper()
 
 	h := &harness{
-		out:    &bytes.Buffer{},
-		fs:     fsadaptermock.NewMockFS(t),
-		clone:  clonecontrollermock.NewMockCloner(t),
-		sync:   synccontrollermock.NewMockSyncer(t),
-		revise: revisioncontrollermock.NewMockReviser(t),
-		state:  statuscontrollermock.NewMockStater(t),
+		out:     &bytes.Buffer{},
+		fs:      fsadaptermock.NewMockFS(t),
+		clone:   clonecontrollermock.NewMockCloner(t),
+		sync:    synccontrollermock.NewMockSyncer(t),
+		revise:  revisioncontrollermock.NewMockReviser(t),
+		state:   statuscontrollermock.NewMockStater(t),
 		runner:  runcontrollermock.NewMockRunner(t),
 		tooling: toolingcontrollermock.NewMockApplier(t),
 		wrote:   map[string]string{},

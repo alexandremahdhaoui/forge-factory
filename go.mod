@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/alexandremahdhaoui/forge v0.43.0
-	github.com/alexandremahdhaoui/forge-register-spec v0.0.0-20260821132857-264af3db0b46
+	github.com/alexandremahdhaoui/forge-register-spec v0.1.1-0.20260828125816-8f1ea3027a9a
 	github.com/alexandremahdhaoui/forge-revision-spec v0.2.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/stretchr/testify v1.12.1

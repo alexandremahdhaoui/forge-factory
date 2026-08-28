@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
@@ -288,4 +289,101 @@ toolchain:
       track: go:m/x
 `))
 	require.ErrorContains(t, err, "no register: block")
+}
+
+// Accepting a risk is a decision somebody makes on purpose, so the file has
+// to make a careless one impossible to write.
+func TestAnAcknowledgementMustBeDeliberate(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "no id accepts everything and nothing",
+			yaml: "  - reason: \"we looked\"\n",
+			want: "names no advisory id",
+		},
+		{
+			name: "no reason is a config error, like a pin without one",
+			yaml: "  - id: GO-2026-5932\n",
+			want: "accepting a risk without a reason",
+		},
+		{
+			name: "the same id twice",
+			yaml: "  - id: GO-1\n    reason: \"a\"\n  - id: GO-1\n    reason: \"b\"\n",
+			want: "acknowledged twice",
+		},
+		{
+			name: "an expiry that is not a date",
+			yaml: "  - id: GO-1\n    reason: \"a\"\n    expires: \"soon\"\n",
+			want: "expires must be a date",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := `name: w
+register:
+  url: git@example.com:r.git
+repos:
+  - name: m
+    url: git@example.com:m.git
+    languages: [go]
+engines:
+  - alias: go
+    engine: forge://example.com/lang-go
+dependencies:
+  go:
+    golang.org/x/crypto:
+      track: "0"
+      acknowledge:
+` + indentBlock(tc.yaml)
+
+			_, err := config.Parse([]byte(doc))
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
+// The shape that must parse: an id, a reason, and an optional date.
+func TestADeliberateAcknowledgementParses(t *testing.T) {
+	doc := `name: w
+register:
+  url: git@example.com:r.git
+repos:
+  - name: m
+    url: git@example.com:m.git
+    languages: [go]
+engines:
+  - alias: go
+    engine: forge://example.com/lang-go
+dependencies:
+  go:
+    golang.org/x/crypto:
+      track: "0"
+      acknowledge:
+        - id: GO-2026-5932
+          reason: "we use nacl/box only; nothing under openpgp/ is imported"
+        - id: GO-2026-9999
+          reason: "accepted until the rewrite lands"
+          expires: "2027-01-01"
+`
+
+	f, err := config.Parse([]byte(doc))
+	require.NoError(t, err)
+
+	acks := f.Dependencies["go"]["golang.org/x/crypto"].Acknowledge
+	require.Len(t, acks, 2)
+	require.Equal(t, "GO-2026-5932", acks[0].ID)
+	require.Contains(t, acks[0].Reason, "nacl/box")
+	require.Equal(t, "2027-01-01", acks[1].Expires)
+}
+
+func indentBlock(s string) string {
+	out := ""
+
+	for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		out += "      " + line + "\n"
+	}
+
+	return out
 }

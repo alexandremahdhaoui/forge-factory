@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"sigs.k8s.io/yaml"
 )
@@ -75,6 +76,31 @@ type DependencySpec struct {
 	// Wraps renders the resolved version into a larger value, %s replaced -
 	// a rust inline table carrying features, a python specifier prefix.
 	Wraps string `json:"wraps,omitempty"`
+
+	// Acknowledge lists the findings this workspace has decided to live
+	// with. A finding blocks until it is named here, so accepting a risk is
+	// an edit somebody makes on purpose and a reviewer can see.
+	Acknowledge []Acknowledgement `json:"acknowledge,omitempty"`
+}
+
+// Acknowledgement accepts one named finding on one dependency.
+//
+// It is keyed on the advisory id, so accepting the risk you looked at does
+// not accept the next one: a finding nobody has named blocks, however many
+// others are acknowledged beside it.
+type Acknowledgement struct {
+	// ID is the advisory this accepts, exactly as the feed names it.
+	ID string `json:"id"`
+
+	// Reason is why. Mandatory, for the same purpose as a pin's: the person
+	// who reads this in six months is usually not the one who wrote it.
+	Reason string `json:"reason"`
+
+	// Expires re-opens the decision on a date, for a risk accepted only
+	// until something else lands. Optional: most acknowledgements are
+	// instead named dead the moment the register carries a version that
+	// fixes them, which needs no date.
+	Expires string `json:"expires,omitempty"`
 }
 
 // FromRegister reports whether this entry resolves from the register.
@@ -266,6 +292,33 @@ func (f Factory) Validate() error {
 
 				if d.Wraps != "" && !strings.Contains(d.Wraps, "%s") {
 					add("%s: wraps must contain %%s for the resolved version", where)
+				}
+
+				seen := map[string]bool{}
+
+				for i, ack := range d.Acknowledge {
+					at := fmt.Sprintf("%s.acknowledge[%d]", where, i)
+
+					if strings.TrimSpace(ack.ID) == "" {
+						add("%s: names no advisory id, so it accepts everything and nothing", at)
+					}
+
+					if strings.TrimSpace(ack.Reason) == "" {
+						add("%s: accepting a risk without a reason is a config error, "+
+							"not a warning", at)
+					}
+
+					if seen[ack.ID] {
+						add("%s: %s is acknowledged twice", at, ack.ID)
+					}
+
+					seen[ack.ID] = true
+
+					if ack.Expires != "" {
+						if _, err := time.Parse("2006-01-02", ack.Expires); err != nil {
+							add("%s: expires must be a date, YYYY-MM-DD, got %q", at, ack.Expires)
+						}
+					}
 				}
 			}
 		}
