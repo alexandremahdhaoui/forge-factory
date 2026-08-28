@@ -3,6 +3,7 @@ package synccontroller_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -607,4 +608,146 @@ func TestSyncAppendsTheToolingLineToAnExistingEnvrc(t *testing.T) {
 		"export MY_OWN=1\nexport PATH=\"/w/.forge/bin:$PATH\" # forge-factory: workspace tooling\n",
 		h.wrote["/w/member-a/.envrc"])
 	require.Contains(t, report.Written, "/w/member-a/.envrc")
+}
+
+// failingResolver stands in for a register that refuses. Every one of these
+// paths returned the resolver's error unwrapped, so the operator saw a
+// package name with no clue which of the four lists it came from.
+type failingResolver struct {
+	err error
+	// after says how many calls succeed first, so the devDependencies pass
+	// can be reached: both lists go through one method and the first one
+	// would otherwise always be the failure.
+	after int
+	seen  int
+}
+
+func (f *failingResolver) Resolve(
+	_ context.Context, _ config.Factory, _, _ string, deps map[string]config.DependencySpec,
+) (map[string]string, []string, error) {
+	f.seen++
+	if f.seen <= f.after {
+		out := map[string]string{}
+		for name, d := range deps {
+			out[name] = d.Version
+		}
+
+		return out, nil, nil
+	}
+
+	return nil, nil, f.err
+}
+
+func (f *failingResolver) ResolveTool(
+	context.Context, config.Factory, string, string,
+) (string, []string, error) {
+	return "", nil, f.err
+}
+
+// identityAnswers covers the pre-sync identity probe, which runs before the
+// envrc pass and is not the subject of any of these.
+func (h *harness) identityAnswers() {
+	h.repos.EXPECT().Identity(mock.Anything).
+		Return(map[string]string{"module": "example.com/g"}, nil).Maybe()
+}
+
+func TestSyncNamesWhichListRefused(t *testing.T) {
+	t.Parallel()
+
+	const withDev = factory + `devDependencies:
+  go:
+    example.com/tool: v1.0.0
+`
+
+	for name, tc := range map[string]struct {
+		raw   string
+		after int
+		want  string
+	}{
+		"dependencies":    {factory, 0, "resolving go dependencies"},
+		"devDependencies": {withDev, 1, "resolving go devDependencies"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newHarness(t)
+			h.envrcExists(true)
+			h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner,
+				&failingResolver{err: errors.New("the register refused"), after: tc.after})
+			h.identityAnswers()
+			h.caller.EXPECT().Call(mock.Anything, mock.Anything, "language", mock.Anything, mock.Anything).
+				RunAndReturn(func(_ context.Context, _, _ string, _, out any) error {
+					return json.Unmarshal([]byte(`{"language":"go"}`), out)
+				}).Maybe()
+
+			_, err := h.c.Sync(t.Context(), parse(t, tc.raw), "/w", "")
+			require.ErrorContains(t, err, tc.want)
+			require.ErrorContains(t, err, "the register refused")
+		})
+	}
+}
+
+func TestSyncNamesTheToolchainBinaryThatRefused(t *testing.T) {
+	t.Parallel()
+
+	const withTool = factory + `register:
+  url: git@github.com:example/golden-register.git
+toolchain:
+  binaries:
+    - name: a-tool
+      module: example.com/a-tool
+      track: go:example.com/a-tool
+`
+
+	h := newHarness(t)
+	h.identityAnswers()
+	h.envrcExists(true)
+	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner,
+		&failingResolver{err: errors.New("the register refused")})
+
+	_, err := h.c.Sync(t.Context(), parse(t, withTool), "/w", "")
+	require.ErrorContains(t, err, "resolving toolchain binary a-tool")
+}
+
+func TestSyncStopsWhenAnEnvrcCannotBeWritten(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.identityAnswers()
+	h.fs.EXPECT().Exists("/w/golden-go/.envrc").Return(false, nil).Once()
+	h.fs.EXPECT().WriteFile("/w/golden-go/.envrc", mock.Anything).
+		Return(errors.New("read only")).Once()
+
+	// The PATH line is what puts the pinned store ahead of whatever the user
+	// installed. Carrying on without it would sync a workspace that then
+	// builds with the wrong tools, which is worse than not syncing.
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	require.ErrorContains(t, err, "creating /w/golden-go/.envrc")
+}
+
+func TestSyncStopsWhenAnEnvrcCannotBeRead(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.identityAnswers()
+	h.fs.EXPECT().Exists("/w/golden-go/.envrc").Return(true, nil).Once()
+	h.fs.EXPECT().ReadFile("/w/golden-go/.envrc").Return(nil, errors.New("read only")).Once()
+
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	require.ErrorContains(t, err, "reading /w/golden-go/.envrc")
+}
+
+func TestSyncStopsWhenAnEnvrcCannotBeExtended(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.identityAnswers()
+	h.fs.EXPECT().Exists("/w/golden-go/.envrc").Return(true, nil).Once()
+	h.fs.EXPECT().ReadFile("/w/golden-go/.envrc").
+		Return([]byte("export FOO=1\n"), nil).Once()
+	h.fs.EXPECT().WriteFile("/w/golden-go/.envrc", mock.Anything).
+		Return(errors.New("read only")).Once()
+
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	require.ErrorContains(t, err, "extending /w/golden-go/.envrc")
 }
