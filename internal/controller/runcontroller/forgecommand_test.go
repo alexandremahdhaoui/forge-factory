@@ -3,6 +3,7 @@ package runcontroller
 import (
 	"io"
 	"runtime/debug"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -80,4 +81,26 @@ func TestForgeCommandFallsBackToAPinnedGoRun(t *testing.T) {
 	require.Len(t, args, 2)
 	require.Equal(t, "run", args[0])
 	require.NotContains(t, args[1], "@latest")
+}
+
+func TestIsFullShaAcceptsOnlyAFullLowercaseHexSha(t *testing.T) {
+	const forty = "0123456789abcdef0123456789abcdef01234567"
+
+	require.True(t, isFullSha(forty))
+
+	for name, s := range map[string]string{
+		"too short":   forty[:39],
+		"too long":    forty + "0",
+		"empty":       "",
+		"uppercase":   strings.ToUpper(forty),
+		"a tag":       "v0.1.0",
+		"non hex":     strings.Repeat("g", 40),
+		"a short sha": "abcdef1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Anything but a full sha has to be resolved before it can pin
+			// anything. Accepting a tag here would pin a name that can move.
+			require.False(t, isFullSha(s))
+		})
+	}
 }

@@ -1155,3 +1155,77 @@ func TestAToolchainBinaryCanBeAcknowledgedToo(t *testing.T) {
 	require.NoError(t, err, "named on purpose, it resolves")
 	require.Equal(t, "v3.7.3", got)
 }
+
+func TestAnUnreadableTrackFileIsNamed(t *testing.T) {
+	f, root := register(t, nil)
+
+	// A directory where the track file belongs. The register is a git
+	// checkout somebody may have mangled, and the reply has to name the path
+	// rather than report the package as absent, which would file a spurious
+	// admission request.
+	require.NoError(t, os.MkdirAll(
+		filepath.Join(root, "golden-register", "index", "go", "p", "1.json"), 0o750))
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"p": {Track: "1"}})
+	require.ErrorContains(t, err, "reading track index/go/p/1.json")
+}
+
+func TestAnUnlistableTrackDirectoryIsNamed(t *testing.T) {
+	f, root := register(t, nil)
+
+	// A file where the package's directory belongs, so the default track
+	// cannot be chosen.
+	dir := filepath.Join(root, "golden-register", "index", "go")
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "p"), nil, 0o600))
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"p": {}})
+	require.ErrorContains(t, err, "listing tracks of go:p")
+}
+
+func TestResolveWithoutARegisterSaysSo(t *testing.T) {
+	_, _, err := newController().Resolve(context.Background(), config.Factory{}, t.TempDir(), "go",
+		map[string]config.DependencySpec{"p": {}})
+	require.ErrorContains(t, err, "no register block")
+}
+
+func TestResolveNamesAnUncheckedOutRegister(t *testing.T) {
+	f := config.Factory{Register: &config.Register{URL: "git@github.com:example/golden-register.git"}}
+
+	_, _, err := newController().Resolve(context.Background(), f, t.TempDir(), "go",
+		map[string]config.DependencySpec{"p": {}})
+	// The remedy, not just the diagnosis. Nobody guesses "clone" from
+	// "not checked out".
+	require.ErrorContains(t, err, "run: forge-factory clone")
+}
+
+func TestResolveToolRefusesATrackThatIsNotAPair(t *testing.T) {
+	f, root := register(t, nil)
+
+	for _, name := range []string{"nocolon", ":pkg", "go:", ""} {
+		_, _, err := newController().ResolveTool(context.Background(), f, root, name)
+		require.ErrorContains(t, err, "is named <ecosystem>:<package>")
+	}
+}
+
+// The register writes a reason for every unmeasured record, and a copy
+// written by hand may not. The note still has to say something: "is
+// unexamined." followed by nothing reads as a truncated message.
+func TestAnUnmeasuredRecordWithNoReasonStillReads(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{
+		"package": "p", "ecosystem": "go", "prefix": "1",
+		"current": "v1.6.0", "updatedAt": now,
+		"vulns":   map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0},
+		"outcome": "not-found",
+	})
+
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": string(raw)})
+
+	_, notes, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/pkg": {Track: "1"}})
+	require.NoError(t, err)
+	require.Len(t, notes, 1)
+	require.Contains(t, notes[0], "The register does not say why.")
+}
