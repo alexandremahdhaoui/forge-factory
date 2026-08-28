@@ -837,9 +837,14 @@ func TestAnUnmeasuredPackageWarnsAndDoesNotBlock(t *testing.T) {
 			require.Equal(t, "v1.6.0", got["example.com/pkg"])
 
 			joined := strings.Join(notes, "\n")
-			require.Contains(t, joined, "was not checked for vulnerabilities")
-			require.Contains(t, joined, "the feed carries no record")
-			require.Contains(t, joined, "not known to be safe, only unexamined")
+			require.Contains(t, joined, "is unexamined, not known to be safe")
+			require.Contains(t, joined, "The feed carries no record")
+
+			// One line, not a paragraph. Fifty-six paragraphs is noise
+			// nobody reads, which is the failure this note exists to stop.
+			require.Len(t, notes, 1)
+			require.NotContains(t, joined, "..")
+			require.Less(t, len(notes[0]), 180, "one tight line: %q", notes[0])
 		})
 	}
 }

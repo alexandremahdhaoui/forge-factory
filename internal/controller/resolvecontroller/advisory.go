@@ -98,11 +98,12 @@ func (g advisoryGate) unmeasuredNote() string {
 			reason = *g.track.Reason
 		}
 
-		return fmt.Sprintf(
-			"%s:%s %s was not checked for vulnerabilities: %s. "+
-				"It is not known to be safe, only unexamined - re-run the register "+
-				"pipeline against a reachable feed to find out",
-			g.language, g.name, g.track.Current, reason)
+		// One tight line. The register's own reason is a sentence of its own
+		// and repeating it inside a second sentence produced a paragraph per
+		// package - 56 of them on this workspace, which nobody reads, which
+		// is the same failure this note exists to prevent.
+		return fmt.Sprintf("%s:%s %s is unexamined, not known to be safe. %s",
+			g.language, g.name, g.track.Current, sentence(reason))
 	}
 
 	return ""
@@ -199,6 +200,22 @@ func (g advisoryGate) report(unacknowledged, expired []string) string {
 	b.WriteString("     next one: a new finding blocks again.")
 
 	return b.String()
+}
+
+// sentence trims a reason to one clause and punctuates it once. The register
+// writes a full sentence; two of them run together read as a stutter.
+func sentence(reason string) string {
+	if reason == "" {
+		return "The register does not say why."
+	}
+
+	if i := strings.Index(reason, ". "); i > 0 {
+		reason = reason[:i]
+	}
+
+	reason = strings.TrimRight(reason, ". ")
+
+	return strings.ToUpper(reason[:1]) + reason[1:] + "."
 }
 
 func severityWord(s string) string {
