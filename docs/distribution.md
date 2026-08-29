@@ -66,7 +66,12 @@ identical store, zero network.
 
 ## CI
 
-The rendered workflow's toolchain step collapses to:
+Today a workspace's `toolchainScript` compiles the toolchain from the
+checkout and puts `$HOME/go/bin` on `$GITHUB_PATH`. That is what
+`golden-register/forge-ci.yaml` does and what every rendered workflow runs.
+
+Once a factory publishes an aggregated dist release, the same step becomes
+a consumption of prebuilt, digest-verified binaries:
 
 ```sh
 export FORGE_DIST_MIRROR=https://github.com/<owner>/<factory>/releases/latest/download
@@ -75,9 +80,14 @@ echo "$(cd .. && pwd)/.forge/bin" >> "$GITHUB_PATH"
 ```
 
 with `actions/cache` on `~/.cache/forge/store` so a warm runner installs
-the toolchain without compiling or downloading anything. The seed is
-exactly one pinned binary: `go run …/forge-factory@<proven sha>` (or a
-digest-checked download of the same from the release).
+the toolchain without compiling or downloading anything, and a seed of
+exactly one pinned binary: `go run …/forge-factory@<proven sha>`. The
+consuming half is built and tested; nothing renders that step yet, and
+`FORGE_DIST_MIRROR` has no producer. `golden-register/forge-ci.yaml`
+carries the block commented out, waiting on dist-release being activated
+in forge-self-factory's pipeline.
+
+Until then this section describes a destination, not the current step.
 
 ## Resolution precedence
 
