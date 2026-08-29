@@ -62,6 +62,14 @@ func (passthrough) ResolveTool(context.Context, config.Factory, string, string) 
 	return "v9.9.9", []string{"tool note"}, nil
 }
 
+// The pre-register world had no internal tracks, so nothing is pinned and
+// the tidy that follows keeps whatever it had.
+func (passthrough) ResolveMembers(
+	context.Context, config.Factory, string, string,
+) (map[string]string, []string, error) {
+	return map[string]string{}, nil, nil
+}
+
 type harness struct {
 	caller *engineadaptermock.MockCaller
 	fs     *fsadaptermock.MockFS
@@ -69,6 +77,9 @@ type harness struct {
 	runner *execadaptermock.MockRunner
 	c      *synccontroller.Controller
 	wrote  map[string]string
+	// goMods is what each member's committed manifest says. Sync reads it
+	// to learn which internal modules a member already requires.
+	goMods map[string]string
 }
 
 func newHarness(t *testing.T) *harness {
@@ -80,9 +91,24 @@ func newHarness(t *testing.T) *harness {
 		repos:  repoadaptermock.NewMockReader(t),
 		runner: execadaptermock.NewMockRunner(t),
 		wrote:  map[string]string{},
+		goMods: map[string]string{},
 	}
 
 	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner, passthrough{})
+
+	// Sync reads each member's committed go.mod to learn which internal
+	// modules it already requires. Absent is the common case in these
+	// tests and means "requires nothing", which is what a member with no
+	// manifest yet actually is.
+	h.fs.EXPECT().ReadFile(mock.MatchedBy(func(path string) bool {
+		return strings.HasSuffix(path, "/go.mod")
+	})).RunAndReturn(func(path string) ([]byte, error) {
+		if body, ok := h.goMods[path]; ok {
+			return []byte(body), nil
+		}
+
+		return nil, errors.New("no manifest yet")
+	}).Maybe()
 
 	return h
 }
@@ -644,6 +670,12 @@ func (f *failingResolver) ResolveTool(
 	return "", nil, f.err
 }
 
+func (f *failingResolver) ResolveMembers(
+	context.Context, config.Factory, string, string,
+) (map[string]string, []string, error) {
+	return map[string]string{}, nil, nil
+}
+
 // identityAnswers covers the pre-sync identity probe, which runs before the
 // envrc pass and is not the subject of any of these.
 func (h *harness) identityAnswers() {
@@ -750,4 +782,144 @@ func TestSyncStopsWhenAnEnvrcCannotBeExtended(t *testing.T) {
 
 	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorContains(t, err, "extending /w/golden-go/.envrc")
+}
+
+// memberResolver stands in for a register carrying internal tracks: one
+// module a member requires, one it does not, and one the factory declares.
+type memberResolver struct{ passthrough }
+
+func (memberResolver) ResolveMembers(
+	_ context.Context, _ config.Factory, _, language string,
+) (map[string]string, []string, error) {
+	if language != "go" {
+		return map[string]string{}, nil, nil
+	}
+
+	return map[string]string{
+		"example.com/shared-spec": "v0.3.0",
+		// A runnable member's own track. Its version is a pipeline dev
+		// label: a real revision, and not a tag any proxy can fetch.
+		"example.com/some-runnable": "v0.1.0-dev.r00000021.gabcdef012345",
+		// Declared in the factory too.
+		"sigs.k8s.io/yaml": "v9.9.9",
+	}, nil, nil
+}
+
+func (h *harness) memberRequires(modules ...string) {
+	body := "module example.com/g\n\ngo 1.26\n\nrequire (\n"
+	for _, m := range modules {
+		body += "\t" + m + " v0.0.1\n"
+	}
+
+	body += ")\n"
+
+	h.goMods["/w/golden-go/go.mod"] = body
+}
+
+func TestAMemberModuleIsPinnedByTheRegister(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.envrcExists(true)
+	h.identityAnswers()
+	// The member requires the declared module too, so only the declared-wins
+	// rule can protect it here - not the requires filter.
+	h.memberRequires("example.com/shared-spec", "sigs.k8s.io/yaml")
+	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner, memberResolver{})
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+
+	var seen map[string]any
+
+	h.caller.EXPECT().Call(mock.Anything, mock.Anything, "render", mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, _, _ string, in, out any) error {
+			raw, err := json.Marshal(in)
+			require.NoError(t, err)
+			require.NoError(t, json.Unmarshal(raw, &seen))
+
+			return json.Unmarshal([]byte(`{"files":[]}`), out)
+		}).Once()
+
+	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	require.NoError(t, err)
+
+	deps, ok := seen["dependencies"].(map[string]any)
+	require.True(t, ok)
+
+	// The shared spec reaches the manifest, so the tidy that follows has a
+	// version to keep rather than a tag to guess at.
+	require.Equal(t, "v0.3.0", deps["example.com/shared-spec"])
+
+	// The runnable's dev label does not. No member requires it, and a
+	// require has to resolve before tidy can prune it as unused - so
+	// writing it would fail the sync rather than govern anything.
+	require.NotContains(t, deps, "example.com/some-runnable")
+
+	// Naming a module in the factory is a deliberate act. The internal
+	// track must not quietly override it.
+	require.Equal(t, "v1.6.0", deps["sigs.k8s.io/yaml"])
+
+	// And the operator is told, because a version they did not write just
+	// appeared in a generated file.
+	require.Contains(t, strings.Join(report.Notes, "\n"),
+		"go:example.com/shared-spec pinned to v0.3.0 by the register's internal track")
+}
+
+func TestSyncNamesAMemberModuleThatRefused(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.envrcExists(true)
+	h.identityAnswers()
+	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner,
+		&refusingMembers{err: errors.New("the register refused")})
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+
+	// Four lists resolve through this controller and they must not be
+	// confusable in the error: a package name with no clue which one it
+	// came from is what this wrapper exists to prevent.
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	require.ErrorContains(t, err, "resolving go member modules")
+	require.ErrorContains(t, err, "the register refused")
+}
+
+type refusingMembers struct {
+	passthrough
+
+	err error
+}
+
+func (r *refusingMembers) ResolveMembers(
+	context.Context, config.Factory, string, string,
+) (map[string]string, []string, error) {
+	return nil, nil, r.err
+}
+
+// A member with no committed manifest yet requires nothing, which is what a
+// repo cloned for the first time actually is.
+func TestAMemberWithNoManifestRequiresNothing(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.envrcExists(true)
+	h.identityAnswers()
+	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner, memberResolver{})
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+
+	var seen map[string]any
+
+	h.caller.EXPECT().Call(mock.Anything, mock.Anything, "render", mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, _, _ string, in, out any) error {
+			raw, err := json.Marshal(in)
+			require.NoError(t, err)
+			require.NoError(t, json.Unmarshal(raw, &seen))
+
+			return json.Unmarshal([]byte(`{"files":[]}`), out)
+		}).Once()
+
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	require.NoError(t, err)
+
+	deps, ok := seen["dependencies"].(map[string]any)
+	require.True(t, ok)
+	require.NotContains(t, deps, "example.com/shared-spec")
 }

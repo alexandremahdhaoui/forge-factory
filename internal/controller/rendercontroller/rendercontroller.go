@@ -113,10 +113,21 @@ func (g Go) Render(in rendertypes.Input) (rendertypes.Output, error) {
 
 		fmt.Fprintf(&b, "%s\nmodule %s\n\ngo %s\n", goHeader, module, goVersion)
 
-		if names := sortedNames(in.Dependencies); len(names) > 0 {
+		// A module never requires itself. Member modules now reach the
+		// dependency map so a shared spec is pinned by the register, and a
+		// spec's own manifest would otherwise name its own module path.
+		requires := make([]string, 0, len(in.Dependencies))
+
+		for _, name := range sortedNames(in.Dependencies) {
+			if name != module {
+				requires = append(requires, name)
+			}
+		}
+
+		if len(requires) > 0 {
 			fmt.Fprintf(&b, "\nrequire (\n")
 
-			for _, name := range names {
+			for _, name := range requires {
 				fmt.Fprintf(&b, "\t%s %s\n", name, in.Dependencies[name])
 			}
 

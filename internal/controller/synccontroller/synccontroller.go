@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -198,6 +199,39 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 			return Report{}, fmt.Errorf("resolving %s devDependencies: %w", language, err)
 		}
 
+		// A member module another member imports - a shared spec - is
+		// declared in no dependency list, so its version was left to the
+		// tidy that follows, which takes the highest published tag. The
+		// register's internal track is what governs it.
+		members, _, err := c.resolver.ResolveMembers(ctx, f, root, language)
+		if err != nil {
+			return Report{}, fmt.Errorf("resolving %s member modules: %w", language, err)
+		}
+
+		required := c.internalRequires(resolved, language)
+
+		for name, version := range members {
+			// A declared dependency wins. Naming a module in the factory is
+			// a deliberate act and the internal track must not override it.
+			if _, declared := deps[name]; declared {
+				continue
+			}
+
+			// Only a module some member already requires. Every runnable
+			// member has an internal track too, carrying the pipeline's own
+			// dev label: a real revision, but not a tag any proxy can
+			// fetch. Writing one into a manifest makes the following tidy
+			// try to resolve it and fail, because a require has to resolve
+			// before it can be pruned as unused.
+			if !required[name] {
+				continue
+			}
+
+			deps[name] = version
+			report.Notes = append(report.Notes, fmt.Sprintf(
+				"%s:%s pinned to %s by the register's internal track", language, name, version))
+		}
+
 		report.Notes = append(report.Notes, depNotes...)
 		report.Notes = append(report.Notes, devNotes...)
 
@@ -281,6 +315,42 @@ func underMemberOrRoot(root, only, path string) bool {
 // one managed line present: the PATH entry for the workspace's .forge/bin,
 // where sync links the pinned tooling. Everything else in the file is the
 // machine's own and stays untouched.
+// internalRequires answers the module paths this language's members already
+// require. The generated manifest is rewritten on every sync, so the
+// committed one is where a member records what it actually imports.
+func (c *Controller) internalRequires(repos []repoWire, language string) map[string]bool {
+	out := map[string]bool{}
+
+	if language != "go" {
+		return out
+	}
+
+	for _, r := range repos {
+		if !slices.Contains(r.Languages, language) {
+			continue
+		}
+
+		raw, err := c.fs.ReadFile(filepath.Join(r.Path, "go.mod"))
+		if err != nil {
+			continue
+		}
+
+		for _, line := range strings.Split(string(raw), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "//") {
+				continue
+			}
+
+			module, _, ok := strings.Cut(strings.TrimPrefix(line, "require "), " ")
+			if ok && strings.Contains(module, "/") {
+				out[module] = true
+			}
+		}
+	}
+
+	return out
+}
+
 func (c *Controller) ensureEnvrcs(f config.Factory, root string, report *Report) error {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {

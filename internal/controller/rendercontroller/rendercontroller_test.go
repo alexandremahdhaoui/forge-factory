@@ -523,3 +523,35 @@ func TestTypeScriptWithNoDevDependencies(t *testing.T) {
 	assert.NotContains(t, pkg, "devDependencies")
 	assert.Contains(t, pkg, "\"fastify\": \"^5\"\n  }\n}")
 }
+
+// Member modules now reach the dependency map so a shared spec is pinned by
+// the register. A spec's own manifest would otherwise name its own module
+// path, and a module that requires itself does not build.
+func TestAModuleNeverRequiresItself(t *testing.T) {
+	out, err := rendercontroller.Go{}.Render(rendertypes.Input{
+		Root: "/w",
+		Repos: []rendertypes.Repo{{
+			Name: "spec-a", Path: "/w/spec-a",
+			Languages: []string{"go"},
+			Identity:  map[string]string{"module": "example.com/spec-a"},
+		}},
+		Dependencies: map[string]string{
+			"example.com/spec-a": "v0.3.0",
+			"example.com/other":  "v1.0.0",
+		},
+	})
+	require.NoError(t, err)
+
+	var mod string
+
+	for _, f := range out.Files {
+		if strings.HasSuffix(f.Path, "spec-a/go.mod") {
+			mod = f.Content
+		}
+	}
+
+	require.NotEmpty(t, mod)
+	require.Contains(t, mod, "module example.com/spec-a")
+	require.Contains(t, mod, "example.com/other v1.0.0")
+	require.NotContains(t, mod, "example.com/spec-a v0.3.0")
+}

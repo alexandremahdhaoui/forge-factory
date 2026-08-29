@@ -49,6 +49,10 @@ type Resolver interface {
 	// ResolveTool answers the version pinning one toolchain binary from a
 	// register track named "<ecosystem>:<package>".
 	ResolveTool(ctx context.Context, f config.Factory, root, track string) (string, []string, error)
+	// ResolveMembers answers the version of every workspace member module
+	// the register carries an internal track for, so a shared spec is
+	// governed by the register rather than by whatever tag tidy finds.
+	ResolveMembers(ctx context.Context, f config.Factory, root, language string) (map[string]string, []string, error)
 }
 
 type Controller struct {

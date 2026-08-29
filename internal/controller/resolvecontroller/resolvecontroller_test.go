@@ -1287,3 +1287,147 @@ func TestATrackWithNoReadableOutcomeIsRefused(t *testing.T) {
 		})
 	}
 }
+
+func internalTrack(t *testing.T, module, prefix, current string) (string, string) {
+	t.Helper()
+
+	raw, _ := json.Marshal(map[string]any{
+		"package": module, "ecosystem": "internal", "prefix": prefix,
+		"current": current, "updatedAt": now,
+		"vulns":   map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0},
+		"outcome": "clean",
+	})
+
+	return "internal/" + module + "/" + prefix, string(raw)
+}
+
+// A shared spec one member imports from another is declared in no dependency
+// list, so its version was decided by the tidy that follows: the highest
+// published tag. That drifted in the real workspace, one member carrying a
+// spec at v0.3.1 while the register's track said v0.3.0 - a version nothing
+// ever adopted.
+func TestMemberModulesResolveFromTheInternalTrack(t *testing.T) {
+	k1, v1 := internalTrack(t, "github.com/example/spec-a", "0", "v0.3.0")
+	k2, v2 := internalTrack(t, "github.com/example/spec-b", "1", "v1.4.2")
+	// A lower track on the same module: the highest wins, as everywhere else.
+	k3, v3 := internalTrack(t, "github.com/example/spec-b", "0", "v0.9.9")
+
+	f, root := register(t, map[string]string{k1: v1, k2: v2, k3: v3})
+
+	got, _, err := newController().ResolveMembers(context.Background(), f, root, "go")
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{
+		"github.com/example/spec-a": "v0.3.0",
+		"github.com/example/spec-b": "v1.4.2",
+	}, got)
+}
+
+func TestMemberModulesAreAGoQuestionOnly(t *testing.T) {
+	k, v := internalTrack(t, "github.com/example/spec-a", "0", "v0.3.0")
+	f, root := register(t, map[string]string{k: v})
+
+	// The internal ecosystem is module paths the go command resolves.
+	// Another language's members are named differently and have no tracks.
+	for _, language := range []string{"rust", "python", "typescript"} {
+		got, _, err := newController().ResolveMembers(context.Background(), f, root, language)
+		require.NoError(t, err)
+		require.Empty(t, got)
+	}
+}
+
+func TestNoInternalTracksIsNotAFailure(t *testing.T) {
+	// A register with no internal ecosystem is the first-run shape, and a
+	// workspace whose members share nothing has no tracks to read.
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+
+	got, _, err := newController().ResolveMembers(context.Background(), f, root, "go")
+	require.NoError(t, err)
+	require.Empty(t, got)
+
+	// And a workspace with no register at all resolves nothing rather than
+	// failing: the register block is optional.
+	got, _, err = newController().ResolveMembers(context.Background(), config.Factory{}, root, "go")
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+// The register is a git checkout somebody can mangle. A track that exists
+// and cannot be read is named, because somebody has to fix that file; a
+// module with no track at all is simply not pinned.
+func TestAMangledInternalTrackIsNamed(t *testing.T) {
+	for name, mangle := range map[string]func(*testing.T, string){
+		"a track file that is not json": func(t *testing.T, dir string) {
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "spec-b"), 0o750))
+			require.NoError(t, os.WriteFile(
+				filepath.Join(dir, "spec-b", "0.json"), []byte("{{{"), 0o600))
+		},
+		"a directory where a track file belongs": func(t *testing.T, dir string) {
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, "spec-b", "0.json"), 0o750))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			good, raw := internalTrack(t, "github.com/example/spec-a", "0", "v0.3.0")
+			f, root := register(t, map[string]string{good: raw})
+
+			mangle(t, filepath.Join(root, "golden-register", "index", "internal",
+				"github.com", "example"))
+
+			_, _, err := newController().ResolveMembers(context.Background(), f, root, "go")
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestAnUncheckedOutRegisterIsNamed(t *testing.T) {
+	f := config.Factory{Register: &config.Register{
+		URL: "git@github.com:example/golden-register.git"}}
+
+	_, _, err := newController().ResolveMembers(context.Background(), f, t.TempDir(), "go")
+	require.ErrorContains(t, err, "run: forge-factory clone")
+}
+
+// A track directory holding no json at all - the shape a half-written
+// register leaves behind.
+func TestATrackDirectoryWithNoRecordIsSkipped(t *testing.T) {
+	good, raw := internalTrack(t, "github.com/example/spec-a", "0", "v0.3.0")
+	f, root := register(t, map[string]string{good: raw})
+
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "golden-register",
+		"index", "internal", "github.com", "example", "spec-empty"), 0o750))
+
+	got, _, err := newController().ResolveMembers(context.Background(), f, root, "go")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+}
+
+// A pinned register is read through git rather than the worktree, and git
+// lists recursively. The two readers walk the tree differently, so both need
+// driving or half of this is untested.
+func TestMemberModulesReadThroughAPinnedRevision(t *testing.T) {
+	k1, v1 := internalTrack(t, "github.com/example/spec-a", "0", "v0.3.0")
+	k2, v2 := internalTrack(t, "github.com/example/deep/spec-b", "1", "v1.4.2")
+
+	f, root := register(t, map[string]string{k1: v1, k2: v2})
+	dir := filepath.Join(root, "golden-register")
+
+	gitIn(t, dir, "init", "-q")
+	gitIn(t, dir, "add", ".")
+	gitIn(t, dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "index")
+	gitIn(t, dir, "tag", "v0.1.0")
+
+	// The worktree moves past the tag.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "index", "internal", "github.com", "example", "spec-a", "0.json"),
+		[]byte(v1[:len(v1)-1]+`,"x":1}`), 0o600))
+
+	f.Register.Revision = "v0.1.0"
+
+	got, _, err := newController().ResolveMembers(context.Background(), f, root, "go")
+	require.NoError(t, err)
+
+	// Both modules, including the deeper one, and at the tag's versions.
+	require.Equal(t, map[string]string{
+		"github.com/example/spec-a":      "v0.3.0",
+		"github.com/example/deep/spec-b": "v1.4.2",
+	}, got)
+}
