@@ -20,7 +20,7 @@ jobs:
     steps:
       - name: Tell the workspace to run the pipeline
         env:
-          GH_TOKEN: ${{ secrets.FACTORY_TOKEN }}
+          GH_TOKEN: ${{ secrets.FORGE_CI_DISPATCH_TOKEN }}
         run: |
           gh api repos/alexandremahdhaoui/golden-factory/dispatches \
             --field event_type=member-pushed \
