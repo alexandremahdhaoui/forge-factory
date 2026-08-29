@@ -66,8 +66,8 @@ func (passthrough) ResolveTool(context.Context, config.Factory, string, string) 
 // the tidy that follows keeps whatever it had.
 func (passthrough) ResolveMembers(
 	context.Context, config.Factory, string, string,
-) (map[string]string, []string, error) {
-	return map[string]string{}, nil, nil
+) (map[string]string, error) {
+	return map[string]string{}, nil
 }
 
 type harness struct {
@@ -672,8 +672,8 @@ func (f *failingResolver) ResolveTool(
 
 func (f *failingResolver) ResolveMembers(
 	context.Context, config.Factory, string, string,
-) (map[string]string, []string, error) {
-	return map[string]string{}, nil, nil
+) (map[string]string, error) {
+	return map[string]string{}, nil
 }
 
 // identityAnswers covers the pre-sync identity probe, which runs before the
@@ -790,9 +790,9 @@ type memberResolver struct{ passthrough }
 
 func (memberResolver) ResolveMembers(
 	_ context.Context, _ config.Factory, _, language string,
-) (map[string]string, []string, error) {
+) (map[string]string, error) {
 	if language != "go" {
-		return map[string]string{}, nil, nil
+		return map[string]string{}, nil
 	}
 
 	return map[string]string{
@@ -802,7 +802,7 @@ func (memberResolver) ResolveMembers(
 		"example.com/some-runnable": "v0.1.0-dev.r00000021.gabcdef012345",
 		// Declared in the factory too.
 		"sigs.k8s.io/yaml": "v9.9.9",
-	}, nil, nil
+	}, nil
 }
 
 func (h *harness) memberRequires(modules ...string) {
@@ -864,6 +864,66 @@ func TestAMemberModuleIsPinnedByTheRegister(t *testing.T) {
 		"go:example.com/shared-spec pinned to v0.3.0 by the register's internal track")
 }
 
+// TestAReplaceBlockIsNotARequire drives the discriminator that keeps the
+// requires filter safe.
+//
+// go.mod is not line-oriented. A module path sitting inside a replace or
+// exclude block reads exactly like a require to a scanner that does not
+// follow the open directive, and the answer is merged into one per-language
+// map rendered into every member's manifest. So one replace block in one
+// member would write a pipeline dev label into all of them, and every
+// following tidy would fail on a version no proxy can serve. Six manifests
+// broke that way once.
+func TestAReplaceBlockIsNotARequire(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.envrcExists(true)
+	h.identityAnswers()
+	h.goMods["/w/golden-go/go.mod"] = `module example.com/g
+
+go 1.26
+
+require (
+	example.com/shared-spec v0.0.1
+)
+
+replace (
+	example.com/some-runnable => ../some-runnable
+)
+
+exclude (
+	sigs.k8s.io/yaml v0.0.1
+)
+`
+	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner, memberResolver{})
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+
+	var seen map[string]any
+
+	h.caller.EXPECT().Call(mock.Anything, mock.Anything, "render", mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, _, _ string, in, out any) error {
+			raw, err := json.Marshal(in)
+			require.NoError(t, err)
+			require.NoError(t, json.Unmarshal(raw, &seen))
+
+			return json.Unmarshal([]byte(`{"files":[]}`), out)
+		}).Once()
+
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	require.NoError(t, err)
+
+	deps, ok := seen["dependencies"].(map[string]any)
+	require.True(t, ok)
+
+	require.NotContains(t, deps, "example.com/some-runnable",
+		"a replace block names a module; it does not require one")
+
+	// The require block still reads, so the fix narrows nothing it should
+	// not: a directive-blind scanner and this one agree on a real require.
+	require.Equal(t, "v0.3.0", deps["example.com/shared-spec"])
+}
+
 func TestSyncNamesAMemberModuleThatRefused(t *testing.T) {
 	t.Parallel()
 
@@ -890,8 +950,8 @@ type refusingMembers struct {
 
 func (r *refusingMembers) ResolveMembers(
 	context.Context, config.Factory, string, string,
-) (map[string]string, []string, error) {
-	return nil, nil, r.err
+) (map[string]string, error) {
+	return nil, r.err
 }
 
 // A member with no committed manifest yet requires nothing, which is what a

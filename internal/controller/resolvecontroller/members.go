@@ -32,23 +32,23 @@ import (
 // break the tidy rather than govern it.
 func (c *Controller) ResolveMembers(
 	ctx context.Context, f config.Factory, root, language string,
-) (map[string]string, []string, error) {
+) (map[string]string, error) {
 	out := map[string]string{}
 
 	if f.Register == nil {
-		return out, nil, nil
+		return out, nil
 	}
 
 	// The internal ecosystem is Go-shaped: a module path the go command
 	// resolves. Another language's members are named differently and have
 	// no tracks here.
 	if language != "go" {
-		return out, nil, nil
+		return out, nil
 	}
 
 	dir, err := c.registerDir(f, root)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	v := view{c: c, ctx: ctx, dir: dir, rev: f.Register.Revision, url: f.Register.URL}
@@ -59,7 +59,7 @@ func (c *Controller) ResolveMembers(
 	for _, module := range internalModules(v) {
 		version, err := currentOfHighestTrack(v, module)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 
 		if version != "" {
@@ -67,7 +67,7 @@ func (c *Controller) ResolveMembers(
 		}
 	}
 
-	return out, nil, nil
+	return out, nil
 }
 
 // internalModules answers the module paths under index/internal. The tree is
@@ -132,10 +132,13 @@ func walkInternal(v view, rel, module string) []string {
 	return out
 }
 
-// currentOfHighestTrack reads the highest track's current version. A module
-// with no readable track answers empty rather than failing: the register is
-// a checkout somebody can mangle, and one bad file must not stop a sync that
-// has nothing to do with it.
+// currentOfHighestTrack reads the highest track's current version.
+//
+// A module with no track file, and a track file the reader cannot find,
+// both answer empty: neither is a corrupt register, and a first run meets
+// both. A track file that is not JSON is different and fails the sync,
+// because a register nobody can parse is not a register a version should be
+// resolved from. TestAMangledInternalTrackIsNamed pins that.
 func currentOfHighestTrack(v view, module string) (string, error) {
 	rel := path.Join("index/internal", module)
 

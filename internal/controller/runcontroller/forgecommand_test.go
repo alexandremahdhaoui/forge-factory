@@ -26,8 +26,10 @@ func TestDepVersionReadsTheVersionForgeWasBuiltAgainst(t *testing.T) {
 		// actually linked in. Running the replaced version would run
 		// something this binary was never built against.
 		"a replaced dependency": {
-			[]*debug.Module{{Path: forge, Version: "v0.42.0",
-				Replace: &debug.Module{Path: forge, Version: "v0.41.0"}}},
+			[]*debug.Module{{
+				Path: forge, Version: "v0.42.0",
+				Replace: &debug.Module{Path: forge, Version: "v0.41.0"},
+			}},
 			"v0.41.0",
 		},
 		// A workspace build records no usable version, and the caller must

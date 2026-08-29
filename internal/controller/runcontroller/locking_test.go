@@ -32,7 +32,6 @@ func TestALockThatCannotBeTakenStopsTheWork(t *testing.T) {
 
 	err := r.c.worktreeAdd(context.Background(), t.TempDir(), "aaa", t.TempDir())
 	require.ErrorContains(t, err, "the lock is held")
-
 }
 
 func TestWarmTupleIsBestEffort(t *testing.T) {

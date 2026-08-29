@@ -203,7 +203,7 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		// declared in no dependency list, so its version was left to the
 		// tidy that follows, which takes the highest published tag. The
 		// register's internal track is what governs it.
-		members, _, err := c.resolver.ResolveMembers(ctx, f, root, language)
+		members, err := c.resolver.ResolveMembers(ctx, f, root, language)
 		if err != nil {
 			return Report{}, fmt.Errorf("resolving %s member modules: %w", language, err)
 		}
@@ -335,20 +335,74 @@ func (c *Controller) internalRequires(repos []repoWire, language string) map[str
 			continue
 		}
 
-		for _, line := range strings.Split(string(raw), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "//") {
-				continue
-			}
-
-			module, _, ok := strings.Cut(strings.TrimPrefix(line, "require "), " ")
-			if ok && strings.Contains(module, "/") {
-				out[module] = true
-			}
+		for module := range requiredModules(string(raw)) {
+			out[module] = true
 		}
 	}
 
 	return out
+}
+
+// requiredModules reads the module paths a go.mod requires.
+//
+// Only a require line counts, and only inside a require block or behind the
+// require keyword. That sounds obvious and it is the whole fix: the scanner
+// this replaces trimmed an optional "require " prefix and then took any line
+// holding a slash, so every module path in a replace or exclude block read
+// as a require.
+//
+// The blast radius is why it is parsed rather than grepped. The answer is
+// merged into one per-language map that every member's manifest is rendered
+// from, so one replace block in one member writes its right-hand side into
+// every member, and every following tidy fails on a version no proxy can
+// serve. Six manifests broke that way once.
+func requiredModules(gomod string) map[string]bool {
+	out := map[string]bool{}
+	inRequire := false
+
+	for _, line := range strings.Split(gomod, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "//") {
+			continue
+		}
+
+		if inRequire {
+			if line == ")" {
+				inRequire = false
+
+				continue
+			}
+
+			addRequired(out, line)
+
+			continue
+		}
+
+		if line == "require (" {
+			inRequire = true
+
+			continue
+		}
+
+		// Any other block - replace, exclude, tool - falls through. Its
+		// body lines carry no require keyword, so nothing reads them, and
+		// its closing paren cannot end a require block that never opened.
+		if rest, ok := strings.CutPrefix(line, "require "); ok {
+			addRequired(out, rest)
+		}
+	}
+
+	return out
+}
+
+// addRequired records the module a require line names. The right-hand side
+// is dropped, so an // indirect marker still counts: indirect is how a
+// module is required, not whether.
+func addRequired(out map[string]bool, line string) {
+	module, _, _ := strings.Cut(strings.TrimSpace(line), " ")
+	if strings.Contains(module, "/") {
+		out[module] = true
+	}
 }
 
 func (c *Controller) ensureEnvrcs(f config.Factory, root string, report *Report) error {

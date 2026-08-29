@@ -1314,7 +1314,7 @@ func TestMemberModulesResolveFromTheInternalTrack(t *testing.T) {
 
 	f, root := register(t, map[string]string{k1: v1, k2: v2, k3: v3})
 
-	got, _, err := newController().ResolveMembers(context.Background(), f, root, "go")
+	got, err := newController().ResolveMembers(context.Background(), f, root, "go")
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{
 		"github.com/example/spec-a": "v0.3.0",
@@ -1329,7 +1329,7 @@ func TestMemberModulesAreAGoQuestionOnly(t *testing.T) {
 	// The internal ecosystem is module paths the go command resolves.
 	// Another language's members are named differently and have no tracks.
 	for _, language := range []string{"rust", "python", "typescript"} {
-		got, _, err := newController().ResolveMembers(context.Background(), f, root, language)
+		got, err := newController().ResolveMembers(context.Background(), f, root, language)
 		require.NoError(t, err)
 		require.Empty(t, got)
 	}
@@ -1340,13 +1340,13 @@ func TestNoInternalTracksIsNotAFailure(t *testing.T) {
 	// workspace whose members share nothing has no tracks to read.
 	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
 
-	got, _, err := newController().ResolveMembers(context.Background(), f, root, "go")
+	got, err := newController().ResolveMembers(context.Background(), f, root, "go")
 	require.NoError(t, err)
 	require.Empty(t, got)
 
 	// And a workspace with no register at all resolves nothing rather than
 	// failing: the register block is optional.
-	got, _, err = newController().ResolveMembers(context.Background(), config.Factory{}, root, "go")
+	got, err = newController().ResolveMembers(context.Background(), config.Factory{}, root, "go")
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
@@ -1372,7 +1372,7 @@ func TestAMangledInternalTrackIsNamed(t *testing.T) {
 			mangle(t, filepath.Join(root, "golden-register", "index", "internal",
 				"github.com", "example"))
 
-			_, _, err := newController().ResolveMembers(context.Background(), f, root, "go")
+			_, err := newController().ResolveMembers(context.Background(), f, root, "go")
 			require.Error(t, err)
 		})
 	}
@@ -1380,9 +1380,10 @@ func TestAMangledInternalTrackIsNamed(t *testing.T) {
 
 func TestAnUncheckedOutRegisterIsNamed(t *testing.T) {
 	f := config.Factory{Register: &config.Register{
-		URL: "git@github.com:example/golden-register.git"}}
+		URL: "git@github.com:example/golden-register.git",
+	}}
 
-	_, _, err := newController().ResolveMembers(context.Background(), f, t.TempDir(), "go")
+	_, err := newController().ResolveMembers(context.Background(), f, t.TempDir(), "go")
 	require.ErrorContains(t, err, "run: forge-factory clone")
 }
 
@@ -1395,7 +1396,7 @@ func TestATrackDirectoryWithNoRecordIsSkipped(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "golden-register",
 		"index", "internal", "github.com", "example", "spec-empty"), 0o750))
 
-	got, _, err := newController().ResolveMembers(context.Background(), f, root, "go")
+	got, err := newController().ResolveMembers(context.Background(), f, root, "go")
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 }
@@ -1422,7 +1423,7 @@ func TestMemberModulesReadThroughAPinnedRevision(t *testing.T) {
 
 	f.Register.Revision = "v0.1.0"
 
-	got, _, err := newController().ResolveMembers(context.Background(), f, root, "go")
+	got, err := newController().ResolveMembers(context.Background(), f, root, "go")
 	require.NoError(t, err)
 
 	// Both modules, including the deeper one, and at the tag's versions.

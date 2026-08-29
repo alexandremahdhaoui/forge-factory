@@ -108,8 +108,10 @@ func RunVulncheckEngine(ctx context.Context, dirs []string, stdin []byte) ([]byt
 	ctx, cancel := context.WithTimeout(ctx, engineTimeout)
 	defer cancel()
 
-	args := []string{"run", "github.com/alexandremahdhaoui/forge-go-vulncheck",
-		"go-vulncheck", "--"}
+	args := []string{
+		"run", "github.com/alexandremahdhaoui/forge-go-vulncheck",
+		"go-vulncheck", "--",
+	}
 	for _, d := range dirs {
 		args = append(args, "--dir", d)
 	}

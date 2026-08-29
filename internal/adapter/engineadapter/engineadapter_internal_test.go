@@ -45,7 +45,7 @@ func fakeEngine(t *testing.T, stderr *bytes.Buffer) *MCPCaller {
 	})
 	require.NoError(t, buildErr)
 
-	var w = stderr
+	w := stderr
 	if w == nil {
 		w = &bytes.Buffer{}
 	}

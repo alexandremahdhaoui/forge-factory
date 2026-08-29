@@ -52,7 +52,7 @@ type Resolver interface {
 	// ResolveMembers answers the version of every workspace member module
 	// the register carries an internal track for, so a shared spec is
 	// governed by the register rather than by whatever tag tidy finds.
-	ResolveMembers(ctx context.Context, f config.Factory, root, language string) (map[string]string, []string, error)
+	ResolveMembers(ctx context.Context, f config.Factory, root, language string) (map[string]string, error)
 }
 
 type Controller struct {
