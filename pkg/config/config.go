@@ -34,7 +34,26 @@ type Factory struct {
 // or a user's own engines - the one governed place their versions live,
 // instead of an env var here and a code default there.
 type Toolchain struct {
-	Binaries []ToolchainBinary `json:"binaries"`
+	Binaries []ToolchainBinary `json:"binaries,omitempty"`
+
+	// Image is the container the workspace's pipelines run their jobs in.
+	// Declared once here, resolved by sync into a generated file, and read
+	// from there by the CI layer - so the pin is never hand-typed in a
+	// pipeline file.
+	Image *ToolchainImage `json:"image,omitempty"`
+}
+
+// ToolchainImage is the toolchain container. Exactly one of track or
+// version pins it, exactly as a binary is pinned: a track resolves from the
+// register's index, a literal version serves a workspace without a register.
+type ToolchainImage struct {
+	// Ref is the image reference without a tag, e.g. a registry host and
+	// repository path.
+	Ref string `json:"ref"`
+	// Track names a register track as "<ecosystem>:<package>".
+	Track string `json:"track,omitempty"`
+	// Version is the literal pin.
+	Version string `json:"version,omitempty"`
 }
 
 // ToolchainBinary is one provisioned tool. Exactly one of track or version
@@ -377,6 +396,29 @@ func (f Factory) Validate() error {
 				add("%s: exactly one of track or version pins a binary, not both", where)
 			case b.Track != "":
 				if !strings.Contains(b.Track, ":") {
+					add("%s: a track is named <ecosystem>:<package>", where)
+				}
+
+				if f.Register == nil {
+					add("%s: resolves from the register and no register: block is declared", where)
+				}
+			}
+		}
+
+		if img := f.Toolchain.Image; img != nil {
+			const where = "toolchain.image"
+
+			if strings.TrimSpace(img.Ref) == "" {
+				add("%s: the image needs a ref, the reference without a tag", where)
+			}
+
+			switch {
+			case img.Track == "" && img.Version == "":
+				add("%s: exactly one of track or version pins the image; neither means nothing resolves it", where)
+			case img.Track != "" && img.Version != "":
+				add("%s: exactly one of track or version pins the image, not both", where)
+			case img.Track != "":
+				if !strings.Contains(img.Track, ":") {
 					add("%s: a track is named <ecosystem>:<package>", where)
 				}
 

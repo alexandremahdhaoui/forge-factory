@@ -1,6 +1,7 @@
 package synccontroller
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -60,6 +61,10 @@ type Report struct {
 	// Toolchain is every declared binary resolved to its pinned version;
 	// the driver provisions them into the store.
 	Toolchain []toolingcontroller.Binary `json:"toolchain,omitempty"`
+	// Image is the resolved toolchain container reference, tag included,
+	// when the factory declares one. Sync persists it into
+	// ToolchainImagePath for the CI layer to read.
+	Image string `json:"image,omitempty"`
 }
 
 type repoWire struct {
@@ -199,6 +204,37 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 				Name: b.Name, Module: b.Module, Version: version,
 			})
 		}
+
+		// The image resolves like a binary and lands in a generated file,
+		// so a pipeline reads the pin instead of someone typing it. The
+		// write is change-aware: an unchanged pin reports nothing.
+		if img := f.Toolchain.Image; img != nil {
+			version := img.Version
+
+			if img.Track != "" {
+				resolved, imgNotes, err := c.resolver.ResolveTool(ctx, f, root, img.Track)
+				report.Notes = append(report.Notes, imgNotes...)
+
+				if err != nil {
+					return Report{}, fmt.Errorf("resolving the toolchain image: %w", err)
+				}
+
+				version = resolved
+			}
+
+			report.Image = img.Ref + ":" + version
+
+			changed, err := c.writeIfChanged(
+				filepath.Join(root, filepath.FromSlash(ToolchainImagePath)),
+				[]byte(report.Image+"\n"))
+			if err != nil {
+				return Report{}, fmt.Errorf("persisting the toolchain image: %w", err)
+			}
+
+			if changed {
+				report.Written = append(report.Written, ToolchainImagePath)
+			}
+		}
 	}
 
 	if _, _, err := c.renderMembers(ctx, f, root, only, &report, true, ignores); err != nil {
@@ -267,6 +303,29 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 // with forge-ci, which reads it to store one dependency-lock record per file
 // beside the revision.
 const LockManifestPath = ".forge/dependency-locks.json"
+
+// ToolchainImagePath is where sync persists the resolved toolchain
+// container reference, root-relative. The CI layer reads the pin from here,
+// which is what keeps it out of hand-written pipeline files.
+const ToolchainImagePath = ".forge/toolchain-image"
+
+// writeIfChanged writes target only when the bytes differ, and answers
+// whether it did - a sync that converges nothing must report nothing.
+func (c *Controller) writeIfChanged(target string, data []byte) (bool, error) {
+	if existing, err := c.fs.ReadFile(target); err == nil && bytes.Equal(existing, data) {
+		return false, nil
+	}
+
+	if err := c.fs.MkdirAll(filepath.Dir(target)); err != nil {
+		return false, err
+	}
+
+	if err := c.fs.WriteFile(target, data); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
 
 type lockManifest struct {
 	Version int          `json:"version"`

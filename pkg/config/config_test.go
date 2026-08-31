@@ -269,6 +269,94 @@ toolchain:
 	}
 }
 
+// The toolchain image pins the container the pipelines run in, exactly as
+// a binary is pinned: one ref, one of track or version.
+func TestToolchainImageValidation(t *testing.T) {
+	t.Parallel()
+
+	base := `version: "1"
+name: w
+repos:
+  - name: r
+    url: u
+engines:
+  - alias: go
+    engine: forge://example.com/lang-go
+register:
+  url: git@example.com:owner/register.git
+toolchain:
+  image:
+%s`
+
+	cases := map[string]struct {
+		image string
+		want  string
+	}{
+		"a tracked image parses": {
+			image: `    ref: ghcr.io/owner/tools
+    track: internal:ghcr.io/owner/tools`,
+		},
+		"a literal pin parses": {
+			image: `    ref: ghcr.io/owner/tools
+    version: v1.0.0`,
+		},
+		"no ref": {
+			image: `    track: internal:ghcr.io/owner/tools`,
+			want:  "needs a ref",
+		},
+		"no pin at all": {
+			image: `    ref: ghcr.io/owner/tools`,
+			want:  "exactly one of track or version",
+		},
+		"both pins": {
+			image: `    ref: ghcr.io/owner/tools
+    track: internal:x
+    version: v1`,
+			want: "not both",
+		},
+		"malformed track": {
+			image: `    ref: ghcr.io/owner/tools
+    track: not-a-track`,
+			want: "<ecosystem>:<package>",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := config.Parse([]byte(fmt.Sprintf(base, tc.image)))
+
+			if tc.want == "" {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
+func TestAToolchainImageTrackNeedsARegister(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.Parse([]byte(`version: "1"
+name: w
+repos:
+  - name: r
+    url: u
+engines:
+  - alias: go
+    engine: forge://example.com/lang-go
+toolchain:
+  image:
+    ref: ghcr.io/owner/tools
+    track: internal:ghcr.io/owner/tools
+`))
+	require.ErrorContains(t, err, "no register: block")
+}
+
 // A track resolves from the register, so declaring one without a register
 // block is a config error.
 func TestAToolchainTrackNeedsARegister(t *testing.T) {

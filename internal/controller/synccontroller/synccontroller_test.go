@@ -758,6 +758,61 @@ func TestSyncResolvesTheToolchainBinaries(t *testing.T) {
 	require.Contains(t, report.Notes, "tool note")
 }
 
+// The toolchain image resolves like a binary and lands in a generated file
+// the CI layer reads, so the pin is never hand-typed in a pipeline file.
+func TestSyncResolvesAndPersistsTheToolchainImage(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.envrcExists(t, true)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
+	h.fs.EXPECT().ReadFile("/w/.forge/toolchain-image").Return(nil, assert.AnError).Once()
+	h.fs.EXPECT().MkdirAll("/w/.forge").Return(nil).Once()
+	h.recordWrites()
+
+	f := config.Factory{
+		Repos: []config.Repo{{Name: "member-a"}},
+		Toolchain: &config.Toolchain{Image: &config.ToolchainImage{
+			Ref: "ghcr.io/owner/tools", Track: "internal:ghcr.io/owner/tools",
+		}},
+	}
+
+	report, err := h.c.Sync(context.Background(), f, "/w", "")
+	require.NoError(t, err)
+
+	assert.Equal(t, "ghcr.io/owner/tools:v9.9.9", report.Image,
+		"the track resolves through the register like any dependency")
+	assert.Equal(t, "ghcr.io/owner/tools:v9.9.9\n", h.wrote["/w/.forge/toolchain-image"])
+	assert.Contains(t, report.Written, ".forge/toolchain-image")
+	assert.Contains(t, report.Notes, "tool note")
+}
+
+// An unchanged pin reports nothing: a sync that converges nothing must not
+// dirty the report, or every run looks like a change.
+func TestSyncLeavesAConvergedToolchainImageAlone(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.envrcExists(t, true)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
+	h.fs.EXPECT().ReadFile("/w/.forge/toolchain-image").
+		Return([]byte("ghcr.io/owner/tools:v1.0.0\n"), nil).Once()
+
+	f := config.Factory{
+		Repos: []config.Repo{{Name: "member-a"}},
+		Toolchain: &config.Toolchain{Image: &config.ToolchainImage{
+			Ref: "ghcr.io/owner/tools", Version: "v1.0.0",
+		}},
+	}
+
+	report, err := h.c.Sync(context.Background(), f, "/w", "")
+	require.NoError(t, err)
+
+	assert.Equal(t, "ghcr.io/owner/tools:v1.0.0", report.Image,
+		"a literal pin is written verbatim, register not consulted")
+	assert.NotContains(t, report.Written, ".forge/toolchain-image")
+}
+
 // TestSyncCreatesAMissingEnvrc: forge sources a .envrc in every repo it
 // builds, so a fresh workspace used to need a hand-run touch loop. Sync
 // creates the missing file carrying exactly the managed tooling PATH line;
@@ -909,6 +964,51 @@ toolchain:
 
 	_, err := h.c.Sync(t.Context(), parse(t, withTool), "/w", "")
 	require.ErrorContains(t, err, "resolving toolchain binary a-tool")
+}
+
+func TestSyncNamesAToolchainImageThatCannotResolve(t *testing.T) {
+	t.Parallel()
+
+	const withImage = factory + `register:
+  url: git@github.com:example/golden-register.git
+toolchain:
+  image:
+    ref: ghcr.io/owner/tools
+    track: internal:ghcr.io/owner/tools
+`
+
+	h := newHarness(t)
+	h.identityAnswers()
+	h.envrcExists(t, true)
+	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner,
+		&failingResolver{err: errors.New("the register refused")})
+
+	_, err := h.c.Sync(t.Context(), parse(t, withImage), "/w", "")
+	require.ErrorContains(t, err, "resolving the toolchain image")
+}
+
+func TestSyncStopsWhenAToolchainImageCannotBePersisted(t *testing.T) {
+	t.Parallel()
+
+	const withImage = factory + `toolchain:
+  image:
+    ref: ghcr.io/owner/tools
+    version: v1.0.0
+`
+
+	h := newHarness(t)
+	h.identityAnswers()
+	h.envrcExists(t, true)
+	h.fs.EXPECT().ReadFile("/w/.forge/toolchain-image").Return(nil, assert.AnError).Once()
+	h.fs.EXPECT().MkdirAll("/w/.forge").Return(nil).Once()
+	h.fs.EXPECT().WriteFile("/w/.forge/toolchain-image", mock.Anything).
+		Return(errors.New("read only")).Once()
+
+	// A pipeline reads this file for the container it runs in; a sync that
+	// resolved a pin and could not persist it would leave the CI layer on
+	// whatever was there before.
+	_, err := h.c.Sync(t.Context(), parse(t, withImage), "/w", "")
+	require.ErrorContains(t, err, "persisting the toolchain image")
 }
 
 func TestSyncStopsWhenAnEnvrcCannotBeWritten(t *testing.T) {
