@@ -188,18 +188,20 @@ func (g Go) Render(in rendertypes.Input) (rendertypes.Output, error) {
 		Content: work.String(),
 	})
 
-	return rendertypes.Output{Files: files, Settle: tidy(in.Root, repos)}, nil
+	return rendertypes.Output{Files: files, DependencyLock: dependencyLock(in.Root, repos)}, nil
 }
 
-// tidy is what turns the direct requires the factory declares into a go.mod a
-// build can use. Without it the indirect requires and every sum are missing.
+// dependencyLock is what turns the direct requires the factory declares into
+// manifests a build can use. Without it the indirect requires and every sum
+// are missing. Only this engine knows the commands; who runs them is the
+// caller's business.
 //
-// GOWORK=off matters: in workspace mode a tidy writes no per module sums, so a
-// member would carry a go.mod naming versions and no go.sum proving them. The
-// workspace is synced afterwards, once every member is tidy.
+// GOWORK=off matters: in workspace mode a lock writes no per module sums, so
+// a member would carry a go.mod naming versions and no go.sum proving them.
+// The workspace is synced afterwards, once every member's lock is resolved.
 //
 // Both are optional because they need the network and a sync must work offline.
-func tidy(root string, repos []rendertypes.Repo) []rendertypes.Command {
+func dependencyLock(root string, repos []rendertypes.Repo) []rendertypes.Command {
 	out := make([]rendertypes.Command, 0, len(repos)+1)
 
 	for _, r := range repos {

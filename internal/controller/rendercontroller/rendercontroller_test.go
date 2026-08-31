@@ -320,18 +320,18 @@ func TestGoAsksForATidyPerMember(t *testing.T) {
 
 	out, err := rendercontroller.Go{}.Render(input())
 	require.NoError(t, err)
-	require.Len(t, out.Settle, 2)
+	require.Len(t, out.DependencyLock, 2)
 
-	assert.Equal(t, "/w/alpha-go", out.Settle[0].Dir)
-	assert.Equal(t, "go", out.Settle[0].Command)
-	assert.Equal(t, []string{"mod", "tidy"}, out.Settle[0].Args)
-	assert.Equal(t, map[string]string{"GOWORK": "off"}, out.Settle[0].Env,
+	assert.Equal(t, "/w/alpha-go", out.DependencyLock[0].Dir)
+	assert.Equal(t, "go", out.DependencyLock[0].Command)
+	assert.Equal(t, []string{"mod", "tidy"}, out.DependencyLock[0].Args)
+	assert.Equal(t, map[string]string{"GOWORK": "off"}, out.DependencyLock[0].Env,
 		"in workspace mode a tidy writes no per module sums")
-	assert.True(t, out.Settle[0].Optional, "a sync must still work offline")
+	assert.True(t, out.DependencyLock[0].Optional, "a sync must still work offline")
 
-	assert.Equal(t, "/w", out.Settle[1].Dir)
-	assert.Equal(t, []string{"work", "sync"}, out.Settle[1].Args)
-	assert.Equal(t, map[string]string{"GOWORK": "/w/go.work"}, out.Settle[1].Env,
+	assert.Equal(t, "/w", out.DependencyLock[1].Dir)
+	assert.Equal(t, []string{"work", "sync"}, out.DependencyLock[1].Args)
+	assert.Equal(t, map[string]string{"GOWORK": "/w/go.work"}, out.DependencyLock[1].Env,
 		"GOWORK=off in the caller makes go work sync deny the file this sync wrote")
 }
 
@@ -345,7 +345,7 @@ func TestNoOtherLanguageNeedsSettling(t *testing.T) {
 	} {
 		out, err := r.Render(input())
 		require.NoError(t, err)
-		assert.Empty(t, out.Settle, r.Language())
+		assert.Empty(t, out.DependencyLock, r.Language())
 	}
 }
 
@@ -368,8 +368,8 @@ func TestARepoThatKeepsItsOwnManifestStillGetsMembership(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.Files, 1)
 	assert.Equal(t, "/w/go.work", out.Files[0].Path)
-	require.Len(t, out.Settle, 1)
-	assert.Equal(t, []string{"work", "sync"}, out.Settle[0].Args,
+	require.Len(t, out.DependencyLock, 1)
+	assert.Equal(t, []string{"work", "sync"}, out.DependencyLock[0].Args,
 		"nothing to tidy, and the workspace still needs syncing")
 
 	out, err = rendercontroller.TypeScript{}.Render(in)

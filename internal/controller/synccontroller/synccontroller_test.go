@@ -420,7 +420,7 @@ func TestSyncRunsWhatAnEngineAsksForAfterTheFilesLand(t *testing.T) {
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
 		"files": []map[string]any{{"path": "/w/golden-go/go.mod", "content": "x"}},
-		"settle": []map[string]any{{
+		"dependencyLock": []map[string]any{{
 			"dir": "/w/golden-go", "command": "go", "args": []string{"mod", "tidy"},
 			"env": map[string]string{"GOWORK": "off"}, "optional": true,
 		}},
@@ -431,8 +431,8 @@ func TestSyncRunsWhatAnEngineAsksForAfterTheFilesLand(t *testing.T) {
 
 	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"go mod tidy in /w/golden-go"}, report.Settled)
-	assert.Empty(t, report.Unsettled)
+	assert.Equal(t, []string{"go mod tidy in /w/golden-go"}, report.Locked)
+	assert.Empty(t, report.Unlocked)
 }
 
 func TestAnOptionalCommandThatFailsIsReportedAndTheSyncStillPasses(t *testing.T) {
@@ -444,7 +444,7 @@ func TestAnOptionalCommandThatFailsIsReportedAndTheSyncStillPasses(t *testing.T)
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
 		"files": []any{},
-		"settle": []map[string]any{
+		"dependencyLock": []map[string]any{
 			{"dir": "/w/golden-go", "command": "go", "args": []string{"mod", "tidy"}, "optional": true},
 		},
 	})
@@ -453,8 +453,8 @@ func TestAnOptionalCommandThatFailsIsReportedAndTheSyncStillPasses(t *testing.T)
 
 	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err, "a tidy needs the network and a sync must work offline")
-	require.Len(t, report.Unsettled, 1)
-	assert.Contains(t, report.Unsettled[0], "go mod tidy in /w/golden-go")
+	require.Len(t, report.Unlocked, 1)
+	assert.Contains(t, report.Unlocked[0], "go mod tidy in /w/golden-go")
 }
 
 func TestACommandThatIsNotOptionalStopsTheSync(t *testing.T) {
@@ -465,8 +465,8 @@ func TestACommandThatIsNotOptionalStopsTheSync(t *testing.T) {
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
-		"files":  []any{},
-		"settle": []map[string]any{{"dir": "/w", "command": "false"}},
+		"files":          []any{},
+		"dependencyLock": []map[string]any{{"dir": "/w", "command": "false"}},
 	})
 	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "false").
 		Return(execadapter.Result{}, assert.AnError).Once()
@@ -484,8 +484,8 @@ func TestACommandThatExitsNonZeroCountsAsAFailure(t *testing.T) {
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
-		"files":  []any{},
-		"settle": []map[string]any{{"dir": "/w", "command": "go", "args": []string{"mod", "tidy"}}},
+		"files":          []any{},
+		"dependencyLock": []map[string]any{{"dir": "/w", "command": "go", "args": []string{"mod", "tidy"}}},
 	})
 	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "go", "mod", "tidy").
 		Return(execadapter.Result{ExitCode: 1, Stderr: "unknown directive: #"}, nil).Once()
@@ -504,8 +504,8 @@ func TestALongFailureIsTrimmedToItsReason(t *testing.T) {
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
-		"files":  []any{},
-		"settle": []map[string]any{{"dir": "/w", "command": "go"}},
+		"files":          []any{},
+		"dependencyLock": []map[string]any{{"dir": "/w", "command": "go"}},
 	})
 	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "go").
 		Return(execadapter.Result{
@@ -568,7 +568,7 @@ func TestSyncOnlyRendersTheOneMemberAndTheRoot(t *testing.T) {
 			{"path": "/w/other-go/go.mod", "content": "module example.com/o\n"},
 			{"path": "/w/go.work", "content": "use ./golden-go\n"},
 		},
-		"settle": []map[string]any{
+		"dependencyLock": []map[string]any{
 			{"dir": "/w/golden-go", "command": "true"},
 			{"dir": "/w/other-go", "command": "false"},
 			{"dir": "/w", "command": "true"},

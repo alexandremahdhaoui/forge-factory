@@ -32,7 +32,7 @@ var (
 			"[--config path] [--root dir] [--offline] [--register-head]")
 	ErrDrift = errors.New("the workspace disagrees with the factory")
 
-	ErrUnsettled = errors.New("the files were written and the workspace does not build")
+	ErrUnlocked = errors.New("the files were written and the dependency closure did not resolve")
 )
 
 type Driver struct {
@@ -168,8 +168,8 @@ func (d *Driver) runSync(ctx context.Context, f config.Factory, path, root strin
 	// A sync that writes a version nothing can resolve leaves every member
 	// unbuildable. Reporting that and exiting zero is a lie, so it is an error
 	// unless the caller says it is offline on purpose.
-	if len(report.Unsettled) > 0 && !d.offline {
-		return fmt.Errorf("%w: %s", ErrUnsettled, report.Unsettled[0])
+	if len(report.Unlocked) > 0 && !d.offline {
+		return fmt.Errorf("%w: %s", ErrUnlocked, report.Unlocked[0])
 	}
 
 	return d.applyTooling(ctx, root, report)
@@ -566,7 +566,7 @@ func (d *Driver) load(
 	prune := fs.Bool("prune-pins", false,
 		"delete the soft pins the resolver names dead, then sync again")
 	only := fs.String("only", "",
-		"restrict sync writes and settle commands to one member")
+		"restrict sync writes and dependency-lock commands to one member")
 	toolingFrom := fs.String("tooling-from", "",
 		"consume a distribution (a directory or an http(s) base URL) into the store and link .forge/bin; FORGE_DIST_MIRROR is the environment form")
 
@@ -659,11 +659,11 @@ func renderSync(report synccontroller.Report) string {
 		fmt.Fprintf(&b, "  ignored in %s\n", relative(report.Root, path))
 	}
 
-	for _, what := range report.Settled {
+	for _, what := range report.Locked {
 		fmt.Fprintf(&b, "  ran %s\n", what)
 	}
 
-	for _, what := range report.Unsettled {
+	for _, what := range report.Unlocked {
 		fmt.Fprintf(&b, "  could not run %s, which a build will need\n", what)
 	}
 

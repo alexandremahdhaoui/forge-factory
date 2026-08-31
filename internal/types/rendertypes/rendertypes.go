@@ -28,8 +28,11 @@ type Command struct {
 
 // Output is everything a renderer decided.
 type Output struct {
-	Files  []File
-	Settle []Command
+	Files []File
+	// DependencyLock is the commands that resolve this language's dependency
+	// closure into its lockfile. Only a language engine knows them, and only
+	// the build phase runs them - a clone or sync writes manifests and stops.
+	DependencyLock []Command
 }
 
 // File is one file a renderer wants written.

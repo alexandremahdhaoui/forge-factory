@@ -23,7 +23,10 @@ func NewHandlers() Handlers {
 				return nil, err
 			}
 
-			return &RenderOutput{Files: fromFiles(out.Files), Settle: fromSettle(out.Settle)}, nil
+			return &RenderOutput{
+				Files:          fromFiles(out.Files),
+				DependencyLock: fromCommands(out.DependencyLock),
+			}, nil
 		},
 	}
 }
@@ -48,7 +51,7 @@ func toInput(in RenderInput) rendertypes.Input {
 	}
 }
 
-func fromSettle(commands []rendertypes.Command) []Command {
+func fromCommands(commands []rendertypes.Command) []Command {
 	out := make([]Command, 0, len(commands))
 
 	for _, c := range commands {

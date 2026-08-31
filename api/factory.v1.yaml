@@ -100,14 +100,16 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/File'
-        settle:
+        dependencyLock:
           type: array
           items:
             $ref: '#/components/schemas/Command'
           description: >-
-            What to run after the files are written, in order. A generated go.mod
-            names only the direct requires the factory declares, so a tidy is
-            what puts the indirect ones and the sums back.
+            The commands that resolve this language's dependency closure into
+            its lockfile, in order. A generated manifest names only the direct
+            requires the factory declares; these commands put the indirect
+            ones and the integrity sums back. Only a language engine knows
+            them, and only the build phase runs them.
 
     Command:
       type: object

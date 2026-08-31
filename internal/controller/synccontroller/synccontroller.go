@@ -44,12 +44,16 @@ func tail(s string) string {
 // Notes carry the resolver's diagnostics: pins standing, pins to remove,
 // deprecated tracks.
 type Report struct {
-	Root      string   `json:"root"`
-	Written   []string `json:"written"`
-	Ignored   []string `json:"ignored"`
-	Settled   []string `json:"settled"`
-	Unsettled []string `json:"unsettled"`
-	Notes     []string `json:"notes,omitempty"`
+	Root    string   `json:"root"`
+	Written []string `json:"written"`
+	Ignored []string `json:"ignored"`
+	// Locked is each dependency-lock command that ran clean; Unlocked is each
+	// optional one that failed, with why. The vocabulary is deliberate: what
+	// these commands resolve is a language's dependency closure into its
+	// lockfile, and "tidy" is one language's word for it.
+	Locked   []string `json:"locked"`
+	Unlocked []string `json:"unlocked"`
+	Notes    []string `json:"notes,omitempty"`
 	// Toolchain is every declared binary resolved to its pinned version;
 	// the driver provisions them into the store.
 	Toolchain []toolingcontroller.Binary `json:"toolchain,omitempty"`
@@ -85,8 +89,8 @@ type commandWire struct {
 }
 
 type renderOutput struct {
-	Files  []fileWire    `json:"files"`
-	Settle []commandWire `json:"settle,omitempty"`
+	Files          []fileWire    `json:"files"`
+	DependencyLock []commandWire `json:"dependencyLock,omitempty"`
 }
 
 type languageOutput struct {
@@ -96,9 +100,10 @@ type languageOutput struct {
 // Syncer is what a driver accepts. It is declared here, in the package that
 // implements it, as golden-go does.
 type Syncer interface {
-	// Sync writes every member's manifest. Only restricts writes and settle
-	// commands to one member - the ephemeral run context uses it, where the
-	// other members are not on disk at all. Empty means everything.
+	// Sync writes every member's manifest. Only restricts writes and
+	// dependency-lock commands to one member - the ephemeral run context uses
+	// it, where the other members are not on disk at all. Empty means
+	// everything.
 	Sync(ctx context.Context, f config.Factory, root, only string) (Report, error)
 }
 
@@ -134,11 +139,11 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 	}
 
 	report := Report{
-		Root:      root,
-		Written:   []string{},
-		Ignored:   []string{},
-		Settled:   []string{},
-		Unsettled: []string{},
+		Root:     root,
+		Written:  []string{},
+		Ignored:  []string{},
+		Locked:   []string{},
+		Unlocked: []string{},
 	}
 
 	ignores := map[string][]string{}
@@ -187,7 +192,7 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		}
 	}
 
-	var settle []commandWire
+	var lockCommands []commandWire
 
 	for _, language := range f.Languages() {
 		uri, ok := f.EngineFor(language)
@@ -276,12 +281,12 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 			}
 		}
 
-		for _, cmd := range out.Settle {
+		for _, cmd := range out.DependencyLock {
 			if only != "" && cmd.Dir != filepath.Join(root, only) && cmd.Dir != root {
 				continue
 			}
 
-			settle = append(settle, cmd)
+			lockCommands = append(lockCommands, cmd)
 		}
 	}
 
@@ -300,7 +305,7 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		}
 	}
 
-	if err := c.settle(ctx, settle, &report); err != nil {
+	if err := c.lock(ctx, lockCommands, &report); err != nil {
 		return Report{}, err
 	}
 
@@ -516,12 +521,12 @@ func restrictTo(f config.Factory, only string) config.Factory {
 	return f
 }
 
-// settle runs what each engine asked for after its files landed. A generated
-// go.mod names only the direct requires, so the tidy is what puts the indirect
-// ones and the sums back. An optional command that fails is reported and the
-// sync still succeeds, because a tidy needs the network and a sync must work
-// offline.
-func (c *Controller) settle(ctx context.Context, commands []commandWire, report *Report) error {
+// lock runs each engine's dependency-lock commands after its files landed. A
+// generated manifest names only the direct requires, so these are what put
+// the indirect ones and the integrity sums back. An optional command that
+// fails is reported and the sync still succeeds, because resolving a closure
+// needs the network and a sync must work offline.
+func (c *Controller) lock(ctx context.Context, commands []commandWire, report *Report) error {
 	for _, cmd := range commands {
 		what := cmd.Command + " " + strings.Join(cmd.Args, " ") + " in " + cmd.Dir
 
@@ -538,12 +543,12 @@ func (c *Controller) settle(ctx context.Context, commands []commandWire, report 
 				return fmt.Errorf("running %s: %w", what, err)
 			}
 
-			report.Unsettled = append(report.Unsettled, what+": "+err.Error())
+			report.Unlocked = append(report.Unlocked, what+": "+err.Error())
 
 			continue
 		}
 
-		report.Settled = append(report.Settled, what)
+		report.Locked = append(report.Locked, what)
 	}
 
 	return nil

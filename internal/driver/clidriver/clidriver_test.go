@@ -506,12 +506,12 @@ func TestASyncThatLeavesTheWorkspaceUnbuildableFails(t *testing.T) {
 	h.reads(factory)
 	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		synccontroller.Report{
-			Root:      "/w",
-			Unsettled: []string{"go mod tidy in /w/a: unknown revision v1.7.0"},
+			Root:     "/w",
+			Unlocked: []string{"go mod tidy in /w/a: unknown revision v1.7.0"},
 		}, nil).Once()
 
 	err := h.driver.Run(t.Context(), []string{"sync"})
-	require.ErrorIs(t, err, clidriver.ErrUnsettled)
+	require.ErrorIs(t, err, clidriver.ErrUnlocked)
 	assert.Contains(t, h.out.String(), "which a build will need")
 	assert.Contains(t, err.Error(), "unknown revision v1.7.0")
 }
@@ -522,7 +522,7 @@ func TestOfflineAllowsASyncThatCouldNotReachTheNetwork(t *testing.T) {
 	h := newHarness(t)
 	h.reads(factory)
 	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
-		synccontroller.Report{Root: "/w", Unsettled: []string{"go mod tidy in /w/a: no network"}}, nil).Once()
+		synccontroller.Report{Root: "/w", Unlocked: []string{"go mod tidy in /w/a: no network"}}, nil).Once()
 
 	require.NoError(t, h.driver.Run(t.Context(), []string{"sync", "--offline"}))
 }
