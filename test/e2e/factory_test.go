@@ -186,8 +186,16 @@ func TestEverythingGeneratedIsGitignored(t *testing.T) {
 	assert.Contains(t, read(t, filepath.Join(root, "sample-go", ".gitignore")), "/go.mod")
 	assert.Contains(t, read(t, filepath.Join(root, "sample-web", ".gitignore")), "/package.json")
 
-	_, err := os.Stat(filepath.Join(root, "sample-rust", ".gitignore"))
-	assert.True(t, os.IsNotExist(err), "cargo needs nothing inside a member, so nothing is ignored there")
+	// cargo needs no manifest inside a member, so this used to assert that a
+	// rust member gets no .gitignore at all. It gets one now, and for a
+	// reason that has nothing to do with manifests: sync writes a .envrc into
+	// EVERY member, holding that machine's own environment, and the lines
+	// keeping it out of git were hand-written per repo until now.
+	assert.NotContains(t, read(t, filepath.Join(root, "sample-rust", ".gitignore")), "Cargo.toml")
+	for _, member := range []string{"sample-go", "sample-web", "sample-rust"} {
+		assert.Contains(t, read(t, filepath.Join(root, member, ".gitignore")), "/.envrc",
+			"sync wrote a .envrc into %s, so %s ignores it", member, member)
+	}
 }
 
 func TestSyncIsIdempotent(t *testing.T) {

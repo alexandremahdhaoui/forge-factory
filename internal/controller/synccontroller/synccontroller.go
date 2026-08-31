@@ -146,11 +146,21 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 	// forge sources a .envrc in every repo it builds, so the file must
 	// exist; its content is the machine's own (gitignored). Creating it here
 	// retires the touch-loop every fresh workspace used to need. One managed
-	// line is kept present in every file - the workspace tooling PATH entry,
+	// block is kept present in every file - the workspace tooling PATH entry,
 	// which puts the pinned store's view ahead of whatever a user installed -
 	// and the rest of the file is never touched.
+	//
+	// The ignore travels with it. This writes a file into somebody's checkout
+	// that holds their machine's own environment, and the .gitignore lines
+	// keeping it out of git were hand-written per repo - so a member added
+	// without one got an untracked .envrc that a careless `git add -A`
+	// commits, secrets and all.
 	if err := c.ensureEnvrcs(f, root, &report); err != nil {
 		return Report{}, err
+	}
+
+	for _, r := range f.Repos {
+		ignores[r.Name] = append(ignores[r.Name], ".envrc")
 	}
 
 	// Toolchain binaries resolve here - a literal pin as written, a track
@@ -308,13 +318,6 @@ func underMemberOrRoot(root, only, path string) bool {
 	return filepath.Dir(path) == filepath.Clean(root)
 }
 
-// restrictTo narrows the factory to one member. The ephemeral run context
-// holds only that member and the register, so rendering the others would
-// read identities that are not on disk.
-// ensureEnvrcs creates each member's .envrc when missing and keeps exactly
-// one managed line present: the PATH entry for the workspace's .forge/bin,
-// where sync links the pinned tooling. Everything else in the file is the
-// machine's own and stays untouched.
 // internalRequires answers the module paths this language's members already
 // require. The generated manifest is rewritten on every sync, so the
 // committed one is where a member records what it actually imports.
@@ -405,45 +408,48 @@ func addRequired(out map[string]bool, line string) {
 	}
 }
 
+// The markers that fence off the block this tool owns. Everything between
+// them is rewritten on every sync; everything outside is the machine's own
+// and is never read, moved or removed.
+const (
+	envrcBegin = "# BEGIN forge-factory"
+	envrcEnd   = "# END forge-factory"
+)
+
+// ensureEnvrcs keeps the managed block present in each member's .envrc: the
+// PATH entry for the workspace's .forge/bin, where sync links the pinned
+// tooling. Everything outside the markers is the machine's own and stays
+// untouched.
 func (c *Controller) ensureEnvrcs(f config.Factory, root string, report *Report) error {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return fmt.Errorf("resolving the workspace root: %w", err)
 	}
 
-	line := fmt.Sprintf("export PATH=\"%s:$PATH\" # forge-factory: workspace tooling",
-		filepath.Join(absRoot, ".forge", "bin"))
+	block := fmt.Sprintf("%s\nexport PATH=\"%s:$PATH\"\n%s\n",
+		envrcBegin, filepath.Join(absRoot, ".forge", "bin"), envrcEnd)
 
 	for _, r := range f.Repos {
 		envrc := filepath.Join(root, r.Name, ".envrc")
 
-		ok, _ := c.fs.Exists(envrc)
-		if !ok {
-			if err := c.fs.WriteFile(envrc, []byte(line+"\n")); err != nil {
-				return fmt.Errorf("creating %s: %w", envrc, err)
+		var content string
+
+		if ok, _ := c.fs.Exists(envrc); ok {
+			raw, err := c.fs.ReadFile(envrc)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", envrc, err)
 			}
 
-			report.Written = append(report.Written, envrc)
+			content = string(raw)
+		}
 
+		next := withEnvrcBlock(content, block)
+		if next == content {
 			continue
 		}
 
-		raw, err := c.fs.ReadFile(envrc)
-		if err != nil {
-			return fmt.Errorf("reading %s: %w", envrc, err)
-		}
-
-		if strings.Contains(string(raw), "/.forge/bin") {
-			continue
-		}
-
-		content := string(raw)
-		if content != "" && !strings.HasSuffix(content, "\n") {
-			content += "\n"
-		}
-
-		if err := c.fs.WriteFile(envrc, []byte(content+line+"\n")); err != nil {
-			return fmt.Errorf("extending %s: %w", envrc, err)
+		if err := c.fs.WriteFile(envrc, []byte(next)); err != nil {
+			return fmt.Errorf("writing %s: %w", envrc, err)
 		}
 
 		report.Written = append(report.Written, envrc)
@@ -452,6 +458,46 @@ func (c *Controller) ensureEnvrcs(f config.Factory, root string, report *Report)
 	return nil
 }
 
+// withEnvrcBlock puts the managed block into content, wherever the reader
+// chose to keep it, and leaves every other line alone.
+//
+// This used to append the line once and then skip any file mentioning
+// "/.forge/bin" anywhere - so a workspace that moved kept a stale absolute
+// path forever, and an unrelated mention in a comment suppressed the write
+// entirely. Rewriting between markers is what makes the call site's claim
+// true: one managed line is KEPT present, not written once and abandoned.
+//
+// An unmatched BEGIN is treated as absent and a fresh block is prepended.
+// Nothing this function did not write is ever deleted.
+func withEnvrcBlock(content, block string) string {
+	begin := strings.Index(content, envrcBegin)
+	if begin >= 0 {
+		if end := strings.Index(content[begin:], envrcEnd); end >= 0 {
+			tail := begin + end + len(envrcEnd)
+			if strings.HasPrefix(content[tail:], "\n") {
+				tail++
+			}
+
+			return content[:begin] + block + content[tail:]
+		}
+	}
+
+	if content == "" {
+		return block
+	}
+
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+
+	// Prepended, so the workspace tooling wins over whatever a machine puts
+	// on PATH later in its own file.
+	return block + content
+}
+
+// restrictTo narrows the factory to one member. The ephemeral run context
+// holds only that member and the register, so rendering the others would
+// read identities that are not on disk.
 func restrictTo(f config.Factory, only string) config.Factory {
 	if only == "" {
 		return f

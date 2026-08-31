@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -77,6 +79,11 @@ type harness struct {
 	runner *execadaptermock.MockRunner
 	c      *synccontroller.Controller
 	wrote  map[string]string
+	// gitignoreExists and gitignoreContent answer the per-member .gitignore
+	// probe; see the gitignore helper.
+	gitignoreExists  bool
+	gitignoreContent string
+	gitignoreErr     error
 	// goMods is what each member's committed manifest says. Sync reads it
 	// to learn which internal modules a member already requires.
 	goMods map[string]string
@@ -110,13 +117,36 @@ func newHarness(t *testing.T) *harness {
 		return nil, errors.New("no manifest yet")
 	}).Maybe()
 
+	isGitignore := func(path string) bool {
+		return strings.HasSuffix(path, "/.gitignore")
+	}
+
+	h.fs.EXPECT().Exists(mock.MatchedBy(isGitignore)).
+		RunAndReturn(func(string) (bool, error) { return h.gitignoreExists, h.gitignoreErr }).Maybe()
+	h.fs.EXPECT().ReadFile(mock.MatchedBy(isGitignore)).
+		RunAndReturn(func(string) ([]byte, error) { return []byte(h.gitignoreContent), nil }).Maybe()
+	h.fs.EXPECT().WriteFile(mock.MatchedBy(isGitignore), mock.Anything).
+		RunAndReturn(func(path string, data []byte) error {
+			h.wrote[path] = string(data)
+
+			return nil
+		}).Maybe()
+
 	return h
+}
+
+// gitignore answers the probe sync makes on every member now that the .envrc
+// ignore travels with the .envrc itself. Tests that care set the state; the
+// rest inherit "no .gitignore yet", which is what a fresh member has.
+func (h *harness) gitignore(exists bool, content string) {
+	h.gitignoreExists = exists
+	h.gitignoreContent = content
 }
 
 // envrcExists answers the pre-sync existence probe for every member's
 // .envrc; most tests want them present, already carrying the managed
 // tooling PATH line, so no write is recorded.
-func (h *harness) envrcExists(exists bool) {
+func (h *harness) envrcExists(t *testing.T, exists bool) {
 	isEnvrc := func(path string) bool {
 		return strings.HasSuffix(path, "/.envrc")
 	}
@@ -124,8 +154,10 @@ func (h *harness) envrcExists(exists bool) {
 	h.fs.EXPECT().Exists(mock.MatchedBy(isEnvrc)).Return(exists, nil).Maybe()
 
 	if exists {
+		// Already carrying the managed block for this root, so a sync that
+		// converges it writes nothing.
 		h.fs.EXPECT().ReadFile(mock.MatchedBy(isEnvrc)).
-			Return([]byte("export PATH=\"/w/.forge/bin:$PATH\" # forge-factory: workspace tooling\n"), nil).
+			Return([]byte(managedEnvrc(t)), nil).
 			Maybe()
 	}
 }
@@ -155,7 +187,7 @@ func TestSyncWritesWhatTheEngineAsksForAndIgnoresIt(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity("/w/golden-go").
 		Return(map[string]string{"module": "example.com/g"}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
@@ -163,7 +195,6 @@ func TestSyncWritesWhatTheEngineAsksForAndIgnoresIt(t *testing.T) {
 		{"path": "/w/golden-go/go.mod", "content": "module example.com/g\n", "gitignore": "golden-go"},
 		{"path": "/w/go.work", "content": "use ./golden-go\n"},
 	}})
-	h.fs.EXPECT().Exists("/w/golden-go/.gitignore").Return(false, nil).Once()
 	h.recordWrites()
 
 	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
@@ -180,7 +211,7 @@ func TestSyncSendsTheDependenciesAndIdentityToTheEngine(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity("/w/golden-go").
 		Return(map[string]string{"module": "example.com/g"}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
@@ -216,7 +247,7 @@ func TestSyncRefusesAnEngineThatSpeaksAnotherLanguage(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "rust"})
 
@@ -229,14 +260,13 @@ func TestSyncAddsToAGitignoreWithoutDisturbingIt(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
 		{"path": "/w/golden-go/go.mod", "content": "x", "gitignore": "golden-go"},
 	}})
-	h.fs.EXPECT().Exists("/w/golden-go/.gitignore").Return(true, nil).Once()
-	h.fs.EXPECT().ReadFile("/w/golden-go/.gitignore").Return([]byte(".envrc\ntmp/"), nil).Once()
+	h.gitignore(true, ".envrc\ntmp/")
 	h.recordWrites()
 
 	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
@@ -252,14 +282,13 @@ func TestSyncLeavesAGitignoreAloneWhenItAlreadyNamesEverything(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
 		{"path": "/w/golden-go/go.mod", "content": "x", "gitignore": "golden-go"},
 	}})
-	h.fs.EXPECT().Exists("/w/golden-go/.gitignore").Return(true, nil).Once()
-	h.fs.EXPECT().ReadFile("/w/golden-go/.gitignore").Return([]byte("/go.mod\n"), nil).Once()
+	h.gitignore(true, "/go.mod\n/.envrc\n")
 	h.fs.EXPECT().WriteFile("/w/golden-go/go.mod", mock.Anything).Return(nil).Once()
 
 	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
@@ -271,7 +300,7 @@ func TestSyncFailsWhenARepoCannotBeRead(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(nil, assert.AnError).Once()
 
 	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
@@ -282,7 +311,7 @@ func TestSyncFailsWhenAnEngineFails(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.caller.EXPECT().Call(mock.Anything, mock.Anything, "render", mock.Anything, mock.Anything).
@@ -297,7 +326,7 @@ func TestSyncFailsWhenTheLanguageProbeFails(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.caller.EXPECT().Call(mock.Anything, mock.Anything, "language", mock.Anything, mock.Anything).
 		Return(assert.AnError).Once()
@@ -311,7 +340,7 @@ func TestSyncFailsWhenAFileCannotBeWritten(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
@@ -327,14 +356,14 @@ func TestSyncFailsWhenAGitignoreCannotBeRead(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
 		{"path": "/w/golden-go/go.mod", "content": "x", "gitignore": "golden-go"},
 	}})
 	h.fs.EXPECT().WriteFile("/w/golden-go/go.mod", mock.Anything).Return(nil).Once()
-	h.fs.EXPECT().Exists("/w/golden-go/.gitignore").Return(false, assert.AnError).Once()
+	h.gitignoreErr = assert.AnError
 
 	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorIs(t, err, assert.AnError)
@@ -344,7 +373,7 @@ func TestSyncRefusesALanguageWithNoEngine(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 
 	f := parse(t, factory)
@@ -359,7 +388,7 @@ func TestTheLanguageProbeNeverSendsNull(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 
 	var raw []byte
@@ -386,7 +415,7 @@ func TestSyncRunsWhatAnEngineAsksForAfterTheFilesLand(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
@@ -410,7 +439,7 @@ func TestAnOptionalCommandThatFailsIsReportedAndTheSyncStillPasses(t *testing.T)
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
@@ -432,7 +461,7 @@ func TestACommandThatIsNotOptionalStopsTheSync(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
@@ -451,7 +480,7 @@ func TestACommandThatExitsNonZeroCountsAsAFailure(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
@@ -471,7 +500,7 @@ func TestALongFailureIsTrimmedToItsReason(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
@@ -494,14 +523,13 @@ func TestAFileCanNameMoreThanItselfToIgnore(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{{
 		"path": "/w/golden-go/go.mod", "content": "x",
 		"gitignore": "golden-go", "alsoIgnore": []string{"go.sum"},
 	}}})
-	h.fs.EXPECT().Exists("/w/golden-go/.gitignore").Return(false, nil).Once()
 	h.recordWrites()
 
 	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
@@ -530,7 +558,7 @@ func TestSyncOnlyRendersTheOneMemberAndTheRoot(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity("/w/golden-go").
 		Return(map[string]string{"module": "example.com/g"}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
@@ -566,7 +594,7 @@ func TestSyncResolvesTheToolchainBinaries(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
 
 	f := config.Factory{
@@ -595,7 +623,7 @@ func TestSyncCreatesAMissingEnvrc(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(false)
+	h.envrcExists(t, false)
 	h.recordWrites()
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
 
@@ -604,8 +632,7 @@ func TestSyncCreatesAMissingEnvrc(t *testing.T) {
 	report, err := h.c.Sync(context.Background(), f, "/w", "")
 	require.NoError(t, err)
 
-	require.Equal(t, "export PATH=\"/w/.forge/bin:$PATH\" # forge-factory: workspace tooling\n",
-		h.wrote["/w/member-a/.envrc"])
+	require.Equal(t, managedEnvrc(t), h.wrote["/w/member-a/.envrc"])
 	require.Contains(t, report.Written, "/w/member-a/.envrc")
 	require.Contains(t, report.Written, "/w/member-b/.envrc")
 }
@@ -631,7 +658,7 @@ func TestSyncAppendsTheToolingLineToAnExistingEnvrc(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t,
-		"export MY_OWN=1\nexport PATH=\"/w/.forge/bin:$PATH\" # forge-factory: workspace tooling\n",
+		managedEnvrc(t)+"export MY_OWN=1\n",
 		h.wrote["/w/member-a/.envrc"])
 	require.Contains(t, report.Written, "/w/member-a/.envrc")
 }
@@ -703,7 +730,7 @@ func TestSyncNamesWhichListRefused(t *testing.T) {
 			t.Parallel()
 
 			h := newHarness(t)
-			h.envrcExists(true)
+			h.envrcExists(t, true)
 			h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner,
 				&failingResolver{err: errors.New("the register refused"), after: tc.after})
 			h.identityAnswers()
@@ -733,7 +760,7 @@ toolchain:
 
 	h := newHarness(t)
 	h.identityAnswers()
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner,
 		&failingResolver{err: errors.New("the register refused")})
 
@@ -754,7 +781,7 @@ func TestSyncStopsWhenAnEnvrcCannotBeWritten(t *testing.T) {
 	// installed. Carrying on without it would sync a workspace that then
 	// builds with the wrong tools, which is worse than not syncing.
 	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
-	require.ErrorContains(t, err, "creating /w/golden-go/.envrc")
+	require.ErrorContains(t, err, "writing /w/golden-go/.envrc")
 }
 
 func TestSyncStopsWhenAnEnvrcCannotBeRead(t *testing.T) {
@@ -781,7 +808,7 @@ func TestSyncStopsWhenAnEnvrcCannotBeExtended(t *testing.T) {
 		Return(errors.New("read only")).Once()
 
 	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
-	require.ErrorContains(t, err, "extending /w/golden-go/.envrc")
+	require.ErrorContains(t, err, "writing /w/golden-go/.envrc")
 }
 
 // memberResolver stands in for a register carrying internal tracks: one
@@ -820,7 +847,7 @@ func TestAMemberModuleIsPinnedByTheRegister(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.identityAnswers()
 	// The member requires the declared module too, so only the declared-wins
 	// rule can protect it here - not the requires filter.
@@ -878,7 +905,7 @@ func TestAReplaceBlockIsNotARequire(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.identityAnswers()
 	h.goMods["/w/golden-go/go.mod"] = `module example.com/g
 
@@ -928,7 +955,7 @@ func TestSyncNamesAMemberModuleThatRefused(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.identityAnswers()
 	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner,
 		&refusingMembers{err: errors.New("the register refused")})
@@ -960,7 +987,7 @@ func TestAMemberWithNoManifestRequiresNothing(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(true)
+	h.envrcExists(t, true)
 	h.identityAnswers()
 	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner, memberResolver{})
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
@@ -982,4 +1009,132 @@ func TestAMemberWithNoManifestRequiresNothing(t *testing.T) {
 	deps, ok := seen["dependencies"].(map[string]any)
 	require.True(t, ok)
 	require.NotContains(t, deps, "example.com/shared-spec")
+}
+
+// managedEnvrc is the block a converged .envrc carries for the "/w" root the
+// tests use. It is built the way the code builds it, so a change to the block
+// shape shows up as a failing test rather than a silent rewrite of every
+// member's file.
+func managedEnvrc(t *testing.T) string {
+	t.Helper()
+
+	abs, err := filepath.Abs("/w")
+	require.NoError(t, err)
+
+	return fmt.Sprintf("# BEGIN forge-factory\nexport PATH=\"%s:$PATH\"\n# END forge-factory\n",
+		filepath.Join(abs, ".forge", "bin"))
+}
+
+// The reason the block exists. Keying on "/.forge/bin" appearing anywhere
+// meant a workspace that moved kept the old absolute path forever: the file
+// mentioned .forge/bin, so sync skipped it, and the PATH pointed at a
+// directory that was no longer there.
+func TestAMovedWorkspaceRewritesTheManagedBlock(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.recordWrites()
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
+
+	stale := "# BEGIN forge-factory\nexport PATH=\"/somewhere/else/.forge/bin:$PATH\"\n" +
+		"# END forge-factory\nexport MINE=1\n"
+	h.envrcContent(t, stale)
+
+	f := config.Factory{Repos: []config.Repo{{Name: "member-a"}}}
+
+	_, err := h.c.Sync(context.Background(), f, "/w", "")
+	require.NoError(t, err)
+
+	got := h.wrote["/w/member-a/.envrc"]
+	assert.Contains(t, got, "/w/.forge/bin",
+		"the block carries this workspace's path, not the one it was cloned from")
+	assert.NotContains(t, got, "/somewhere/else",
+		"and the stale path is gone rather than sitting above the new one")
+	assert.Contains(t, got, "export MINE=1",
+		"everything outside the markers is the machine's own")
+}
+
+// A file with no markers keeps every line it had; the block goes in front.
+func TestAnEnvrcWithNoMarkersKeepsWhatItHad(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.recordWrites()
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
+	h.envrcContent(t, "export SECRET=shhh\n")
+
+	f := config.Factory{Repos: []config.Repo{{Name: "member-a"}}}
+
+	_, err := h.c.Sync(context.Background(), f, "/w", "")
+	require.NoError(t, err)
+
+	got := h.wrote["/w/member-a/.envrc"]
+	assert.Contains(t, got, "export SECRET=shhh")
+	assert.True(t, strings.HasPrefix(got, "# BEGIN forge-factory"),
+		"prepended, so the workspace tooling wins over what the machine adds later")
+}
+
+// The old substring check skipped any file mentioning /.forge/bin, even in a
+// comment, so a reader who wrote one got no managed block at all.
+func TestAMentionOfForgeBinInACommentDoesNotSuppressTheBlock(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.recordWrites()
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
+	h.envrcContent(t, "# forge puts things in /.forge/bin, apparently\n")
+
+	f := config.Factory{Repos: []config.Repo{{Name: "member-a"}}}
+
+	_, err := h.c.Sync(context.Background(), f, "/w", "")
+	require.NoError(t, err)
+
+	assert.Contains(t, h.wrote["/w/member-a/.envrc"], "# BEGIN forge-factory")
+}
+
+// A converged block is left exactly as it is, so a sync that changes nothing
+// reports nothing - the rule the whole reconcile-stops-the-run design rests on.
+func TestAConvergedEnvrcIsNotRewritten(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.recordWrites()
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
+	h.envrcContent(t, managedEnvrc(t)+"export MINE=1\n")
+
+	f := config.Factory{Repos: []config.Repo{{Name: "member-a"}}}
+
+	report, err := h.c.Sync(context.Background(), f, "/w", "")
+	require.NoError(t, err)
+
+	assert.NotContains(t, report.Written, "/w/member-a/.envrc")
+}
+
+// sync writes this file into somebody's checkout and it holds their machine's
+// environment, so keeping it out of git travels with it.
+func TestEveryMemberIgnoresTheEnvrcSyncWrites(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.recordWrites()
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
+	h.envrcContent(t, managedEnvrc(t))
+
+	f := config.Factory{Repos: []config.Repo{{Name: "member-a"}, {Name: "member-b"}}}
+
+	_, err := h.c.Sync(context.Background(), f, "/w", "")
+	require.NoError(t, err)
+
+	assert.Contains(t, h.wrote["/w/member-a/.gitignore"], "/.envrc")
+	assert.Contains(t, h.wrote["/w/member-b/.gitignore"], "/.envrc")
+}
+
+// envrcContent answers every member's .envrc probe with one body.
+func (h *harness) envrcContent(t *testing.T, body string) {
+	t.Helper()
+
+	isEnvrc := func(path string) bool { return strings.HasSuffix(path, "/.envrc") }
+
+	h.fs.EXPECT().Exists(mock.MatchedBy(isEnvrc)).Return(true, nil).Maybe()
+	h.fs.EXPECT().ReadFile(mock.MatchedBy(isEnvrc)).Return([]byte(body), nil).Maybe()
 }
