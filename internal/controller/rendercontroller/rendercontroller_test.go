@@ -335,18 +335,37 @@ func TestGoAsksForATidyPerMember(t *testing.T) {
 		"GOWORK=off in the caller makes go work sync deny the file this sync wrote")
 }
 
-func TestNoOtherLanguageNeedsSettling(t *testing.T) {
+// Every language declares how its closure resolves, or a register bump has
+// no path into that language's lockfile. This was the live gap: only Go
+// declared anything, and the other three ecosystems' lockfiles went stale
+// with nothing to refresh them.
+func TestEveryLanguageDeclaresItsDependencyLock(t *testing.T) {
 	t.Parallel()
 
-	for _, r := range []rendercontroller.Renderer{
-		rendercontroller.Rust{},
-		rendercontroller.Python{},
-		rendercontroller.TypeScript{},
-	} {
-		out, err := r.Render(input())
-		require.NoError(t, err)
-		assert.Empty(t, out.DependencyLock, r.Language())
+	out, err := rendercontroller.Rust{}.Render(input())
+	require.NoError(t, err)
+	require.Len(t, out.DependencyLock, 1)
+	assert.Equal(t, "/w", out.DependencyLock[0].Dir, "one Cargo.lock, beside the workspace Cargo.toml")
+	assert.Equal(t, "cargo", out.DependencyLock[0].Command)
+	assert.Equal(t, []string{"generate-lockfile"}, out.DependencyLock[0].Args)
+	assert.True(t, out.DependencyLock[0].Optional, "a sync must still work offline")
+
+	out, err = rendercontroller.Python{}.Render(input())
+	require.NoError(t, err)
+	require.NotEmpty(t, out.DependencyLock)
+
+	for _, cmd := range out.DependencyLock {
+		assert.Equal(t, "uv", cmd.Command)
+		assert.Equal(t, []string{"lock"}, cmd.Args, "one uv.lock per member, beside its pyproject.toml")
+		assert.True(t, cmd.Optional)
 	}
+
+	out, err = rendercontroller.TypeScript{}.Render(input())
+	require.NoError(t, err)
+	require.Len(t, out.DependencyLock, 1)
+	assert.Equal(t, "/w", out.DependencyLock[0].Dir, "pnpm keeps one lockfile at the workspace root")
+	assert.Equal(t, []string{"install", "--lockfile-only"}, out.DependencyLock[0].Args)
+	assert.True(t, out.DependencyLock[0].Optional)
 }
 
 func ownManifest() rendertypes.Input {

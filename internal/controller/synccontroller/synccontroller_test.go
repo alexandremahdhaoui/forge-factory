@@ -2,6 +2,7 @@ package synccontroller_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -454,13 +455,106 @@ func TestLockRunsWhatAnEngineDeclares(t *testing.T) {
 	})
 	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", map[string]string{"GOWORK": "off"},
 		"go", "mod", "tidy").Return(execadapter.Result{}, nil).Once()
+	h.recordWrites()
 
 	report, err := h.c.Lock(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"go mod tidy in /w/golden-go"}, report.Locked)
 	assert.Empty(t, report.Unlocked)
-	assert.Empty(t, report.Written, "a lock writes no file; the manifests are sync's business")
-	assert.NotContains(t, h.wrote, "/w/golden-go/go.mod")
+	assert.NotContains(t, h.wrote, "/w/golden-go/go.mod",
+		"a lock writes no manifest; those are sync's business")
+
+	// The one file a lock does write is the record of what resolved.
+	assert.Equal(t, []string{"/w/.forge/dependency-locks.json"}, report.Written)
+	assert.JSONEq(t, `{"version":1,"locks":[]}`, h.wrote["/w/.forge/dependency-locks.json"],
+		"no lockfile was declared, so the manifest records none")
+}
+
+// The lock records what resolved: each lockfile the engine declared, hashed,
+// root-relative, in one manifest whoever keys state by revision can read.
+func TestLockRecordsTheLockfilesItResolved(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{
+		"files":     []any{},
+		"lockfiles": []string{"/w/golden-go/go.sum", "/w/golden-go/absent.sum"},
+	})
+
+	isSum := func(path string) bool { return strings.HasSuffix(path, "/go.sum") }
+	h.fs.EXPECT().Exists(mock.MatchedBy(isSum)).Return(true, nil).Once()
+	h.fs.EXPECT().ReadFile(mock.MatchedBy(isSum)).Return([]byte("locked bytes\n"), nil).Once()
+	h.fs.EXPECT().Exists("/w/golden-go/absent.sum").Return(false, nil).Once()
+	h.recordWrites()
+
+	report, err := h.c.Lock(t.Context(), parse(t, factory), "/w", "")
+	require.NoError(t, err)
+
+	// sha256 of "locked bytes\n", computed independently of the code under test.
+	sum := sha256.Sum256([]byte("locked bytes\n"))
+	assert.JSONEq(t,
+		fmt.Sprintf(`{"version":1,"locks":[{"path":"golden-go/go.sum","sha256":"%x"}]}`, sum),
+		h.wrote["/w/.forge/dependency-locks.json"])
+
+	// A file the optional command never produced is reported, not recorded:
+	// a manifest entry nothing hashed is a claim about bytes nobody saw.
+	require.NotEmpty(t, report.Notes)
+	assert.Contains(t, strings.Join(report.Notes, "\n"), "no lockfile at golden-go/absent.sum")
+}
+
+// A render that cannot happen fails the lock exactly as it fails a sync:
+// the render is the vehicle for learning the commands, and an engine that
+// speaks the wrong language has none to teach.
+func TestALockOverAMistakenEngineFails(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "rust"})
+
+	_, err := h.c.Lock(t.Context(), parse(t, factory), "/w", "")
+	require.ErrorIs(t, err, synccontroller.ErrLanguage)
+}
+
+// A lockfile the filesystem refuses to answer for fails the lock loud: a
+// silent skip would record a manifest missing a file that exists.
+func TestAFailingLockfileReadFailsTheLock(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{
+		"files":     []any{},
+		"lockfiles": []string{"/w/golden-go/go.sum"},
+	})
+
+	isSum := func(path string) bool { return strings.HasSuffix(path, "/go.sum") }
+	h.fs.EXPECT().Exists(mock.MatchedBy(isSum)).Return(true, nil).Once()
+	h.fs.EXPECT().ReadFile(mock.MatchedBy(isSum)).Return(nil, assert.AnError).Once()
+
+	_, err := h.c.Lock(t.Context(), parse(t, factory), "/w", "")
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Contains(t, err.Error(), "recording lockfile")
+}
+
+// A manifest that cannot be written fails the lock: an unwritten record is a
+// closure nobody can key state on.
+func TestAFailingManifestWriteFailsTheLock(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []any{}})
+	h.fs.EXPECT().WriteFile("/w/.forge/dependency-locks.json", mock.Anything).
+		Return(assert.AnError).Once()
+
+	_, err := h.c.Lock(t.Context(), parse(t, factory), "/w", "")
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Contains(t, err.Error(), "recording lockfiles")
 }
 
 func TestAnOptionalCommandThatFailsIsReportedAndTheLockStillPasses(t *testing.T) {
@@ -477,6 +571,7 @@ func TestAnOptionalCommandThatFailsIsReportedAndTheLockStillPasses(t *testing.T)
 	})
 	h.runner.EXPECT().RunEnv(mock.Anything, mock.Anything, mock.Anything, "go", "mod", "tidy").
 		Return(execadapter.Result{}, assert.AnError).Once()
+	h.recordWrites()
 
 	report, err := h.c.Lock(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err, "an optional failure is the caller's decision, not this controller's")
@@ -629,6 +724,7 @@ func TestLockOnlyRunsTheOneMemberAndTheRoot(t *testing.T) {
 		Return(execadapter.Result{}, nil).Once()
 	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "true").
 		Return(execadapter.Result{}, nil).Once()
+	h.recordWrites()
 
 	report, err := h.c.Lock(t.Context(), parse(t, twoMemberFactory), "/w", "golden-go")
 	require.NoError(t, err)

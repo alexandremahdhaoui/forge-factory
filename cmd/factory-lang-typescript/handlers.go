@@ -26,6 +26,7 @@ func NewHandlers() Handlers {
 			return &RenderOutput{
 				Files:          fromFiles(out.Files),
 				DependencyLock: fromCommands(out.DependencyLock),
+				Lockfiles:      out.Lockfiles,
 			}, nil
 		},
 	}

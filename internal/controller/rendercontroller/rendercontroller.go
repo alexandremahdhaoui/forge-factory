@@ -188,7 +188,24 @@ func (g Go) Render(in rendertypes.Input) (rendertypes.Output, error) {
 		Content: work.String(),
 	})
 
-	return rendertypes.Output{Files: files, DependencyLock: dependencyLock(in.Root, repos)}, nil
+	// One go.sum per member whose manifest this engine renders: the sums are
+	// the integrity half of the closure, and recording them is what makes a
+	// revision's build reproducible rather than merely repeatable.
+	lockfiles := make([]string, 0, len(repos))
+
+	for _, r := range repos {
+		if ownsItsManifest(r) {
+			continue
+		}
+
+		lockfiles = append(lockfiles, filepath.Join(r.Path, "go.sum"))
+	}
+
+	return rendertypes.Output{
+		Files:          files,
+		DependencyLock: dependencyLock(in.Root, repos),
+		Lockfiles:      lockfiles,
+	}, nil
 }
 
 // dependencyLock is what turns the direct requires the factory declares into
@@ -326,10 +343,24 @@ func (r Rust) Render(in rendertypes.Input) (rendertypes.Output, error) {
 		}
 	}
 
-	return rendertypes.Output{Files: []rendertypes.File{{
-		Path:    filepath.Join(in.Root, "Cargo.toml"),
-		Content: b.String(),
-	}}}, nil
+	return rendertypes.Output{
+		Files: []rendertypes.File{{
+			Path:    filepath.Join(in.Root, "Cargo.toml"),
+			Content: b.String(),
+		}},
+		// Cargo.lock lives beside the workspace Cargo.toml, and regenerating
+		// it is how a register bump actually reaches the resolved graph -
+		// nothing refreshed it before, so a bumped version froze every build
+		// that read the stale lock. Optional: it needs the network, and a
+		// sync must work offline.
+		DependencyLock: []rendertypes.Command{{
+			Dir:      in.Root,
+			Command:  "cargo",
+			Args:     []string{"generate-lockfile"},
+			Optional: true,
+		}},
+		Lockfiles: []string{filepath.Join(in.Root, "Cargo.lock")},
+	}, nil
 }
 
 // tomlValue takes a version verbatim when it is already TOML, and quotes it
@@ -403,7 +434,28 @@ func (p Python) Render(in rendertypes.Input) (rendertypes.Output, error) {
 		})
 	}
 
-	return rendertypes.Output{Files: files}, nil
+	// Each member's uv.lock is regenerated from its rendered pyproject.toml,
+	// which is how a register bump reaches the resolved graph - nothing
+	// refreshed it before. Optional: it needs the network, and a sync must
+	// work offline.
+	locks := make([]rendertypes.Command, 0, len(repos))
+	lockfiles := make([]string, 0, len(repos))
+
+	for _, r := range repos {
+		if ownsItsManifest(r) {
+			continue
+		}
+
+		locks = append(locks, rendertypes.Command{
+			Dir:      r.Path,
+			Command:  "uv",
+			Args:     []string{"lock"},
+			Optional: true,
+		})
+		lockfiles = append(lockfiles, filepath.Join(r.Path, "uv.lock"))
+	}
+
+	return rendertypes.Output{Files: files, DependencyLock: locks, Lockfiles: lockfiles}, nil
 }
 
 // writeRequirements writes a PEP 508 list. The version is glued to the name,
@@ -483,7 +535,21 @@ func (t TypeScript) Render(in rendertypes.Input) (rendertypes.Output, error) {
 		Content: ws.String(),
 	})
 
-	return rendertypes.Output{Files: files}, nil
+	return rendertypes.Output{
+		Files: files,
+		// pnpm keeps one lockfile at the workspace root, and regenerating it
+		// is how a register bump reaches the resolved graph - nothing
+		// refreshed it before, and an install pinned to the stale lock
+		// refused every bumped version. Optional: it needs the network, and
+		// a sync must work offline.
+		DependencyLock: []rendertypes.Command{{
+			Dir:      in.Root,
+			Command:  "pnpm",
+			Args:     []string{"install", "--lockfile-only"},
+			Optional: true,
+		}},
+		Lockfiles: []string{filepath.Join(in.Root, "pnpm-lock.yaml")},
+	}, nil
 }
 
 // packageJSON writes the whole file. It carries no scripts: they would be a

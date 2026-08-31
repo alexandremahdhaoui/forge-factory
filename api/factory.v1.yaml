@@ -110,6 +110,16 @@ components:
             requires the factory declares; these commands put the indirect
             ones and the integrity sums back. Only a language engine knows
             them, and only the build phase runs them.
+        lockfiles:
+          type: array
+          items:
+            type: string
+          description: >-
+            The files the dependency-lock commands resolve into, absolute as
+            the engine received the paths. Only a language engine knows their
+            names; the caller hashes and records them so a revision carries
+            the exact closure it was proven with, without ever learning what
+            the files mean.
 
     Command:
       type: object

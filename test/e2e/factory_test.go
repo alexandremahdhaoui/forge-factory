@@ -225,9 +225,11 @@ func TestOneBumpMovesEveryGoMemberWithNoCommitInAny(t *testing.T) {
 	mustRun(t, root, "sync")
 	require.Contains(t, read(t, filepath.Join(root, "sample-go", "go.mod")), "sigs.k8s.io/yaml v1.6.0")
 
-	// Both versions exist. A version nobody can resolve is its own test below,
-	// because the tidy fails and the sync must say so.
-	out := mustRun(t, root, "bump", "go:sigs.k8s.io/yaml", "v1.5.0")
+	// Both versions exist. A version nobody can resolve is its own test
+	// below, because the lock fails and the bump must say so. Offline: the
+	// fixture's rust and web members are stubs with no crate or package to
+	// lock, and this test's subject is the Go side of the bump.
+	out := mustRun(t, root, "bump", "--offline", "go:sigs.k8s.io/yaml", "v1.5.0")
 	assert.Contains(t, out, "now sigs.k8s.io/yaml: v1.5.0")
 
 	assert.Contains(t, read(t, filepath.Join(root, "sample-go", "go.mod")), "sigs.k8s.io/yaml v1.5.0")
@@ -391,7 +393,11 @@ func TestAGeneratedGoModBuilds(t *testing.T) {
 	require.NotContains(t, out, "ran go mod tidy",
 		"sync writes manifests and stops; cloning is not building")
 
-	out = mustRun(t, root, "lock")
+	// Offline: the fixture's rust and web members are stubs with no crate or
+	// package to lock, and what this test proves is the Go closure. The go
+	// commands still run - offline only tolerates the optional ones that
+	// could not - and the assertions below are what hold the proof.
+	out = mustRun(t, root, "lock", "--offline")
 	require.Contains(t, out, "ran go mod tidy", out)
 
 	mod := read(t, filepath.Join(root, "sample-go", "go.mod"))

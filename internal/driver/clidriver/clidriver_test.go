@@ -536,6 +536,37 @@ func TestLockPrintsWhatItRan(t *testing.T) {
 	assert.Contains(t, h.out.String(), "ran go mod tidy in /w/a")
 }
 
+func TestALockReportThatCannotBePrintedIsAnError(t *testing.T) {
+	t.Parallel()
+
+	fs := fsadaptermock.NewMockFS(t)
+	fs.EXPECT().ReadFile("forge-factory.yaml").Return([]byte(factory), nil).Once()
+
+	sync := synccontrollermock.NewMockSyncer(t)
+	sync.EXPECT().Lock(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(synccontroller.Report{Root: "/w"}, nil).Once()
+
+	driver := clidriver.New(brokenWriter{}, fs,
+		clonecontrollermock.NewMockCloner(t), sync,
+		revisioncontrollermock.NewMockReviser(t), statuscontrollermock.NewMockStater(t),
+		nil, nil, func(int) {})
+
+	err := driver.Run(t.Context(), []string{"lock"})
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Contains(t, err.Error(), "writing report")
+}
+
+func TestALockThatBreaksIsReported(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.sync.EXPECT().Lock(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(synccontroller.Report{}, assert.AnError).Once()
+
+	require.ErrorIs(t, h.driver.Run(t.Context(), []string{"lock"}), assert.AnError)
+}
+
 func TestOfflineAllowsALockThatCouldNotReachTheNetwork(t *testing.T) {
 	t.Parallel()
 

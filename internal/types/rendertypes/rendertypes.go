@@ -33,6 +33,11 @@ type Output struct {
 	// closure into its lockfile. Only a language engine knows them, and only
 	// the build phase runs them - a clone or sync writes manifests and stops.
 	DependencyLock []Command
+	// Lockfiles is the files those commands resolve into, absolute like
+	// every rendered path. The caller hashes and records them so a revision
+	// carries the exact closure it was proven with; only this engine knows
+	// their names.
+	Lockfiles []string
 }
 
 // File is one file a renderer wants written.

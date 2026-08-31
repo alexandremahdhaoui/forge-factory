@@ -2,6 +2,9 @@ package synccontroller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -91,6 +94,7 @@ type commandWire struct {
 type renderOutput struct {
 	Files          []fileWire    `json:"files"`
 	DependencyLock []commandWire `json:"dependencyLock,omitempty"`
+	Lockfiles      []string      `json:"lockfiles,omitempty"`
 }
 
 type languageOutput struct {
@@ -197,7 +201,7 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		}
 	}
 
-	if _, err := c.renderMembers(ctx, f, root, only, &report, true, ignores); err != nil {
+	if _, _, err := c.renderMembers(ctx, f, root, only, &report, true, ignores); err != nil {
 		return Report{}, err
 	}
 
@@ -238,7 +242,7 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 		Unlocked: []string{},
 	}
 
-	commands, err := c.renderMembers(ctx, f, root, only, &report, false, nil)
+	commands, lockfiles, err := c.renderMembers(ctx, f, root, only, &report, false, nil)
 	if err != nil {
 		return Report{}, err
 	}
@@ -247,7 +251,92 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 		return Report{}, err
 	}
 
+	// What resolved is recorded: each lockfile the engines declared, hashed,
+	// into one manifest the build phase can hand to whoever keys state by
+	// revision. The names mean nothing here - only a language engine knows
+	// what a lockfile is, and this side only proves which bytes were locked.
+	if err := c.recordLockfiles(root, lockfiles, &report); err != nil {
+		return Report{}, err
+	}
+
 	return report, nil
+}
+
+// LockManifest is the recorded outcome of a lock: each resolved lockfile,
+// root-relative, with the hash of the exact bytes. The path is a contract
+// with forge-ci, which reads it to store one dependency-lock record per file
+// beside the revision.
+const LockManifestPath = ".forge/dependency-locks.json"
+
+type lockManifest struct {
+	Version int          `json:"version"`
+	Locks   []lockedFile `json:"locks"`
+}
+
+type lockedFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+}
+
+func (c *Controller) recordLockfiles(root string, lockfiles []string, report *Report) error {
+	manifest := lockManifest{Version: 1, Locks: []lockedFile{}}
+
+	for _, path := range lockfiles {
+		exists, err := c.fs.Exists(path)
+		if err != nil {
+			return fmt.Errorf("recording lockfile %s: %w", path, err)
+		}
+
+		// An optional command that could not run leaves no lockfile, and an
+		// absent file is reported rather than recorded: a manifest entry
+		// nothing hashed would be a claim about bytes nobody saw.
+		if !exists {
+			report.Notes = append(report.Notes,
+				fmt.Sprintf("no lockfile at %s; it is not recorded", relative(root, path)))
+
+			continue
+		}
+
+		raw, err := c.fs.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("recording lockfile %s: %w", path, err)
+		}
+
+		sum := sha256.Sum256(raw)
+		manifest.Locks = append(manifest.Locks, lockedFile{
+			Path:   relative(root, path),
+			SHA256: hex.EncodeToString(sum[:]),
+		})
+	}
+
+	sort.Slice(manifest.Locks, func(i, j int) bool {
+		return manifest.Locks[i].Path < manifest.Locks[j].Path
+	})
+
+	raw, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("recording lockfiles: %w", err)
+	}
+
+	target := filepath.Join(root, filepath.FromSlash(LockManifestPath))
+	if err := c.fs.WriteFile(target, append(raw, '\n')); err != nil {
+		return fmt.Errorf("recording lockfiles: %w", err)
+	}
+
+	report.Written = append(report.Written, target)
+
+	return nil
+}
+
+// relative answers path relative to root, falling back to the path itself
+// when it does not resolve - a report line beats an error for a display name.
+func relative(root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return path
+	}
+
+	return filepath.ToSlash(rel)
 }
 
 // renderMembers runs every language engine's render and answers the
@@ -261,32 +350,35 @@ func (c *Controller) renderMembers(
 	report *Report,
 	write bool,
 	ignores map[string][]string,
-) ([]commandWire, error) {
+) ([]commandWire, []string, error) {
 	resolved, err := c.resolve(f, root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	var lockCommands []commandWire
+	var (
+		lockCommands []commandWire
+		lockfiles    []string
+	)
 
 	for _, language := range f.Languages() {
 		uri, ok := f.EngineFor(language)
 		if !ok {
-			return nil, fmt.Errorf("no engine is registered for %q", language)
+			return nil, nil, fmt.Errorf("no engine is registered for %q", language)
 		}
 
 		if err := c.checkLanguage(ctx, uri, language, resolved); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		deps, depNotes, err := c.resolver.Resolve(ctx, f, root, language, f.DependenciesFor(language))
 		if err != nil {
-			return nil, fmt.Errorf("resolving %s dependencies: %w", language, err)
+			return nil, nil, fmt.Errorf("resolving %s dependencies: %w", language, err)
 		}
 
 		dev, devNotes, err := c.resolver.Resolve(ctx, f, root, language, f.DevFor(language))
 		if err != nil {
-			return nil, fmt.Errorf("resolving %s devDependencies: %w", language, err)
+			return nil, nil, fmt.Errorf("resolving %s devDependencies: %w", language, err)
 		}
 
 		// A member module another member imports - a shared spec - is
@@ -295,7 +387,7 @@ func (c *Controller) renderMembers(
 		// register's internal track is what governs it.
 		members, err := c.resolver.ResolveMembers(ctx, f, root, language)
 		if err != nil {
-			return nil, fmt.Errorf("resolving %s member modules: %w", language, err)
+			return nil, nil, fmt.Errorf("resolving %s member modules: %w", language, err)
 		}
 
 		required := c.internalRequires(resolved, language)
@@ -335,7 +427,7 @@ func (c *Controller) renderMembers(
 		var out renderOutput
 
 		if err := c.caller.Call(ctx, uri, ToolRender, in, &out); err != nil {
-			return nil, fmt.Errorf("rendering %s: %w", language, err)
+			return nil, nil, fmt.Errorf("rendering %s: %w", language, err)
 		}
 
 		if write {
@@ -345,7 +437,7 @@ func (c *Controller) renderMembers(
 				}
 
 				if err := c.fs.WriteFile(file.Path, []byte(file.Content)); err != nil {
-					return nil, fmt.Errorf("writing %s: %w", file.Path, err)
+					return nil, nil, fmt.Errorf("writing %s: %w", file.Path, err)
 				}
 
 				report.Written = append(report.Written, file.Path)
@@ -365,9 +457,17 @@ func (c *Controller) renderMembers(
 
 			lockCommands = append(lockCommands, cmd)
 		}
+
+		for _, lf := range out.Lockfiles {
+			if only != "" && !underMemberOrRoot(root, only, lf) {
+				continue
+			}
+
+			lockfiles = append(lockfiles, lf)
+		}
 	}
 
-	return lockCommands, nil
+	return lockCommands, lockfiles, nil
 }
 
 // underMemberOrRoot keeps a write inside the one materialised member or at
