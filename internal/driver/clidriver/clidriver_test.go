@@ -294,6 +294,11 @@ func TestBumpRewritesTheFileAndSyncs(t *testing.T) {
 	h.recordWrites()
 	h.expectSync()
 
+	// A bump proves its own version: sync writes the manifests, and the
+	// lock is what fails when the new version resolves nowhere.
+	h.sync.EXPECT().Lock(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(synccontroller.Report{Root: "/w"}, nil).Once()
+
 	require.NoError(t, h.driver.Run(t.Context(), []string{"bump", "sigs.k8s.io/yaml", "v1.7.0"}))
 	assert.Contains(t, h.wrote["forge-factory.yaml"], "sigs.k8s.io/yaml: v1.7.0")
 	assert.Contains(t, h.out.String(), "was sigs.k8s.io/yaml: v1.6.0")
@@ -499,32 +504,47 @@ func TestAPathOutsideTheRootPrintsWhole(t *testing.T) {
 	assert.Contains(t, h.out.String(), "/absolute/go.work")
 }
 
-func TestASyncThatLeavesTheWorkspaceUnbuildableFails(t *testing.T) {
+// lock is its own verb: sync writes manifests and stops, and this is what
+// resolves the closure. A lock that could not resolve leaves every member
+// unbuildable, so reporting it and exiting zero would be a lie.
+func TestALockThatCouldNotResolveFails(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+	h.sync.EXPECT().Lock(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		synccontroller.Report{
 			Root:     "/w",
 			Unlocked: []string{"go mod tidy in /w/a: unknown revision v1.7.0"},
 		}, nil).Once()
 
-	err := h.driver.Run(t.Context(), []string{"sync"})
+	err := h.driver.Run(t.Context(), []string{"lock"})
 	require.ErrorIs(t, err, clidriver.ErrUnlocked)
 	assert.Contains(t, h.out.String(), "which a build will need")
 	assert.Contains(t, err.Error(), "unknown revision v1.7.0")
 }
 
-func TestOfflineAllowsASyncThatCouldNotReachTheNetwork(t *testing.T) {
+func TestLockPrintsWhatItRan(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+	h.sync.EXPECT().Lock(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		synccontroller.Report{Root: "/w", Locked: []string{"go mod tidy in /w/a"}}, nil).Once()
+
+	require.NoError(t, h.driver.Run(t.Context(), []string{"lock", "--root", "/w"}))
+	assert.Contains(t, h.out.String(), "ran go mod tidy in /w/a")
+}
+
+func TestOfflineAllowsALockThatCouldNotReachTheNetwork(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.sync.EXPECT().Lock(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		synccontroller.Report{Root: "/w", Unlocked: []string{"go mod tidy in /w/a: no network"}}, nil).Once()
 
-	require.NoError(t, h.driver.Run(t.Context(), []string{"sync", "--offline"}))
+	require.NoError(t, h.driver.Run(t.Context(), []string{"lock", "--offline"}))
 }
 
 func TestCloneFetchesTheMembersThenSyncs(t *testing.T) {

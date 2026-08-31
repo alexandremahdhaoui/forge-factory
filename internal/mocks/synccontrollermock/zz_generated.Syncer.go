@@ -39,6 +39,84 @@ func (_m *MockSyncer) EXPECT() *MockSyncer_Expecter {
 	return &MockSyncer_Expecter{mock: &_m.Mock}
 }
 
+// Lock provides a mock function for the type MockSyncer
+func (_mock *MockSyncer) Lock(ctx context.Context, f config.Factory, root string, only string) (synccontroller.Report, error) {
+	ret := _mock.Called(ctx, f, root, only)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Lock")
+	}
+
+	var r0 synccontroller.Report
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(context.Context, config.Factory, string, string) (synccontroller.Report, error)); ok {
+		return returnFunc(ctx, f, root, only)
+	}
+	if returnFunc, ok := ret.Get(0).(func(context.Context, config.Factory, string, string) synccontroller.Report); ok {
+		r0 = returnFunc(ctx, f, root, only)
+	} else {
+		r0 = ret.Get(0).(synccontroller.Report)
+	}
+	if returnFunc, ok := ret.Get(1).(func(context.Context, config.Factory, string, string) error); ok {
+		r1 = returnFunc(ctx, f, root, only)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockSyncer_Lock_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Lock'
+type MockSyncer_Lock_Call struct {
+	*mock.Call
+}
+
+// Lock is a helper method to define mock.On call
+//   - ctx context.Context
+//   - f config.Factory
+//   - root string
+//   - only string
+func (_e *MockSyncer_Expecter) Lock(ctx any, f any, root any, only any) *MockSyncer_Lock_Call {
+	return &MockSyncer_Lock_Call{Call: _e.mock.On("Lock", ctx, f, root, only)}
+}
+
+func (_c *MockSyncer_Lock_Call) Run(run func(ctx context.Context, f config.Factory, root string, only string)) *MockSyncer_Lock_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 context.Context
+		if args[0] != nil {
+			arg0 = args[0].(context.Context)
+		}
+		var arg1 config.Factory
+		if args[1] != nil {
+			arg1 = args[1].(config.Factory)
+		}
+		var arg2 string
+		if args[2] != nil {
+			arg2 = args[2].(string)
+		}
+		var arg3 string
+		if args[3] != nil {
+			arg3 = args[3].(string)
+		}
+		run(
+			arg0,
+			arg1,
+			arg2,
+			arg3,
+		)
+	})
+	return _c
+}
+
+func (_c *MockSyncer_Lock_Call) Return(report synccontroller.Report, err error) *MockSyncer_Lock_Call {
+	_c.Call.Return(report, err)
+	return _c
+}
+
+func (_c *MockSyncer_Lock_Call) RunAndReturn(run func(ctx context.Context, f config.Factory, root string, only string) (synccontroller.Report, error)) *MockSyncer_Lock_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // Sync provides a mock function for the type MockSyncer
 func (_mock *MockSyncer) Sync(ctx context.Context, f config.Factory, root string, only string) (synccontroller.Report, error) {
 	ret := _mock.Called(ctx, f, root, only)

@@ -282,6 +282,19 @@ func (c *Controller) syncWorkspace(ctx context.Context, wsRoot, only string) (in
 		return 0, fmt.Errorf("syncing %s: %w", wsRoot, err)
 	}
 
+	// Sync writes manifests and stops. This context is about to build, so
+	// the closure must resolve here - and a lock that could not resolve is
+	// this run's failure, loud and at the cause, not a compile error three
+	// steps later.
+	report, err := c.sync.Lock(ctx, f, wsRoot, only)
+	if err != nil {
+		return 0, fmt.Errorf("locking %s: %w", wsRoot, err)
+	}
+
+	if len(report.Unlocked) > 0 {
+		return 0, fmt.Errorf("locking %s: %s", wsRoot, report.Unlocked[0])
+	}
+
 	return 0, nil
 }
 

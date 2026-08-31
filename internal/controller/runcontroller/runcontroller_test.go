@@ -29,6 +29,10 @@ type harness struct {
 	sync     *synccontrollermock.MockSyncer
 	c        *runcontroller.Controller
 	cache    string
+	// lockOK is the harness-wide "the lock resolved" answer. A test about
+	// lock failures unsets it before registering its own, because testify
+	// hands a call to the first registered match.
+	lockOK *synccontrollermock.MockSyncer_Lock_Call
 }
 
 func newHarness(t *testing.T) *harness {
@@ -43,6 +47,13 @@ func newHarness(t *testing.T) *harness {
 
 	h.c = runcontroller.New(fsadapter.New(), gitadapter.New(execadapter.New()),
 		h.runner, h.sync, lockadapter.New(), h.progress)
+
+	// Sync writes manifests and stops, so the run context locks right after
+	// syncing. Most tests only care that it happens on the way to a build;
+	// the ones about lock failures register their own expectation first.
+	h.lockOK = h.sync.EXPECT().Lock(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(synccontroller.Report{}, nil)
+	h.lockOK.Maybe()
 
 	// The exec boundary asks PATH for forge before picking a pinned go-run
 	// fallback; answering yes keeps the bare form every expectation pins.
@@ -182,6 +193,41 @@ engines:
 	require.NoError(t, err)
 	require.Zero(t, code)
 	require.Contains(t, h.progress.String(), "rule 2")
+}
+
+// The run context is about to build, so a lock that could not resolve is
+// this run's failure - loud and at the cause, not a compile error three
+// steps later.
+func TestARunFailsWhenTheLockCannotResolve(t *testing.T) {
+	h := newHarness(t)
+
+	ws := t.TempDir()
+	repo := filepath.Join(ws, "member-a")
+	repoWithRunnable(t, repo, "git@example.com:x/fixture-factory.git")
+	write(t, filepath.Join(ws, "forge-factory.yaml"), `version: "1"
+name: enclosing
+repos:
+  - name: member-a
+    url: u
+    languages: [go]
+engines:
+  - alias: go
+    engine: forge://example.com/lang-go
+`)
+
+	h.lockOK.Unset()
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, ws, "").
+		Return(synccontroller.Report{}, nil).Once()
+	h.sync.EXPECT().Lock(mock.Anything, mock.Anything, ws, "").
+		Return(synccontroller.Report{
+			Unlocked: []string{"go mod tidy in member-a: unknown revision v1.7.0"},
+		}, nil).Once()
+
+	_, err := h.c.Run(context.Background(), runcontroller.Request{
+		Target: "tool-a", WorkDir: repo, CacheDir: h.cache,
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown revision v1.7.0")
 }
 
 func TestRule3ANonMemberCheckoutUsesItsOwnFactory(t *testing.T) {

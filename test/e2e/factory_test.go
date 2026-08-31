@@ -234,8 +234,9 @@ func TestOneBumpMovesEveryGoMemberWithNoCommitInAny(t *testing.T) {
 	assert.Contains(t, read(t, filepath.Join(root, "forge-factory.yaml")), "sigs.k8s.io/yaml: v1.5.0")
 }
 
-// A sync that writes a version nothing can resolve leaves every member
-// unbuildable. It used to report that and exit zero, which is a lie.
+// A bump to a version nothing can resolve leaves every member unbuildable.
+// The bump locks after it syncs precisely so this fails at the bump, where
+// the cause is, rather than at some later build.
 func TestABumpToAVersionNobodyCanResolveFails(t *testing.T) {
 	root := workspace(t)
 
@@ -253,7 +254,7 @@ func TestABumpToAVersionNobodyCanResolveFails(t *testing.T) {
 	}
 }
 
-func TestOfflineAcceptsASyncThatCouldNotSettle(t *testing.T) {
+func TestOfflineAcceptsABumpThatCouldNotLock(t *testing.T) {
 	root := workspace(t)
 
 	mustRun(t, root, "sync")
@@ -387,6 +388,10 @@ func TestAGeneratedGoModBuilds(t *testing.T) {
 	root := workspace(t)
 
 	out := mustRun(t, root, "sync")
+	require.NotContains(t, out, "ran go mod tidy",
+		"sync writes manifests and stops; cloning is not building")
+
+	out = mustRun(t, root, "lock")
 	require.Contains(t, out, "ran go mod tidy", out)
 
 	mod := read(t, filepath.Join(root, "sample-go", "go.mod"))

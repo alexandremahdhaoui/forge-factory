@@ -100,11 +100,17 @@ type languageOutput struct {
 // Syncer is what a driver accepts. It is declared here, in the package that
 // implements it, as golden-go does.
 type Syncer interface {
-	// Sync writes every member's manifest. Only restricts writes and
-	// dependency-lock commands to one member - the ephemeral run context uses
+	// Sync writes every member's manifest and stops: resolving the
+	// dependency closure is Lock's job, because cloning is not building.
+	// Only restricts writes to one member - the ephemeral run context uses
 	// it, where the other members are not on disk at all. Empty means
 	// everything.
 	Sync(ctx context.Context, f config.Factory, root, only string) (Report, error)
+	// Lock resolves every member's dependency closure by running the
+	// commands its language engine declares - the manifests sync wrote name
+	// only the direct requires, and these put the indirect ones and the
+	// integrity sums back. The build phase calls it; a clone never does.
+	Lock(ctx context.Context, f config.Factory, root, only string) (Report, error)
 }
 
 type Controller struct {
@@ -130,13 +136,12 @@ func New(
 // Sync asks every language engine what to write, writes it, and keeps each
 // repo's gitignore in step. A version is written in the factory and nowhere
 // else, so everything written here is ignored by git.
+//
+// Sync never runs the engines' dependency-lock commands: cloning is not
+// building, and a workspace stood up offline must come up clean. Lock is
+// the verb that resolves the closure, and the build phase owns calling it.
 func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only string) (Report, error) {
 	f = restrictTo(f, only)
-
-	resolved, err := c.resolve(f, root)
-	if err != nil {
-		return Report{}, err
-	}
 
 	report := Report{
 		Root:     root,
@@ -192,35 +197,105 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		}
 	}
 
+	if _, err := c.renderMembers(ctx, f, root, only, &report, true, ignores); err != nil {
+		return Report{}, err
+	}
+
+	sort.Strings(report.Written)
+
+	for _, repo := range sortedKeys(ignores) {
+		path := filepath.Join(root, repo, ".gitignore")
+
+		changed, err := c.ensureIgnored(path, ignores[repo])
+		if err != nil {
+			return Report{}, err
+		}
+
+		if changed {
+			report.Ignored = append(report.Ignored, path)
+		}
+	}
+
+	return report, nil
+}
+
+// Lock resolves every member's dependency closure by running the commands
+// its language engine declares. The engines are rendered again to learn the
+// commands and nothing is written: the manifests on disk are whatever the
+// last sync produced, and a lock over drifted manifests would only prove
+// the wrong thing louder.
+//
+// An optional command that fails lands in Unlocked and the caller decides -
+// the driver refuses unless it was told the machine is offline on purpose.
+func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only string) (Report, error) {
+	f = restrictTo(f, only)
+
+	report := Report{
+		Root:     root,
+		Written:  []string{},
+		Ignored:  []string{},
+		Locked:   []string{},
+		Unlocked: []string{},
+	}
+
+	commands, err := c.renderMembers(ctx, f, root, only, &report, false, nil)
+	if err != nil {
+		return Report{}, err
+	}
+
+	if err := c.lock(ctx, commands, &report); err != nil {
+		return Report{}, err
+	}
+
+	return report, nil
+}
+
+// renderMembers runs every language engine's render and answers the
+// dependency-lock commands it declared. With write set the files land on
+// disk and their gitignore entries accumulate in ignores; without it the
+// render is only the vehicle for learning the commands.
+func (c *Controller) renderMembers(
+	ctx context.Context,
+	f config.Factory,
+	root, only string,
+	report *Report,
+	write bool,
+	ignores map[string][]string,
+) ([]commandWire, error) {
+	resolved, err := c.resolve(f, root)
+	if err != nil {
+		return nil, err
+	}
+
 	var lockCommands []commandWire
 
 	for _, language := range f.Languages() {
 		uri, ok := f.EngineFor(language)
 		if !ok {
-			return Report{}, fmt.Errorf("no engine is registered for %q", language)
+			return nil, fmt.Errorf("no engine is registered for %q", language)
 		}
 
 		if err := c.checkLanguage(ctx, uri, language, resolved); err != nil {
-			return Report{}, err
+			return nil, err
 		}
 
 		deps, depNotes, err := c.resolver.Resolve(ctx, f, root, language, f.DependenciesFor(language))
 		if err != nil {
-			return Report{}, fmt.Errorf("resolving %s dependencies: %w", language, err)
+			return nil, fmt.Errorf("resolving %s dependencies: %w", language, err)
 		}
 
 		dev, devNotes, err := c.resolver.Resolve(ctx, f, root, language, f.DevFor(language))
 		if err != nil {
-			return Report{}, fmt.Errorf("resolving %s devDependencies: %w", language, err)
+			return nil, fmt.Errorf("resolving %s devDependencies: %w", language, err)
 		}
 
 		// A member module another member imports - a shared spec - is
 		// declared in no dependency list, so its version was left to the
-		// tidy that follows, which takes the highest published tag. The
+		// lock that follows, which takes the highest published tag. The
 		// register's internal track is what governs it.
 		members, err := c.resolver.ResolveMembers(ctx, f, root, language)
 		if err != nil {
-			return Report{}, fmt.Errorf("resolving %s member modules: %w", language, err)
+			return nil, fmt.Errorf("resolving %s member modules: %w", language, err)
 		}
 
 		required := c.internalRequires(resolved, language)
@@ -235,7 +310,7 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 			// Only a module some member already requires. Every runnable
 			// member has an internal track too, carrying the pipeline's own
 			// dev label: a real revision, but not a tag any proxy can
-			// fetch. Writing one into a manifest makes the following tidy
+			// fetch. Writing one into a manifest makes the lock that follows
 			// try to resolve it and fail, because a require has to resolve
 			// before it can be pruned as unused.
 			if !required[name] {
@@ -260,24 +335,26 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		var out renderOutput
 
 		if err := c.caller.Call(ctx, uri, ToolRender, in, &out); err != nil {
-			return Report{}, fmt.Errorf("rendering %s: %w", language, err)
+			return nil, fmt.Errorf("rendering %s: %w", language, err)
 		}
 
-		for _, file := range out.Files {
-			if only != "" && !underMemberOrRoot(root, only, file.Path) {
-				continue
-			}
+		if write {
+			for _, file := range out.Files {
+				if only != "" && !underMemberOrRoot(root, only, file.Path) {
+					continue
+				}
 
-			if err := c.fs.WriteFile(file.Path, []byte(file.Content)); err != nil {
-				return Report{}, fmt.Errorf("writing %s: %w", file.Path, err)
-			}
+				if err := c.fs.WriteFile(file.Path, []byte(file.Content)); err != nil {
+					return nil, fmt.Errorf("writing %s: %w", file.Path, err)
+				}
 
-			report.Written = append(report.Written, file.Path)
+				report.Written = append(report.Written, file.Path)
 
-			if file.Gitignore != "" {
-				ignores[file.Gitignore] = append(
-					ignores[file.Gitignore],
-					append([]string{filepath.Base(file.Path)}, file.AlsoIgnore...)...)
+				if file.Gitignore != "" {
+					ignores[file.Gitignore] = append(
+						ignores[file.Gitignore],
+						append([]string{filepath.Base(file.Path)}, file.AlsoIgnore...)...)
+				}
 			}
 		}
 
@@ -290,26 +367,7 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		}
 	}
 
-	sort.Strings(report.Written)
-
-	for _, repo := range sortedKeys(ignores) {
-		path := filepath.Join(root, repo, ".gitignore")
-
-		changed, err := c.ensureIgnored(path, ignores[repo])
-		if err != nil {
-			return Report{}, err
-		}
-
-		if changed {
-			report.Ignored = append(report.Ignored, path)
-		}
-	}
-
-	if err := c.lock(ctx, lockCommands, &report); err != nil {
-		return Report{}, err
-	}
-
-	return report, nil
+	return lockCommands, nil
 }
 
 // underMemberOrRoot keeps a write inside the one materialised member or at

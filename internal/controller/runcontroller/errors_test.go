@@ -152,6 +152,11 @@ func newRig(t *testing.T) *rig {
 	}
 	r.c = New(r.fs, r.git, r.exec, r.sync, nopLocker{}, r.out)
 
+	// The run context locks right after syncing; these tests are about
+	// other failure shapes, so the lock always resolves.
+	r.sync.EXPECT().Lock(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(synccontroller.Report{}, nil).Maybe()
+
 	// The exec boundary asks PATH for forge before picking a pinned go-run
 	// fallback; answering yes keeps the bare form every expectation pins.
 	r.exec.EXPECT().LookPath("forge").Return("/usr/bin/forge", true).Maybe()

@@ -28,7 +28,7 @@ const DefaultPath = "forge-factory.yaml"
 
 var (
 	ErrUsage = errors.New(
-		"usage: forge-factory <clone|sync|add|bump|checkout|status|validate|run|bootstrap|cache> [args] " +
+		"usage: forge-factory <clone|sync|lock|add|bump|checkout|status|validate|run|bootstrap|cache> [args] " +
 			"[--config path] [--root dir] [--offline] [--register-head]")
 	ErrDrift = errors.New("the workspace disagrees with the factory")
 
@@ -98,6 +98,8 @@ func (d *Driver) Run(ctx context.Context, args []string) error {
 		return d.runClone(ctx, f, path, root)
 	case "sync":
 		return d.runSync(ctx, f, path, root)
+	case "lock":
+		return d.runLock(ctx, f, root)
 	case "status":
 		return d.runStatus(ctx, f, root)
 	case "add":
@@ -165,14 +167,30 @@ func (d *Driver) runSync(ctx context.Context, f config.Factory, path, root strin
 		}
 	}
 
-	// A sync that writes a version nothing can resolve leaves every member
-	// unbuildable. Reporting that and exiting zero is a lie, so it is an error
-	// unless the caller says it is offline on purpose.
+	return d.applyTooling(ctx, root, report)
+}
+
+// runLock resolves the dependency closure the manifests name. It is its own
+// verb because cloning is not building: sync writes manifests and stops,
+// and the build phase is what calls this.
+func (d *Driver) runLock(ctx context.Context, f config.Factory, root string) error {
+	report, err := d.sync.Lock(ctx, f, root, d.only)
+	if err != nil {
+		return err
+	}
+
+	if err := d.write(renderSync(report)); err != nil {
+		return err
+	}
+
+	// A lock that could not resolve leaves every member unbuildable.
+	// Reporting that and exiting zero is a lie, so it is an error unless
+	// the caller says it is offline on purpose.
 	if len(report.Unlocked) > 0 && !d.offline {
 		return fmt.Errorf("%w: %s", ErrUnlocked, report.Unlocked[0])
 	}
 
-	return d.applyTooling(ctx, root, report)
+	return nil
 }
 
 // applyTooling provisions what sync resolved: a distribution when a source
@@ -525,7 +543,14 @@ func (d *Driver) runBump(
 		return err
 	}
 
-	return d.runSync(ctx, updated, path, root)
+	if err := d.runSync(ctx, updated, path, root); err != nil {
+		return err
+	}
+
+	// A bump is a deliberate version change, and proving the new version
+	// resolves is its point: a bump to a version nobody can resolve used to
+	// report success and leave every member unbuildable, which is a lie.
+	return d.runLock(ctx, updated, root)
 }
 
 func (d *Driver) runCheckout(

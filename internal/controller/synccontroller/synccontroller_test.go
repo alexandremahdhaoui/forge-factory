@@ -411,7 +411,11 @@ func TestTheLanguageProbeNeverSendsNull(t *testing.T) {
 		"a nil slice or map travels as null and the engine's own schema refuses it")
 }
 
-func TestSyncRunsWhatAnEngineAsksForAfterTheFilesLand(t *testing.T) {
+// Sync writes manifests and stops: cloning is not building, so the engine's
+// dependency-lock commands must NOT run here. No RunEnv expectation is
+// registered, so a sync that still executes them fails this test on the
+// unexpected call.
+func TestSyncNeverRunsTheDependencyLockCommands(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
@@ -426,20 +430,43 @@ func TestSyncRunsWhatAnEngineAsksForAfterTheFilesLand(t *testing.T) {
 		}},
 	})
 	h.recordWrites()
-	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", map[string]string{"GOWORK": "off"},
-		"go", "mod", "tidy").Return(execadapter.Result{}, nil).Once()
 
 	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"go mod tidy in /w/golden-go"}, report.Locked)
+	assert.Empty(t, report.Locked)
 	assert.Empty(t, report.Unlocked)
 }
 
-func TestAnOptionalCommandThatFailsIsReportedAndTheSyncStillPasses(t *testing.T) {
+// Lock is the verb that resolves the closure: it renders to learn the
+// commands, writes no file, and runs them.
+func TestLockRunsWhatAnEngineDeclares(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(t, true)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{
+		"files": []map[string]any{{"path": "/w/golden-go/go.mod", "content": "x"}},
+		"dependencyLock": []map[string]any{{
+			"dir": "/w/golden-go", "command": "go", "args": []string{"mod", "tidy"},
+			"env": map[string]string{"GOWORK": "off"}, "optional": true,
+		}},
+	})
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", map[string]string{"GOWORK": "off"},
+		"go", "mod", "tidy").Return(execadapter.Result{}, nil).Once()
+
+	report, err := h.c.Lock(t.Context(), parse(t, factory), "/w", "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"go mod tidy in /w/golden-go"}, report.Locked)
+	assert.Empty(t, report.Unlocked)
+	assert.Empty(t, report.Written, "a lock writes no file; the manifests are sync's business")
+	assert.NotContains(t, h.wrote, "/w/golden-go/go.mod")
+}
+
+func TestAnOptionalCommandThatFailsIsReportedAndTheLockStillPasses(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
@@ -451,17 +478,16 @@ func TestAnOptionalCommandThatFailsIsReportedAndTheSyncStillPasses(t *testing.T)
 	h.runner.EXPECT().RunEnv(mock.Anything, mock.Anything, mock.Anything, "go", "mod", "tidy").
 		Return(execadapter.Result{}, assert.AnError).Once()
 
-	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
-	require.NoError(t, err, "a tidy needs the network and a sync must work offline")
+	report, err := h.c.Lock(t.Context(), parse(t, factory), "/w", "")
+	require.NoError(t, err, "an optional failure is the caller's decision, not this controller's")
 	require.Len(t, report.Unlocked, 1)
 	assert.Contains(t, report.Unlocked[0], "go mod tidy in /w/golden-go")
 }
 
-func TestACommandThatIsNotOptionalStopsTheSync(t *testing.T) {
+func TestACommandThatIsNotOptionalStopsTheLock(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
@@ -471,7 +497,7 @@ func TestACommandThatIsNotOptionalStopsTheSync(t *testing.T) {
 	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "false").
 		Return(execadapter.Result{}, assert.AnError).Once()
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	_, err := h.c.Lock(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorIs(t, err, assert.AnError)
 	assert.Contains(t, err.Error(), "running false")
 }
@@ -480,7 +506,6 @@ func TestACommandThatExitsNonZeroCountsAsAFailure(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
@@ -490,7 +515,7 @@ func TestACommandThatExitsNonZeroCountsAsAFailure(t *testing.T) {
 	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "go", "mod", "tidy").
 		Return(execadapter.Result{ExitCode: 1, Stderr: "unknown directive: #"}, nil).Once()
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	_, err := h.c.Lock(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorIs(t, err, synccontroller.ErrCommand,
 		"a non zero exit comes back with no error, so reading only the error passes every failure")
 	assert.Contains(t, err.Error(), "unknown directive")
@@ -500,7 +525,6 @@ func TestALongFailureIsTrimmedToItsReason(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
-	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
@@ -513,7 +537,7 @@ func TestALongFailureIsTrimmedToItsReason(t *testing.T) {
 			Stderr:   strings.Repeat("x", 600) + "the reason",
 		}, nil).Once()
 
-	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	_, err := h.c.Lock(t.Context(), parse(t, factory), "/w", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "the reason")
 	assert.Less(t, len(err.Error()), 600)
@@ -574,10 +598,6 @@ func TestSyncOnlyRendersTheOneMemberAndTheRoot(t *testing.T) {
 			{"dir": "/w", "command": "true"},
 		},
 	})
-	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", mock.Anything, "true").
-		Return(execadapter.Result{}, nil).Once()
-	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "true").
-		Return(execadapter.Result{}, nil).Once()
 	h.recordWrites()
 
 	report, err := h.c.Sync(t.Context(), parse(t, twoMemberFactory), "/w", "golden-go")
@@ -586,6 +606,33 @@ func TestSyncOnlyRendersTheOneMemberAndTheRoot(t *testing.T) {
 	assert.Equal(t, []string{"/w/go.work", "/w/golden-go/go.mod"}, report.Written,
 		"the one member and the root land; the absent member never does")
 	assert.NotContains(t, h.wrote, "/w/other-go/go.mod")
+}
+
+// A lock scoped to one member runs that member's commands and the root's,
+// and never the absent member's - its checkout is not on disk at all.
+func TestLockOnlyRunsTheOneMemberAndTheRoot(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.repos.EXPECT().Identity("/w/golden-go").
+		Return(map[string]string{"module": "example.com/g"}, nil).Once()
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{
+		"files": []any{},
+		"dependencyLock": []map[string]any{
+			{"dir": "/w/golden-go", "command": "true"},
+			{"dir": "/w/other-go", "command": "false"},
+			{"dir": "/w", "command": "true"},
+		},
+	})
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", mock.Anything, "true").
+		Return(execadapter.Result{}, nil).Once()
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "true").
+		Return(execadapter.Result{}, nil).Once()
+
+	report, err := h.c.Lock(t.Context(), parse(t, twoMemberFactory), "/w", "golden-go")
+	require.NoError(t, err)
+	assert.Len(t, report.Locked, 2)
 }
 
 // Toolchain binaries resolve during sync: a literal pin as written, a
