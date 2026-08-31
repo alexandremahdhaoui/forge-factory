@@ -757,6 +757,10 @@ func renderCheckout(result revisioncontroller.Result) string {
 		fmt.Fprintf(&b, "  %s %s\n", name, short(result.Repos[name]))
 	}
 
+	for _, lock := range result.Locks {
+		fmt.Fprintf(&b, "  restored lock %s\n", lock)
+	}
+
 	return b.String()
 }
 

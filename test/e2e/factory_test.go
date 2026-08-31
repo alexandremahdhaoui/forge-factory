@@ -3,6 +3,9 @@
 package e2e_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -452,6 +455,53 @@ state:
 
 	assert.Equal(t, first, headSHA(t, repo), "the member sits on the SHA the revision proved")
 	assert.Contains(t, out, "wrote go.work", "a checkout syncs to match")
+}
+
+// TestCheckoutRestoresTheRevisionsDependencyLocks proves the restore path
+// against the real engine: the store carries one dependency-lock record for
+// the revision, and a checkout writes the lockfile back where the lock
+// resolved it - even though the store's own spec never declares the kind,
+// because checkout names it per request.
+func TestCheckoutRestoresTheRevisionsDependencyLocks(t *testing.T) {
+	engine, err := exec.LookPath("ci-state-git")
+	if err != nil {
+		t.Skip("no state engine on PATH, so the transport cannot be exercised")
+	}
+
+	root := workspace(t)
+	repo := filepath.Join(root, "sample-go")
+	gitInit(t, repo)
+
+	sha := headSHA(t, repo)
+	store := filepath.Join(root, "state")
+	writeRevision(t, store, "proven", sha)
+
+	content := "example.com/dep v1.0.0 h1:abc=\n"
+	sum := sha256.Sum256([]byte(content))
+
+	record, err := json.Marshal(map[string]string{
+		"revision": "proven",
+		"path":     "sample-go/go.sum",
+		"sha256":   hex.EncodeToString(sum[:]),
+		"lockfile": content,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "dependency-lock", "proven", "sample-go"), 0o755))
+	write(t, filepath.Join(store, "dependency-lock", "proven", "sample-go", "go.sum.json"), string(record))
+
+	write(t, filepath.Join(root, "forge-factory.yaml"), factory+`
+state:
+  engine: forge://`+filepath.Base(engine)+`
+  spec:
+    path: `+store+`
+`)
+
+	out := mustRun(t, root, "checkout", "proven")
+	assert.Contains(t, out, "restored lock sample-go/go.sum")
+
+	assert.Equal(t, content, read(t, filepath.Join(root, "sample-go", "go.sum")),
+		"the checked-out tree carries the exact bytes the revision was proven with")
 }
 
 func TestCheckoutRefusesToDestroyUncommittedWork(t *testing.T) {

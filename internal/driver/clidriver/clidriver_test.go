@@ -380,6 +380,7 @@ func TestCheckoutPutsMembersOnTheirSHAsThenSyncs(t *testing.T) {
 		revisioncontroller.Result{
 			Revision: "abc123",
 			Repos:    map[string]string{"golden-go": "aaaaaaaaaaaaaaaa", "golden-rs": "bbb"},
+			Locks:    []string{"golden-go/go.sum"},
 		}, nil).Once()
 	h.expectSync()
 
@@ -388,6 +389,7 @@ func TestCheckoutPutsMembersOnTheirSHAsThenSyncs(t *testing.T) {
 	got := h.out.String()
 	assert.Contains(t, got, "revision abc123")
 	assert.Contains(t, got, "golden-go aaaaaaaaaaaa")
+	assert.Contains(t, got, "restored lock golden-go/go.sum")
 	assert.Less(t, strings.Index(got, "golden-go"), strings.Index(got, "golden-rs"),
 		"members print in a stable order")
 }
