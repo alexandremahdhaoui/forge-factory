@@ -71,8 +71,9 @@ func TestGoRender(t *testing.T) {
 
 	mod := find(t, out, "go.mod")
 	assert.Equal(t, "/w/alpha-go/go.mod", mod.Path)
-	assert.Equal(t, "alpha-go", mod.Gitignore)
-	assert.Equal(t, []string{"go.sum"}, mod.AlsoIgnore, "a derived file is never committed either")
+	assert.Empty(t, mod.Gitignore,
+		"committed is the default, so the manifest is not hidden from git")
+	assert.Empty(t, mod.AlsoIgnore)
 	assert.True(t, strings.HasPrefix(mod.Content, "//"),
 		"a # line in go.mod is an unknown directive and every go command refuses the file")
 	assert.Contains(t, mod.Content, "module example.com/alpha")
@@ -554,4 +555,51 @@ func TestAModuleNeverRequiresItself(t *testing.T) {
 	require.Contains(t, mod, "module example.com/spec-a")
 	require.Contains(t, mod, "example.com/other v1.0.0")
 	require.NotContains(t, mod, "example.com/spec-a v0.3.0")
+}
+
+// The default is committed, and the other two modes are asked for by name.
+// There is no fourth, unwritten mode: "generated" used to be what an absent
+// key meant, which nobody could refer to and which three repos sat in by
+// accident while git tracked their files regardless.
+func TestTheManifestModeIsWhatTheRepoSays(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		mode      string
+		gitignore string
+		files     int
+	}{
+		{mode: "", gitignore: "", files: 2},
+		{mode: "committed", gitignore: "", files: 2},
+		{mode: "generated", gitignore: "alpha-go", files: 2},
+		{mode: "own", gitignore: "", files: 1},
+	} {
+		t.Run("manifest="+tc.mode, func(t *testing.T) {
+			t.Parallel()
+
+			in := input()
+			if tc.mode != "" {
+				in.Repos[0].Identity["manifest"] = tc.mode
+			}
+
+			out, err := rendercontroller.Go{}.Render(in)
+			require.NoError(t, err)
+			require.Len(t, out.Files, tc.files,
+				"own writes no manifest at all, the others write one")
+
+			if tc.mode == "own" {
+				return
+			}
+
+			mod := find(t, out, "go.mod")
+			assert.Equal(t, tc.gitignore, mod.Gitignore)
+
+			if tc.gitignore == "" {
+				assert.Empty(t, mod.AlsoIgnore)
+			} else {
+				assert.Equal(t, []string{"go.sum"}, mod.AlsoIgnore,
+					"a derived file is hidden with the file it derives from")
+			}
+		})
+	}
 }

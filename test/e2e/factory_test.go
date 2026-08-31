@@ -183,7 +183,17 @@ func TestEverythingGeneratedIsGitignored(t *testing.T) {
 
 	mustRun(t, root, "sync")
 
-	assert.Contains(t, read(t, filepath.Join(root, "sample-go", ".gitignore")), "/go.mod")
+	// A GO manifest is committed by default now, so it is NOT hidden from git.
+	// The old default wrote the file and gitignored it, which reads as "this
+	// repo has no manifest" to everything outside a synced workspace - and
+	// three repos sat in that mode with git tracking their files anyway,
+	// where the ignore does not apply and every version bump dirties the tree.
+	assert.NotContains(t, read(t, filepath.Join(root, "sample-go", ".gitignore")), "/go.mod")
+
+	// The manifest knob is Go's alone: the typescript and python renderers
+	// have no committed mode and always gitignore what they write. Saying so
+	// here keeps the asymmetry deliberate rather than a thing someone
+	// discovers.
 	assert.Contains(t, read(t, filepath.Join(root, "sample-web", ".gitignore")), "/package.json")
 
 	// cargo needs no manifest inside a member, so this used to assert that a
@@ -386,8 +396,8 @@ func TestAGeneratedGoModBuilds(t *testing.T) {
 	require.NoError(t, err,
 		"the tidy runs with GOWORK=off, so the member gets the sums a build needs")
 
-	assert.Contains(t, read(t, filepath.Join(root, "sample-go", ".gitignore")), "/go.sum",
-		"a derived file is never committed either")
+	assert.NotContains(t, read(t, filepath.Join(root, "sample-go", ".gitignore")), "/go.sum",
+		"go.sum follows go.mod, and the manifest is committed by default")
 
 	build := exec.Command("go", "build", "-o", filepath.Join(t.TempDir(), "out"), ".")
 	build.Dir = filepath.Join(root, "sample-go")

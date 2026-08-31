@@ -132,7 +132,8 @@ func TestTheGoEngineRendersOverMCP(t *testing.T) {
 
 	mod, ok := byPath["/w/golden-go/go.mod"]
 	require.True(t, ok)
-	assert.Equal(t, "golden-go", mod.Gitignore)
+	assert.Empty(t, mod.Gitignore,
+		"committed is the default now, so the manifest is not hidden from git")
 	assert.Contains(t, mod.Content, "module example.com/golden")
 	assert.Contains(t, mod.Content, "sigs.k8s.io/yaml v1.6.0")
 

@@ -43,23 +43,47 @@ func reposFor(in rendertypes.Input, language string) []rendertypes.Repo {
 	return out
 }
 
-// OwnManifest is what a repo declares in its forge.yaml when it keeps its own
-// manifest. Membership is still generated for it. A pyproject.toml carries
-// pytest, ruff and coverage settings that no factory declares, so taking it
-// over would throw them away.
-const OwnManifest = "own"
+// The three things a repo can say about its manifest in the factory block of
+// its own forge.yaml. There is no fourth, unwritten one: an absent key means
+// committed, the same as writing it.
+//
+// It used to mean a mode with no name - sync wrote the manifest AND gitignored
+// it - which nobody could refer to and which three repos were in by accident
+// while git tracked their files anyway. A gitignored file that git already
+// tracks is a landmine: the ignore does not apply, so the next version bump
+// dirties the tree, the revision comes out -dirty and the release refuses it.
+const (
+	// OwnManifest: the repo keeps its own manifest and sync writes none.
+	// Membership is still generated for it. A pyproject.toml carries pytest,
+	// ruff and coverage settings that no factory declares, so taking it over
+	// would throw them away.
+	OwnManifest = "own"
 
-// CommittedManifest is the middle ground: sync writes the manifest and the
-// repo commits it, so a bare `go run module@version` works with no
-// workspace. The file is not gitignored, which is the point.
-const CommittedManifest = "committed"
+	// CommittedManifest: sync writes the manifest and the repo commits it, so
+	// a bare `go run module@version` works with no workspace. The file is not
+	// gitignored, which is the point. This is the default.
+	CommittedManifest = "committed"
+
+	// GeneratedManifest: sync writes the manifest and gitignores it. Nobody
+	// commits it and nothing outside a synced workspace can build the repo.
+	GeneratedManifest = "generated"
+)
 
 func ownsItsManifest(repo rendertypes.Repo) bool {
 	return repo.Identity["manifest"] == OwnManifest
 }
 
+// commitsItsManifest is true unless the repo asked for one of the other two
+// modes by name. Committed is the default because the alternative default
+// wrote a file and hid it, which reads as "this repo has no manifest" to
+// everything that is not a synced workspace.
 func commitsItsManifest(repo rendertypes.Repo) bool {
-	return repo.Identity["manifest"] == CommittedManifest
+	switch repo.Identity["manifest"] {
+	case OwnManifest, GeneratedManifest:
+		return false
+	default:
+		return true
+	}
 }
 
 func identity(repo rendertypes.Repo, key string) (string, error) {
