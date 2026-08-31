@@ -149,6 +149,15 @@ func (g advisoryGate) contradiction() error {
 // unmeasuredNote says, in words, why a package carries no findings when
 // nothing was actually asked about it.
 func (g advisoryGate) unmeasuredNote() string {
+	// A proof-published internal entry was never asked about at all: the
+	// register recorded the proving revision and no outcome. Same rule as
+	// not-found and unreachable - unexamined is not safe, and it is said.
+	if string(g.track.Outcome) == "" {
+		return fmt.Sprintf("%s:%s %s entered by proof and carries no advisory "+
+			"measurement - unexamined, not known to be safe.",
+			g.language, g.name, g.track.Current)
+	}
+
 	switch g.track.Outcome {
 	case spec.NotFound, spec.Unreachable:
 		reason := ""

@@ -1288,6 +1288,48 @@ func TestATrackWithNoReadableOutcomeIsRefused(t *testing.T) {
 	}
 }
 
+// A proof-published internal entry is the one legitimate empty outcome: the
+// register's publish verb asks no feed and records nothing it did not
+// measure. It resolves - with the unexamined note, never silently - and the
+// same emptiness without provenance stays a malformed record.
+func TestAProofPublishedEntryResolvesWithAnUnexaminedNote(t *testing.T) {
+	t.Parallel()
+
+	raw, _ := json.Marshal(map[string]any{
+		"package": "ghcr.io/owner/tools", "ecosystem": "internal", "prefix": "0",
+		"current": "v0.45.23", "updatedAt": now, "outcome": "",
+		"provenance": "2f1e24cd456d",
+		"vulns":      map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0},
+	})
+
+	f, root := register(t, map[string]string{"internal/ghcr.io/owner/tools/0": string(raw)})
+
+	version, notes, err := newController().ResolveTool(context.Background(), f, root,
+		"internal:ghcr.io/owner/tools")
+	require.NoError(t, err)
+	require.Equal(t, "v0.45.23", version)
+
+	joined := strings.Join(notes, "\n")
+	require.Contains(t, joined, "entered by proof")
+	require.Contains(t, joined, "unexamined, not known to be safe")
+}
+
+func TestAnEmptyOutcomeWithoutProvenanceStaysMalformed(t *testing.T) {
+	t.Parallel()
+
+	raw, _ := json.Marshal(map[string]any{
+		"package": "ghcr.io/owner/tools", "ecosystem": "internal", "prefix": "0",
+		"current": "v0.45.23", "updatedAt": now, "outcome": "",
+		"vulns": map[string]int{"critical": 0, "high": 0, "medium": 0, "low": 0},
+	})
+
+	f, root := register(t, map[string]string{"internal/ghcr.io/owner/tools/0": string(raw)})
+
+	_, _, err := newController().ResolveTool(context.Background(), f, root,
+		"internal:ghcr.io/owner/tools")
+	require.ErrorContains(t, err, "which is not one this can read")
+}
+
 func internalTrack(t *testing.T, module, prefix, current string) (string, string) {
 	t.Helper()
 

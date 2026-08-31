@@ -458,11 +458,23 @@ func (c *Controller) track(v view, language, name string, d config.DependencySpe
 	// or misspelled one matched no case and resolved green with no note -
 	// exactly the "clean when nothing was measured" this wave exists to
 	// remove, reachable by editing one line of a shared file.
+	//
+	// One absence is legitimate: a proof-published internal entry. The
+	// register's publish verb asks no feed and records nothing it did not
+	// measure, so the outcome is empty exactly when provenance names the
+	// proving revision - and the advisory gate turns that into an
+	// unexamined note rather than silence. Empty WITHOUT provenance is
+	// still a malformed record.
 	if !track.Outcome.Valid() {
-		return spec.Track{}, fmt.Errorf(
-			"track %s records %q as its outcome, which is not one this can read; "+
-				"the register writes findings, clean, not-found or unreachable",
-			rel, string(track.Outcome))
+		proof := string(track.Outcome) == "" &&
+			track.Provenance != nil && *track.Provenance != ""
+
+		if !proof {
+			return spec.Track{}, fmt.Errorf(
+				"track %s records %q as its outcome, which is not one this can read; "+
+					"the register writes findings, clean, not-found or unreachable",
+				rel, string(track.Outcome))
+		}
 	}
 
 	return track, nil
