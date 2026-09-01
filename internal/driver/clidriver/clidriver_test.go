@@ -12,6 +12,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/clonecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/revisioncontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/runcontroller"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/runtimecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/speccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
@@ -21,6 +22,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/fsadaptermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/revisioncontrollermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/runcontrollermock"
+	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/runtimecontrollermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/statuscontrollermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/synccontrollermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/toolingcontrollermock"
@@ -53,6 +55,7 @@ type harness struct {
 	state    *statuscontrollermock.MockStater
 	runner   *runcontrollermock.MockRunner
 	tooling  *toolingcontrollermock.MockApplier
+	runtimes *runtimecontrollermock.MockProvisioner
 	driver   *clidriver.Driver
 	wrote    map[string]string
 	exitCode *int
@@ -62,18 +65,19 @@ func newHarness(t *testing.T) *harness {
 	t.Helper()
 
 	h := &harness{
-		out:     &bytes.Buffer{},
-		fs:      fsadaptermock.NewMockFS(t),
-		clone:   clonecontrollermock.NewMockCloner(t),
-		sync:    synccontrollermock.NewMockSyncer(t),
-		revise:  revisioncontrollermock.NewMockReviser(t),
-		state:   statuscontrollermock.NewMockStater(t),
-		runner:  runcontrollermock.NewMockRunner(t),
-		tooling: toolingcontrollermock.NewMockApplier(t),
-		wrote:   map[string]string{},
+		out:      &bytes.Buffer{},
+		fs:       fsadaptermock.NewMockFS(t),
+		clone:    clonecontrollermock.NewMockCloner(t),
+		sync:     synccontrollermock.NewMockSyncer(t),
+		revise:   revisioncontrollermock.NewMockReviser(t),
+		state:    statuscontrollermock.NewMockStater(t),
+		runner:   runcontrollermock.NewMockRunner(t),
+		tooling:  toolingcontrollermock.NewMockApplier(t),
+		runtimes: runtimecontrollermock.NewMockProvisioner(t),
+		wrote:    map[string]string{},
 	}
 
-	h.driver = clidriver.New(h.out, h.fs, h.clone, h.sync, h.revise, h.state, h.runner, h.tooling,
+	h.driver = clidriver.New(h.out, h.fs, h.clone, h.sync, h.revise, h.state, h.runner, h.tooling, h.runtimes,
 		func(code int) {
 			if h.exitCode != nil {
 				*h.exitCode = code
@@ -207,6 +211,66 @@ func TestSyncProvisionsTheResolvedToolchainBinaries(t *testing.T) {
 	require.NoError(t, h.driver.Run(t.Context(), []string{"sync", "--root", "/w"}))
 	assert.Contains(t, h.out.String(), "toolchain binaries")
 	assert.Contains(t, h.out.String(), "installed mockery")
+}
+
+// Runtimes provision BEFORE the toolchain binaries: a binary's `go install`
+// needs the go the runtimes just stood up.
+func TestSyncProvisionsRuntimesBeforeBinaries(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+
+	pins := []runtimecontroller.Pin{{Name: "go", Version: "1.26.5"}}
+	binaries := []toolingcontroller.Binary{
+		{Name: "mockery", Module: "github.com/vektra/mockery/v3", Version: "v3.5.5"},
+	}
+
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(synccontroller.Report{Root: "/w", Runtimes: pins, Toolchain: binaries}, nil).Once()
+
+	var order []string
+
+	h.runtimes.EXPECT().Provision(mock.Anything, mock.Anything, "/w", "", pins).
+		RunAndReturn(func(context.Context, config.Factory, string, string, []runtimecontroller.Pin,
+		) (runtimecontroller.Report, error) {
+			order = append(order, "runtimes")
+
+			return runtimecontroller.Report{
+				Installed: []string{"go@1.26.5"},
+				Satisfied: []string{"go needs c-compiler (cgo): found on the host (cc at /usr/bin/cc)"},
+			}, nil
+		}).Once()
+	h.tooling.EXPECT().ProvisionBinaries(mock.Anything, "/w", "", binaries).
+		RunAndReturn(func(context.Context, string, string, []toolingcontroller.Binary,
+		) (toolingcontroller.BinaryReport, error) {
+			order = append(order, "binaries")
+
+			return toolingcontroller.BinaryReport{Reused: []string{"mockery"}}, nil
+		}).Once()
+
+	require.NoError(t, h.driver.Run(t.Context(), []string{"sync", "--root", "/w"}))
+	assert.Equal(t, []string{"runtimes", "binaries"}, order)
+	assert.Contains(t, h.out.String(), "installed go@1.26.5")
+	assert.Contains(t, h.out.String(), "found on the host")
+}
+
+func TestAFailedRuntimeProvisionStopsTheSync(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+
+	pins := []runtimecontroller.Pin{{Name: "go", Version: "1.26.5"}}
+
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(synccontroller.Report{Root: "/w", Runtimes: pins}, nil).Once()
+	h.runtimes.EXPECT().Provision(mock.Anything, mock.Anything, "/w", "", pins).
+		Return(runtimecontroller.Report{}, assert.AnError).Once()
+
+	err := h.driver.Run(t.Context(), []string{"sync", "--root", "/w"})
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Contains(t, err.Error(), "provisioning the runtimes")
 }
 
 func TestAFailingDistributionFailsTheSync(t *testing.T) {
@@ -487,7 +551,7 @@ func TestAReportThatCannotBePrintedIsAnError(t *testing.T) {
 	driver := clidriver.New(brokenWriter{}, fs,
 		clonecontrollermock.NewMockCloner(t),
 		synccontrollermock.NewMockSyncer(t), revisioncontrollermock.NewMockReviser(t),
-		statuscontrollermock.NewMockStater(t), nil, nil, func(int) {})
+		statuscontrollermock.NewMockStater(t), nil, nil, nil, func(int) {})
 
 	err := driver.Run(t.Context(), []string{"validate"})
 	require.ErrorIs(t, err, assert.AnError)
@@ -551,7 +615,7 @@ func TestALockReportThatCannotBePrintedIsAnError(t *testing.T) {
 	driver := clidriver.New(brokenWriter{}, fs,
 		clonecontrollermock.NewMockCloner(t), sync,
 		revisioncontrollermock.NewMockReviser(t), statuscontrollermock.NewMockStater(t),
-		nil, nil, func(int) {})
+		nil, nil, nil, func(int) {})
 
 	err := driver.Run(t.Context(), []string{"lock"})
 	require.ErrorIs(t, err, assert.AnError)

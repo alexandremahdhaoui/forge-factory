@@ -76,6 +76,13 @@ packages:
     interfaces:
       Runner:
 
+  github.com/alexandremahdhaoui/forge-factory/internal/controller/runtimecontroller:
+    config:
+      dir: internal/mocks/runtimecontrollermock
+      pkgname: runtimecontrollermock
+    interfaces:
+      Provisioner:
+
   github.com/alexandremahdhaoui/forge-factory/internal/controller/toolingcontroller:
     config:
       dir: internal/mocks/toolingcontrollermock

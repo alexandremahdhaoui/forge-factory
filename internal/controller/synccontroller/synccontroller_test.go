@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/runtimecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/toolingcontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/engineadaptermock"
@@ -758,6 +759,36 @@ func TestSyncResolvesTheToolchainBinaries(t *testing.T) {
 	require.Contains(t, report.Notes, "tool note")
 }
 
+// Runtimes resolve during sync exactly as binaries do - a literal pin as
+// written, a track through the register - sorted by name so the driver
+// provisions deterministically, params carried verbatim.
+func TestSyncResolvesTheDeclaredRuntimes(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.envrcExists(t, true)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
+
+	f := config.Factory{
+		Repos: []config.Repo{{Name: "member-a"}},
+		Toolchain: &config.Toolchain{Runtimes: map[string]config.RuntimeSpec{
+			"jre":  {Version: "21.0.5+11", Params: map[string]string{"source": "temurin"}},
+			"go":   {Version: "1.26.5"},
+			"rust": {Track: "runtime:rust"},
+		}},
+	}
+
+	report, err := h.c.Sync(context.Background(), f, "/w", "")
+	require.NoError(t, err)
+
+	require.Equal(t, []runtimecontroller.Pin{
+		{Name: "go", Version: "1.26.5"},
+		{Name: "jre", Version: "21.0.5+11", Params: map[string]string{"source": "temurin"}},
+		{Name: "rust", Version: "v9.9.9"},
+	}, report.Runtimes)
+	require.Contains(t, report.Notes, "tool note")
+}
+
 // The toolchain image resolves like a binary and lands in a generated file
 // the CI layer reads, so the pin is never hand-typed in a pipeline file.
 func TestSyncResolvesAndPersistsTheToolchainImage(t *testing.T) {
@@ -1264,8 +1295,10 @@ func managedEnvrc(t *testing.T) string {
 	abs, err := filepath.Abs("/w")
 	require.NoError(t, err)
 
-	return fmt.Sprintf("# BEGIN forge-factory\nexport PATH=\"%s:$PATH\"\n# END forge-factory\n",
-		filepath.Join(abs, ".forge", "bin"))
+	env := filepath.Join(abs, ".forge", "env")
+
+	return fmt.Sprintf("# BEGIN forge-factory\nexport PATH=\"%s:$PATH\"\n[ -f %q ] && . %q\n# END forge-factory\n",
+		filepath.Join(abs, ".forge", "bin"), env, env)
 }
 
 // The reason the block exists. Keying on "/.forge/bin" appearing anywhere

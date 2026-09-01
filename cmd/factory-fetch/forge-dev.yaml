@@ -1,0 +1,15 @@
+name: factory-fetch
+kind: mcp-server
+version: 0.1.0
+description: Fetch one runtime artifact and verify its sha256. Source customization lives here.
+openapi:
+  specPath: ../../api/factory.v1.yaml
+generate:
+  packageName: main
+  docsBaseURL: https://raw.githubusercontent.com/alexandremahdhaoui/forge-factory/refs/heads/main
+surface:
+  tools:
+    - name: fetch
+      description: Bring one artifact's bytes to a local path, hash-verified. The spec's rewrite rules retarget url prefixes at a mirror or an internal artifact store.
+      input: FetchInput
+      output: FetchOutput

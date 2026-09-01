@@ -18,6 +18,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/resolvecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/revisioncontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/runcontroller"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/runtimecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/toolingcontroller"
@@ -71,6 +72,7 @@ func run(ctx context.Context, args []string) error {
 		statuscontroller.New(fs, git),
 		runcontroller.New(fs, git, execadapter.New(), sync, lockadapter.New(), os.Stderr),
 		toolingcontroller.New(fs, execadapter.New()),
+		runtimecontroller.New(caller, fs, lockadapter.New()),
 		os.Exit,
 	)
 

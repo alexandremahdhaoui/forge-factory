@@ -16,6 +16,7 @@ engine: forge://github.com/alexandremahdhaoui/forge-factory/cmd/factory-lang-pyt
 |---|---|---|---|
 | `language` | Report which language this engine speaks. | `RenderInput` | `LanguageOutput` |
 | `render` | Render every python manifest the workspace needs. | `RenderInput` | `RenderOutput` |
+| `describe` | Describe the runtime this language's members exec - artifacts, layout, env, prerequisites. Pure data. | `DescribeInput` | `RuntimeDescription` |
 
 ## Running it by hand
 

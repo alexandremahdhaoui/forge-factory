@@ -12,7 +12,11 @@ components:
   schemas:
     Spec:
       type: object
-      description: Engine specific configuration. No language engine needs any today.
+      additionalProperties: true
+      description: >-
+        Engine specific configuration, passed through verbatim from the
+        factory's engines entry. The fetch engine reads its rewrite rules
+        here; a language engine needs none today.
 
     Repo:
       type: object
@@ -158,3 +162,217 @@ components:
         language:
           type: string
           description: The language name matched against a repo's languages list.
+
+    DescribeInput:
+      type: object
+      description: >-
+        What a provider engine is asked when the factory declares a runtime.
+        The engine answers pure data - where the bytes live and how they lay
+        out - and touches nothing. os and arch use Go's naming (linux, darwin;
+        amd64, arm64), because every engine in this fleet already speaks it.
+      required: [runtime, version, os, arch]
+      properties:
+        runtime:
+          type: string
+          description: The declared runtime name, which is also the engine's alias.
+        version:
+          type: string
+          description: The pinned version, exactly as the factory declares it.
+        os:
+          type: string
+        arch:
+          type: string
+        params:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            Extra keys from the runtime's factory entry, passed through
+            verbatim. A generic provider parameterizes on them - the JRE's
+            source vendor, for example. A language provider may ignore them.
+        spec:
+          $ref: '#/components/schemas/Spec'
+
+    RuntimeArtifact:
+      type: object
+      description: >-
+        One archive to fetch and lay out. The sha256 is the whole trust
+        model - however the bytes arrive (upstream, a mirror, a seeded
+        cache), they must hash to this - so a description without one is
+        invalid by schema.
+      required: [url, sha256, unpack]
+      properties:
+        url:
+          type: string
+          description: >-
+            Where the bytes live. The fetch engine may rewrite the prefix
+            (a mirror, an internal artifact store); the hash still decides.
+        sha256:
+          type: string
+        unpack:
+          type: string
+          enum: [tar, tar-gz, zip, file]
+          description: >-
+            How the install engine opens it. file means a single executable
+            written as-is - a standalone binary like pnpm needs no archive.
+            Every pinned distribution publishes one of these; xz stays out
+            until an artifact exists that ships nothing else.
+        strip:
+          type: integer
+          description: Leading path components dropped while unpacking. Default 0.
+        picks:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuntimePick'
+          description: >-
+            Subtrees to lay out, applied after strip. Empty means the whole
+            tree lands at the prefix root. Rust's component tarballs need
+            this - rustc/, cargo/ and rust-std-*/ each merge INTO the one
+            prefix, which is what its install script does imperatively and
+            this expresses as data.
+
+    RuntimePick:
+      type: object
+      description: >-
+        Lay the contents of one archive subtree at a path under the prefix.
+        For a file artifact, a pick with only at renames the file - a
+        release asset called pnpm-linux-x64 lands as pnpm.
+      properties:
+        from:
+          type: string
+          description: The subtree inside the archive, after strip. Empty is the whole tree.
+        at:
+          type: string
+          description: Destination under the install prefix. Empty is the root.
+
+    RuntimePrerequisite:
+      type: object
+      description: >-
+        Something this runtime assumes about the machine and cannot carry
+        itself. Declared so it is verified and named, never guessed: the
+        resolver satisfies it from another declared runtime that provides it,
+        or verifies it on the host, or fails loud - it never installs into
+        the host.
+      required: [name, reason]
+      properties:
+        name:
+          type: string
+          description: A capability name, matched against other runtimes' provides.
+        reason:
+          type: string
+          description: Why, for the human reading the refusal. Names the feature that needs it.
+        verify:
+          type: string
+          description: >-
+            An executable name whose presence on PATH satisfies the check
+            when no declared runtime provides the capability. Empty means
+            only a providing runtime can satisfy it.
+
+    RuntimeDescription:
+      type: object
+      description: >-
+        A provider engine's whole answer: what to fetch, how it lays out,
+        what it exposes, what it assumes. Pure data - printable, diffable,
+        and recordable beside the revision that used it.
+      required: [runtime, version, artifacts]
+      properties:
+        runtime:
+          type: string
+        version:
+          type: string
+        artifacts:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuntimeArtifact'
+        bins:
+          type: array
+          items:
+            type: string
+          description: >-
+            Prefix-relative executables to expose on the workspace's
+            .forge/bin.
+        env:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            Environment the runtime needs, composed into the managed .envrc
+            block. The literal token {prefix} in a value is replaced with the
+            store path at expose time - JAVA_HOME is "{prefix}", a library
+            path is "{prefix}/lib".
+        prerequisites:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuntimePrerequisite'
+        provides:
+          type: array
+          items:
+            type: string
+          description: >-
+            Capability names this runtime satisfies for OTHER runtimes'
+            prerequisites - zig provides c-compiler.
+
+    FetchInput:
+      type: object
+      description: >-
+        Bring one artifact's bytes to a local path. The fetch engine is where
+        source customization lives - its spec rewrites url prefixes for a
+        mirror or an internal store - and the sha256 check is not optional.
+      required: [artifact, dest]
+      properties:
+        artifact:
+          $ref: '#/components/schemas/RuntimeArtifact'
+        dest:
+          type: string
+          description: Absolute file path to write the bytes to.
+        spec:
+          $ref: '#/components/schemas/Spec'
+
+    FetchOutput:
+      type: object
+      description: Where the verified bytes landed.
+      required: [path, sha256]
+      properties:
+        path:
+          type: string
+        sha256:
+          type: string
+          description: The hash actually computed. Equal to the artifact's or the fetch failed.
+
+    InstallInput:
+      type: object
+      description: >-
+        Materialize fetched archives into one prefix. The contract is
+        containment: the install engine writes under prefix and nowhere
+        else.
+      required: [archives, prefix]
+      properties:
+        archives:
+          type: array
+          items:
+            $ref: '#/components/schemas/FetchedArchive'
+        prefix:
+          type: string
+          description: Absolute directory to lay the runtime out in.
+        spec:
+          $ref: '#/components/schemas/Spec'
+
+    FetchedArchive:
+      type: object
+      description: One artifact and the local path its verified bytes sit at.
+      required: [artifact, path]
+      properties:
+        artifact:
+          $ref: '#/components/schemas/RuntimeArtifact'
+        path:
+          type: string
+
+    InstallOutput:
+      type: object
+      description: What was laid out, prefix-relative.
+      required: [installed]
+      properties:
+        installed:
+          type: array
+          items:
+            type: string

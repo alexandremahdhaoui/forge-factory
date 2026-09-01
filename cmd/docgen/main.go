@@ -80,13 +80,15 @@ func read(fs fsadapter.FS, path string, into any) error {
 // forge-dev owns schema.md, generated from the same OpenAPI document, so this
 // does not write one.
 func engineDocs(fs fsadapter.FS) ([]docstypes.File, error) {
-	dirs, err := filepath.Glob(filepath.Join("cmd", "factory-lang-*"))
+	// Every factory-* engine, whatever axis it serves: the language
+	// renderers and the runtime provisioning engines document the same way.
+	dirs, err := filepath.Glob(filepath.Join("cmd", "factory-*"))
 	if err != nil {
 		return nil, fmt.Errorf("looking for engines: %w", err)
 	}
 
 	if len(dirs) == 0 {
-		return nil, fmt.Errorf("no engine found under cmd/factory-lang-*")
+		return nil, fmt.Errorf("no engine found under cmd/factory-*")
 	}
 
 	var out []docstypes.File

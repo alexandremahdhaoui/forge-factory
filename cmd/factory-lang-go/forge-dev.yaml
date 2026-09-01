@@ -17,3 +17,7 @@ surface:
       description: Render every Go manifest the workspace needs.
       input: RenderInput
       output: RenderOutput
+    - name: describe
+      description: Describe the runtime this language's members exec - artifacts, layout, env, prerequisites. Pure data.
+      input: DescribeInput
+      output: RuntimeDescription

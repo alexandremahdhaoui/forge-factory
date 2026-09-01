@@ -504,3 +504,130 @@ dependencies:
 		})
 	}
 }
+
+func TestRuntimeValidation(t *testing.T) {
+	t.Parallel()
+
+	base := `version: "1"
+name: w
+repos:
+  - name: r
+    url: u
+engines:
+  - alias: go
+    engine: forge://example.com/lang-go
+  - alias: jre
+    engine: forge://example.com/runtime-archive
+register:
+  url: git@example.com:owner/register.git
+toolchain:
+%s`
+
+	cases := map[string]struct {
+		toolchain string
+		want      string
+	}{
+		"a literal pin bound to its engine parses": {
+			toolchain: `  runtimes:
+    go: { version: "1.26.5" }
+    jre: { version: "21.0.5+11", params: { source: temurin } }`,
+		},
+		"a track parses": {
+			toolchain: `  runtimes:
+    go: { track: "runtime:go" }`,
+		},
+		"no pin at all": {
+			toolchain: `  runtimes:
+    go: {}`,
+			want: "exactly one of track or version pins a runtime",
+		},
+		"both pins": {
+			toolchain: `  runtimes:
+    go: { track: "runtime:go", version: "1.26.5" }`,
+			want: "not both",
+		},
+		"a malformed track": {
+			toolchain: `  runtimes:
+    go: { track: "no-colon" }`,
+			want: "a track is named <ecosystem>:<package>",
+		},
+		"a runtime with no engine under its alias": {
+			toolchain: `  runtimes:
+    zig: { version: "0.15.1" }`,
+			want: `no engine is declared under the alias "zig"`,
+		},
+		"a name that is not kebab-case": {
+			toolchain: `  runtimes:
+    Go: { version: "1.26.5" }`,
+			want: "lowercase kebab-case",
+		},
+		"satisfy naming the host parses": {
+			toolchain: `  runtimes:
+    go: { version: "1.26.5" }
+  satisfy:
+    c-compiler: host`,
+		},
+		"satisfy naming a declared runtime parses": {
+			toolchain: `  runtimes:
+    go: { version: "1.26.5" }
+    jre: { version: "21.0.5+11" }
+  satisfy:
+    jvm: jre`,
+		},
+		"satisfy naming a stranger is refused": {
+			toolchain: `  runtimes:
+    go: { version: "1.26.5" }
+  satisfy:
+    c-compiler: zig`,
+			want: `neither "host" nor a declared runtime`,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := config.Parse([]byte(fmt.Sprintf(base, tc.toolchain)))
+
+			if tc.want == "" {
+				require.NoError(t, err)
+
+				return
+			}
+
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
+func TestARuntimeTrackNeedsARegister(t *testing.T) {
+	t.Parallel()
+
+	raw := `version: "1"
+name: w
+repos:
+  - name: r
+    url: u
+engines:
+  - alias: go
+    engine: forge://example.com/lang-go
+toolchain:
+  runtimes:
+    go: { track: "runtime:go" }`
+
+	_, err := config.Parse([]byte(raw))
+	require.ErrorContains(t, err, "no register: block is declared")
+}
+
+func TestSpecForAnswersTheDeclaredSpec(t *testing.T) {
+	t.Parallel()
+
+	f := config.Factory{Engines: []config.Engine{
+		{Alias: "fetch", Engine: "forge://x", Spec: map[string]any{"rewrite": []any{}}},
+		{Alias: "bare", Engine: "forge://y"},
+	}}
+
+	assert.NotNil(t, f.SpecFor("fetch"))
+	assert.Nil(t, f.SpecFor("bare"))
+	assert.Nil(t, f.SpecFor("absent"))
+}

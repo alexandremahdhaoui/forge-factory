@@ -18,6 +18,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/repoadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/resolvecontroller"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/runtimecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/toolingcontroller"
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
 )
@@ -61,6 +62,10 @@ type Report struct {
 	// Toolchain is every declared binary resolved to its pinned version;
 	// the driver provisions them into the store.
 	Toolchain []toolingcontroller.Binary `json:"toolchain,omitempty"`
+	// Runtimes is every declared runtime resolved to its pinned version;
+	// the driver provisions them before the binaries, because building a
+	// binary needs the runtime that compiles it.
+	Runtimes []runtimecontroller.Pin `json:"runtimes,omitempty"`
 	// Image is the resolved toolchain container reference, tag included,
 	// when the factory declares one. Sync persists it into
 	// ToolchainImagePath for the CI layer to read.
@@ -186,6 +191,28 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 	// through the register like any dependency - and the driver provisions
 	// what this reports into the store.
 	if f.Toolchain != nil {
+		// Runtimes resolve the same way, and first: a binary's `go install`
+		// needs the go the runtimes provision.
+		for _, name := range sortedKeys(f.Toolchain.Runtimes) {
+			r := f.Toolchain.Runtimes[name]
+			version := r.Version
+
+			if r.Track != "" {
+				resolved, runtimeNotes, err := c.resolver.ResolveTool(ctx, f, root, r.Track)
+				report.Notes = append(report.Notes, runtimeNotes...)
+
+				if err != nil {
+					return Report{}, fmt.Errorf("resolving runtime %s: %w", name, err)
+				}
+
+				version = resolved
+			}
+
+			report.Runtimes = append(report.Runtimes, runtimecontroller.Pin{
+				Name: name, Version: version, Params: r.Params,
+			})
+		}
+
 		for _, b := range f.Toolchain.Binaries {
 			version := b.Version
 
@@ -648,8 +675,13 @@ func (c *Controller) ensureEnvrcs(f config.Factory, root string, report *Report)
 		return fmt.Errorf("resolving the workspace root: %w", err)
 	}
 
-	block := fmt.Sprintf("%s\nexport PATH=\"%s:$PATH\"\n%s\n",
-		envrcBegin, filepath.Join(absRoot, ".forge", "bin"), envrcEnd)
+	// The env file is where runtime provisioning composes each runtime's
+	// environment - JAVA_HOME and its kind. Sourced conditionally: it does
+	// not exist until the first provision, and a workspace with no declared
+	// runtimes never writes it.
+	envFile := filepath.Join(absRoot, filepath.FromSlash(runtimecontroller.EnvPath))
+	block := fmt.Sprintf("%s\nexport PATH=\"%s:$PATH\"\n[ -f %q ] && . %q\n%s\n",
+		envrcBegin, filepath.Join(absRoot, ".forge", "bin"), envFile, envFile, envrcEnd)
 
 	for _, r := range f.Repos {
 		envrc := filepath.Join(root, r.Name, ".envrc")

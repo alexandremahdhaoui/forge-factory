@@ -17,6 +17,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/resolvecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/revisioncontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/runcontroller"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/runtimecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/speccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/statuscontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
@@ -48,6 +49,7 @@ type Driver struct {
 	state       statuscontroller.Stater
 	run         runcontroller.Runner
 	tooling     toolingcontroller.Applier
+	runtimes    runtimecontroller.Provisioner
 	exit        func(int)
 }
 
@@ -60,11 +62,13 @@ func New(
 	state statuscontroller.Stater,
 	run runcontroller.Runner,
 	tooling toolingcontroller.Applier,
+	runtimes runtimecontroller.Provisioner,
 	exit func(int),
 ) *Driver {
 	return &Driver{
 		out: out, fs: fs, clone: clone, sync: sync,
-		revise: revise, state: state, run: run, tooling: tooling, exit: exit,
+		revise: revise, state: state, run: run, tooling: tooling,
+		runtimes: runtimes, exit: exit,
 	}
 }
 
@@ -167,7 +171,7 @@ func (d *Driver) runSync(ctx context.Context, f config.Factory, path, root strin
 		}
 	}
 
-	return d.applyTooling(ctx, root, report)
+	return d.applyTooling(ctx, f, root, report)
 }
 
 // runLock resolves the dependency closure the manifests name. It is its own
@@ -196,8 +200,10 @@ func (d *Driver) runLock(ctx context.Context, f config.Factory, root string) err
 // applyTooling provisions what sync resolved: a distribution when a source
 // is in reach (the --tooling-from flag, else the FORGE_DIST_MIRROR
 // environment - the airgap door, where the mirrored release assets ARE the
-// bundle), and every declared toolchain binary at its pinned version.
-func (d *Driver) applyTooling(ctx context.Context, root string, sync synccontroller.Report) error {
+// bundle), every declared runtime, and every declared toolchain binary at
+// its pinned version. Runtimes go first: a binary's `go install` needs the
+// go the runtimes provision.
+func (d *Driver) applyTooling(ctx context.Context, f config.Factory, root string, sync synccontroller.Report) error {
 	if d.tooling == nil {
 		return nil
 	}
@@ -222,6 +228,17 @@ func (d *Driver) applyTooling(ctx context.Context, root string, sync synccontrol
 		}
 	}
 
+	if d.runtimes != nil && len(sync.Runtimes) > 0 {
+		report, err := d.runtimes.Provision(ctx, f, root, "", sync.Runtimes)
+		if err != nil {
+			return fmt.Errorf("provisioning the runtimes: %w", err)
+		}
+
+		if err := d.write(renderRuntimes(report)); err != nil {
+			return err
+		}
+	}
+
 	if len(sync.Toolchain) > 0 {
 		report, err := d.tooling.ProvisionBinaries(ctx, root, "", sync.Toolchain)
 		if err != nil {
@@ -234,6 +251,26 @@ func (d *Driver) applyTooling(ctx context.Context, root string, sync synccontrol
 	}
 
 	return nil
+}
+
+func renderRuntimes(report runtimecontroller.Report) string {
+	var b strings.Builder
+
+	b.WriteString("runtimes\n")
+
+	for _, name := range report.Installed {
+		fmt.Fprintf(&b, "  installed %s\n", name)
+	}
+
+	for _, name := range report.Reused {
+		fmt.Fprintf(&b, "  reused %s\n", name)
+	}
+
+	for _, line := range report.Satisfied {
+		fmt.Fprintf(&b, "  %s\n", line)
+	}
+
+	return b.String()
 }
 
 func renderBinaries(report toolingcontroller.BinaryReport) string {

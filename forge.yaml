@@ -19,6 +19,18 @@ build:
     src: ./cmd/factory-lang-typescript
     engine: forge://forge-dev
 
+  - name: gen-factory-fetch
+    src: ./cmd/factory-fetch
+    engine: forge://forge-dev
+
+  - name: gen-factory-install
+    src: ./cmd/factory-install
+    engine: forge://forge-dev
+
+  - name: gen-factory-runtime-archive
+    src: ./cmd/factory-runtime-archive
+    engine: forge://forge-dev
+
   - name: generate-mocks
     src: .
     engine: forge://generic-builder
@@ -62,6 +74,24 @@ build:
 
   - name: factory-lang-typescript
     src: ./cmd/factory-lang-typescript
+    dest: ./build/bin
+    engine: forge://go-build
+    platforms: [linux/amd64, linux/arm64]
+
+  - name: factory-fetch
+    src: ./cmd/factory-fetch
+    dest: ./build/bin
+    engine: forge://go-build
+    platforms: [linux/amd64, linux/arm64]
+
+  - name: factory-install
+    src: ./cmd/factory-install
+    dest: ./build/bin
+    engine: forge://go-build
+    platforms: [linux/amd64, linux/arm64]
+
+  - name: factory-runtime-archive
+    src: ./cmd/factory-runtime-archive
     dest: ./build/bin
     engine: forge://go-build
     platforms: [linux/amd64, linux/arm64]

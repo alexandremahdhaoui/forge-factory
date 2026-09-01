@@ -36,6 +36,17 @@ type Factory struct {
 type Toolchain struct {
 	Binaries []ToolchainBinary `json:"binaries,omitempty"`
 
+	// Runtimes are the language runtimes and standalone tools the factory
+	// provisions into the store and exposes on .forge/bin. Each name binds
+	// to the engine declared under the same alias - exactly as a repo's
+	// language does - and that provider engine describes what to fetch.
+	Runtimes map[string]RuntimeSpec `json:"runtimes,omitempty"`
+
+	// Satisfy overrides how a runtime's declared prerequisite is met: the
+	// name of a declared runtime that provides it, or "host" to verify it
+	// on the machine. Nothing is ever installed into the host either way.
+	Satisfy map[string]string `json:"satisfy,omitempty"`
+
 	// Image is the container the workspace's pipelines run their jobs in.
 	// Declared once here, resolved by sync into a generated file, and read
 	// from there by the CI layer - so the pin is never hand-typed in a
@@ -54,6 +65,19 @@ type ToolchainImage struct {
 	Track string `json:"track,omitempty"`
 	// Version is the literal pin.
 	Version string `json:"version,omitempty"`
+}
+
+// RuntimeSpec pins one declared runtime. Exactly one of track or version
+// pins it, exactly as a binary is pinned; params travel to the provider
+// engine verbatim, for the keys only it understands.
+type RuntimeSpec struct {
+	// Track names a register track as "<ecosystem>:<package>".
+	Track string `json:"track,omitempty"`
+	// Version is the literal pin.
+	Version string `json:"version,omitempty"`
+	// Params carries provider-specific keys - a generic archive provider's
+	// source vendor, for example - passed through without being read here.
+	Params map[string]string `json:"params,omitempty"`
 }
 
 // ToolchainBinary is one provisioned tool. Exactly one of track or version
@@ -185,6 +209,10 @@ type Repo struct {
 type Engine struct {
 	Alias  string `json:"alias"`
 	Engine string `json:"engine"`
+	// Spec is the engine's own configuration, passed through verbatim on
+	// every call - the fetch engine's url rewrites live here, so a mirror
+	// or an internal artifact store is one declared block, never a fork.
+	Spec map[string]any `json:"spec,omitempty"`
 }
 
 type State struct {
@@ -405,6 +433,49 @@ func (f Factory) Validate() error {
 			}
 		}
 
+		for _, name := range sortedKeys(f.Toolchain.Runtimes) {
+			r := f.Toolchain.Runtimes[name]
+			where := fmt.Sprintf("toolchain.runtimes.%s", name)
+
+			if !aliasPattern.MatchString(name) {
+				add("%s: a runtime name must be lowercase kebab-case", where)
+			}
+
+			// The name is the binding: the engine declared under the same
+			// alias is the provider that describes this runtime.
+			if !aliases[name] {
+				add("%s: no engine is declared under the alias %q, and the name is the binding", where, name)
+			}
+
+			switch {
+			case r.Track == "" && r.Version == "":
+				add("%s: exactly one of track or version pins a runtime; neither means nothing resolves it", where)
+			case r.Track != "" && r.Version != "":
+				add("%s: exactly one of track or version pins a runtime, not both", where)
+			case r.Track != "":
+				if !strings.Contains(r.Track, ":") {
+					add("%s: a track is named <ecosystem>:<package>", where)
+				}
+
+				if f.Register == nil {
+					add("%s: resolves from the register and no register: block is declared", where)
+				}
+			}
+		}
+
+		for _, capability := range sortedKeys(f.Toolchain.Satisfy) {
+			target := f.Toolchain.Satisfy[capability]
+			where := fmt.Sprintf("toolchain.satisfy.%s", capability)
+
+			if target == "host" {
+				continue
+			}
+
+			if _, ok := f.Toolchain.Runtimes[target]; !ok {
+				add("%s: %q is neither \"host\" nor a declared runtime", where, target)
+			}
+		}
+
 		if img := f.Toolchain.Image; img != nil {
 			const where = "toolchain.image"
 
@@ -464,6 +535,19 @@ func (f Factory) EngineFor(language string) (string, bool) {
 	}
 
 	return "", false
+}
+
+// SpecFor returns the engine spec declared for an alias, nil when the
+// engine or its spec is absent. It is passed through verbatim on every
+// call, so an engine's own configuration lives in one declared block.
+func (f Factory) SpecFor(alias string) map[string]any {
+	for _, e := range f.Engines {
+		if e.Alias == alias {
+			return e.Spec
+		}
+	}
+
+	return nil
 }
 
 // Languages returns every language any repo declares, sorted, so a sync is

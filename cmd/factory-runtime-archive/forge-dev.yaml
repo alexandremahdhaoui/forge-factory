@@ -1,0 +1,15 @@
+name: factory-runtime-archive
+kind: mcp-server
+version: 0.1.0
+description: Describe archive runtimes that have no language engine - a JRE, a standalone package manager, a generator jar.
+openapi:
+  specPath: ../../api/factory.v1.yaml
+generate:
+  packageName: main
+  docsBaseURL: https://raw.githubusercontent.com/alexandremahdhaoui/forge-factory/refs/heads/main
+surface:
+  tools:
+    - name: describe
+      description: Answer the runtime's artifacts, layout, env and prerequisites from the engine's table. Pure data.
+      input: DescribeInput
+      output: RuntimeDescription

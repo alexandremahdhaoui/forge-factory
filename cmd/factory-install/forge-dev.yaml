@@ -1,0 +1,15 @@
+name: factory-install
+kind: mcp-server
+version: 0.1.0
+description: Materialize fetched runtime archives into one prefix, contained to it.
+openapi:
+  specPath: ../../api/factory.v1.yaml
+generate:
+  packageName: main
+  docsBaseURL: https://raw.githubusercontent.com/alexandremahdhaoui/forge-factory/refs/heads/main
+surface:
+  tools:
+    - name: install
+      description: Lay fetched archives out under the prefix per the description's strip and picks. Writes under the prefix and nowhere else.
+      input: InstallInput
+      output: InstallOutput
