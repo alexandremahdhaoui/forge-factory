@@ -229,14 +229,18 @@ func (c *Controller) tar(a Fetched, prefix string) ([]string, error) {
 		case tar.TypeSymlink:
 			// A link target is resolved relative to the link, so an
 			// absolute target or one climbing out of the prefix escapes
-			// containment exactly like a path would.
+			// containment exactly like a path would. The judgement is on
+			// where the target RESOLVES, not on its shape: the JRE ships
+			// legal/jdk.localedata/LICENSE -> ../java.base/LICENSE, which
+			// climbs one directory and stays squarely inside the prefix.
 			target := hdr.Linkname
 			if filepath.IsAbs(target) {
 				return nil, fmt.Errorf("%w: symlink %s -> %s", ErrEscape, rel, target)
 			}
 
-			if _, err := contained(filepath.Dir(dest), target); err != nil {
-				return nil, fmt.Errorf("symlink %s -> %s: %w", rel, target, err)
+			resolved := filepath.Clean(filepath.Join(filepath.Dir(dest), filepath.FromSlash(target)))
+			if resolved != prefix && !strings.HasPrefix(resolved, prefix+string(filepath.Separator)) {
+				return nil, fmt.Errorf("%w: symlink %s -> %s", ErrEscape, rel, target)
 			}
 
 			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {

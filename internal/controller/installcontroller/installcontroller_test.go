@@ -543,3 +543,26 @@ func TestAFilePickBlockedByAFileFails(t *testing.T) {
 	}}, prefix)
 	require.Error(t, err)
 }
+
+// A symlink may climb directories as long as it RESOLVES inside the prefix:
+// the JRE ships legal/jdk.localedata/LICENSE -> ../java.base/LICENSE.
+func TestAClimbingSymlinkThatStaysInsideLands(t *testing.T) {
+	t.Parallel()
+
+	archive := buildTar(t, false, []entry{
+		{name: "legal/java.base/LICENSE", body: "GPL"},
+		{name: "legal/jdk.localedata/LICENSE", link: "../java.base/LICENSE"},
+	})
+
+	prefix := t.TempDir()
+
+	_, err := installcontroller.New().Install([]installcontroller.Fetched{{
+		Artifact: runtimetypes.Artifact{URL: "https://x/jre.tar.gz", Unpack: "tar"},
+		Path:     archive,
+	}}, prefix)
+	require.NoError(t, err)
+
+	target, err := os.Readlink(filepath.Join(prefix, "legal", "jdk.localedata", "LICENSE"))
+	require.NoError(t, err)
+	assert.Equal(t, "../java.base/LICENSE", target)
+}
