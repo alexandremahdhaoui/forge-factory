@@ -264,7 +264,17 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		}
 	}
 
-	if _, _, err := c.renderMembers(ctx, f, root, only, &report, true, ignores); err != nil {
+	_, lockfiles, generated, err := c.renderMembers(ctx, f, root, only, &report, true, ignores)
+	if err != nil {
+		return Report{}, err
+	}
+
+	// What this factory generates is recorded beside the other root
+	// contracts: every rendered file plus every declared lockfile,
+	// root-relative. forge-ci reads it to keep factory churn out of the
+	// revision's dirty measurement - the register moves these files by
+	// design, and only a language engine knows their names.
+	if err := c.recordGenerated(root, append(append([]string{}, generated...), lockfiles...), &report); err != nil {
 		return Report{}, err
 	}
 
@@ -305,8 +315,12 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 		Unlocked: []string{},
 	}
 
-	commands, lockfiles, err := c.renderMembers(ctx, f, root, only, &report, false, nil)
+	commands, lockfiles, generated, err := c.renderMembers(ctx, f, root, only, &report, false, nil)
 	if err != nil {
+		return Report{}, err
+	}
+
+	if err := c.recordGenerated(root, append(append([]string{}, generated...), lockfiles...), &report); err != nil {
 		return Report{}, err
 	}
 
@@ -336,6 +350,13 @@ const LockManifestPath = ".forge/dependency-locks.json"
 // which is what keeps it out of hand-written pipeline files.
 const ToolchainImagePath = ".forge/toolchain-image"
 
+// GeneratedManifestPath is where sync records every file this factory
+// generates - each rendered manifest and each declared lockfile,
+// root-relative. The path is a contract with forge-ci, which excludes
+// exactly these files from a repo's dirty measurement: the register moves
+// them by design, so their churn is the system working, not drift.
+const GeneratedManifestPath = ".forge/factory-generated.json"
+
 // writeIfChanged writes target only when the bytes differ, and answers
 // whether it did - a sync that converges nothing must report nothing.
 func (c *Controller) writeIfChanged(target string, data []byte) (bool, error) {
@@ -357,6 +378,48 @@ func (c *Controller) writeIfChanged(target string, data []byte) (bool, error) {
 type lockManifest struct {
 	Version int          `json:"version"`
 	Locks   []lockedFile `json:"locks"`
+}
+
+type generatedManifest struct {
+	Version int      `json:"version"`
+	Files   []string `json:"files"`
+}
+
+// recordGenerated writes the factory-generated file list, root-relative,
+// sorted and deduplicated, only when the bytes changed.
+func (c *Controller) recordGenerated(root string, paths []string, report *Report) error {
+	seen := map[string]bool{}
+	manifest := generatedManifest{Version: 1, Files: []string{}}
+
+	for _, path := range paths {
+		rel := relative(root, path)
+		if rel == "" || seen[rel] {
+			continue
+		}
+
+		seen[rel] = true
+		manifest.Files = append(manifest.Files, rel)
+	}
+
+	sort.Strings(manifest.Files)
+
+	raw, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("recording generated files: %w", err)
+	}
+
+	target := filepath.Join(root, filepath.FromSlash(GeneratedManifestPath))
+
+	changed, err := c.writeIfChanged(target, append(raw, '\n'))
+	if err != nil {
+		return fmt.Errorf("recording generated files: %w", err)
+	}
+
+	if changed {
+		report.Written = append(report.Written, target)
+	}
+
+	return nil
 }
 
 type lockedFile struct {
@@ -436,35 +499,36 @@ func (c *Controller) renderMembers(
 	report *Report,
 	write bool,
 	ignores map[string][]string,
-) ([]commandWire, []string, error) {
+) ([]commandWire, []string, []string, error) {
 	resolved, err := c.resolve(f, root)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	var (
 		lockCommands []commandWire
 		lockfiles    []string
+		generated    []string
 	)
 
 	for _, language := range f.Languages() {
 		uri, ok := f.EngineFor(language)
 		if !ok {
-			return nil, nil, fmt.Errorf("no engine is registered for %q", language)
+			return nil, nil, nil, fmt.Errorf("no engine is registered for %q", language)
 		}
 
 		if err := c.checkLanguage(ctx, uri, language, resolved); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		deps, depNotes, err := c.resolver.Resolve(ctx, f, root, language, f.DependenciesFor(language))
 		if err != nil {
-			return nil, nil, fmt.Errorf("resolving %s dependencies: %w", language, err)
+			return nil, nil, nil, fmt.Errorf("resolving %s dependencies: %w", language, err)
 		}
 
 		dev, devNotes, err := c.resolver.Resolve(ctx, f, root, language, f.DevFor(language))
 		if err != nil {
-			return nil, nil, fmt.Errorf("resolving %s devDependencies: %w", language, err)
+			return nil, nil, nil, fmt.Errorf("resolving %s devDependencies: %w", language, err)
 		}
 
 		// A member module another member imports - a shared spec - is
@@ -473,7 +537,7 @@ func (c *Controller) renderMembers(
 		// register's internal track is what governs it.
 		members, err := c.resolver.ResolveMembers(ctx, f, root, language)
 		if err != nil {
-			return nil, nil, fmt.Errorf("resolving %s member modules: %w", language, err)
+			return nil, nil, nil, fmt.Errorf("resolving %s member modules: %w", language, err)
 		}
 
 		required := c.internalRequires(resolved, language)
@@ -513,7 +577,15 @@ func (c *Controller) renderMembers(
 		var out renderOutput
 
 		if err := c.caller.Call(ctx, uri, ToolRender, in, &out); err != nil {
-			return nil, nil, fmt.Errorf("rendering %s: %w", language, err)
+			return nil, nil, nil, fmt.Errorf("rendering %s: %w", language, err)
+		}
+
+		for _, file := range out.Files {
+			if only != "" && !underMemberOrRoot(root, only, file.Path) {
+				continue
+			}
+
+			generated = append(generated, file.Path)
 		}
 
 		if write {
@@ -523,7 +595,7 @@ func (c *Controller) renderMembers(
 				}
 
 				if err := c.fs.WriteFile(file.Path, []byte(file.Content)); err != nil {
-					return nil, nil, fmt.Errorf("writing %s: %w", file.Path, err)
+					return nil, nil, nil, fmt.Errorf("writing %s: %w", file.Path, err)
 				}
 
 				report.Written = append(report.Written, file.Path)
@@ -553,7 +625,7 @@ func (c *Controller) renderMembers(
 		}
 	}
 
-	return lockCommands, lockfiles, nil
+	return lockCommands, lockfiles, generated, nil
 }
 
 // underMemberOrRoot keeps a write inside the one materialised member or at

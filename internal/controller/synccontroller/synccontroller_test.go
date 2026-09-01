@@ -119,6 +119,23 @@ func newHarness(t *testing.T) *harness {
 		return nil, errors.New("no manifest yet")
 	}).Maybe()
 
+	// Both verbs record the factory-generated file list through
+	// writeIfChanged, which reads the target first. Absent is the common
+	// case here and means "write it fresh".
+	h.fs.EXPECT().ReadFile(mock.MatchedBy(func(path string) bool {
+		return strings.HasSuffix(path, "/.forge/factory-generated.json")
+	})).Return(nil, errors.New("no manifest yet")).Maybe()
+	h.fs.EXPECT().MkdirAll(mock.MatchedBy(func(path string) bool {
+		return strings.HasSuffix(path, "/.forge")
+	})).Return(nil).Maybe()
+	h.fs.EXPECT().WriteFile(mock.MatchedBy(func(path string) bool {
+		return strings.HasSuffix(path, "/.forge/factory-generated.json")
+	}), mock.Anything).RunAndReturn(func(path string, data []byte) error {
+		h.wrote[path] = string(data)
+
+		return nil
+	}).Maybe()
+
 	isGitignore := func(path string) bool {
 		return strings.HasSuffix(path, "/.gitignore")
 	}
@@ -202,7 +219,9 @@ func TestSyncWritesWhatTheEngineAsksForAndIgnoresIt(t *testing.T) {
 	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"/w/go.work", "/w/golden-go/go.mod"}, report.Written)
+	assert.Equal(t,
+		[]string{"/w/.forge/factory-generated.json", "/w/go.work", "/w/golden-go/go.mod"},
+		report.Written)
 	assert.Equal(t, []string{"/w/golden-go/.gitignore"}, report.Ignored)
 	assert.Equal(t, "module example.com/g\n", h.wrote["/w/golden-go/go.mod"])
 	assert.Contains(t, h.wrote["/w/golden-go/.gitignore"], "/go.mod")
@@ -465,8 +484,11 @@ func TestLockRunsWhatAnEngineDeclares(t *testing.T) {
 	assert.NotContains(t, h.wrote, "/w/golden-go/go.mod",
 		"a lock writes no manifest; those are sync's business")
 
-	// The one file a lock does write is the record of what resolved.
-	assert.Equal(t, []string{"/w/.forge/dependency-locks.json"}, report.Written)
+	// A lock writes the record of what resolved, and the factory-generated
+	// list beside it.
+	assert.Equal(t,
+		[]string{"/w/.forge/factory-generated.json", "/w/.forge/dependency-locks.json"},
+		report.Written)
 	assert.JSONEq(t, `{"version":1,"locks":[]}`, h.wrote["/w/.forge/dependency-locks.json"],
 		"no lockfile was declared, so the manifest records none")
 }
@@ -699,7 +721,9 @@ func TestSyncOnlyRendersTheOneMemberAndTheRoot(t *testing.T) {
 	report, err := h.c.Sync(t.Context(), parse(t, twoMemberFactory), "/w", "golden-go")
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{"/w/go.work", "/w/golden-go/go.mod"}, report.Written,
+	assert.Equal(t,
+		[]string{"/w/.forge/factory-generated.json", "/w/go.work", "/w/golden-go/go.mod"},
+		report.Written,
 		"the one member and the root land; the absent member never does")
 	assert.NotContains(t, h.wrote, "/w/other-go/go.mod")
 }
@@ -798,7 +822,6 @@ func TestSyncResolvesAndPersistsTheToolchainImage(t *testing.T) {
 	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
 	h.fs.EXPECT().ReadFile("/w/.forge/toolchain-image").Return(nil, assert.AnError).Once()
-	h.fs.EXPECT().MkdirAll("/w/.forge").Return(nil).Once()
 	h.recordWrites()
 
 	f := config.Factory{
@@ -1031,7 +1054,6 @@ func TestSyncStopsWhenAToolchainImageCannotBePersisted(t *testing.T) {
 	h.identityAnswers()
 	h.envrcExists(t, true)
 	h.fs.EXPECT().ReadFile("/w/.forge/toolchain-image").Return(nil, assert.AnError).Once()
-	h.fs.EXPECT().MkdirAll("/w/.forge").Return(nil).Once()
 	h.fs.EXPECT().WriteFile("/w/.forge/toolchain-image", mock.Anything).
 		Return(errors.New("read only")).Once()
 
@@ -1413,4 +1435,87 @@ func (h *harness) envrcContent(t *testing.T, body string) {
 
 	h.fs.EXPECT().Exists(mock.MatchedBy(isEnvrc)).Return(true, nil).Maybe()
 	h.fs.EXPECT().ReadFile(mock.MatchedBy(isEnvrc)).Return([]byte(body), nil).Maybe()
+}
+
+// A path can reach the generated record twice - rendered by an engine and
+// declared a lockfile, or rendered for two members that share a file. The
+// record holds it once.
+func TestARepeatedGeneratedPathIsRecordedOnce(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.envrcExists(t, true)
+	h.repos.EXPECT().Identity("/w/golden-go").
+		Return(map[string]string{"module": "example.com/g"}, nil).Once()
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
+		{"path": "/w/golden-go/go.mod", "content": "module example.com/g\n"},
+		{"path": "/w/golden-go/go.mod", "content": "module example.com/g\n"},
+	}})
+	h.recordWrites()
+
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	require.NoError(t, err)
+
+	assert.JSONEq(t, `{"version":1,"files":["golden-go/go.mod"]}`,
+		h.wrote["/w/.forge/factory-generated.json"])
+}
+
+// answersOnce is the harness's answers helper for the two tests below that
+// build their mocks by hand: the harness's constructor-level expectations
+// would shadow the failing ones these tests need.
+func answersOnce(t *testing.T, caller *engineadaptermock.MockCaller, payload any) {
+	t.Helper()
+
+	caller.EXPECT().Call(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, _, _ string, _, out any) error {
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				return err
+			}
+
+			return json.Unmarshal(raw, out)
+		}).Once()
+}
+
+func TestAFailedGeneratedRecordFailsTheLock(t *testing.T) {
+	t.Parallel()
+
+	caller := engineadaptermock.NewMockCaller(t)
+	fs := fsadaptermock.NewMockFS(t)
+	repos := repoadaptermock.NewMockReader(t)
+	c := synccontroller.New(caller, fs,
+		repos, execadaptermock.NewMockRunner(t), passthrough{})
+
+	repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+	answersOnce(t, caller, map[string]any{"language": "go"})
+	answersOnce(t, caller, map[string]any{"files": []any{}})
+	fs.EXPECT().ReadFile(mock.Anything).Return(nil, errors.New("absent")).Maybe()
+	fs.EXPECT().MkdirAll(mock.Anything).Return(assert.AnError).Once()
+
+	_, err := c.Lock(t.Context(), parse(t, factory), "/w", "")
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Contains(t, err.Error(), "recording generated files")
+}
+
+func TestAFailedGeneratedRecordFailsTheSync(t *testing.T) {
+	t.Parallel()
+
+	caller := engineadaptermock.NewMockCaller(t)
+	fs := fsadaptermock.NewMockFS(t)
+	repos := repoadaptermock.NewMockReader(t)
+	c := synccontroller.New(caller, fs,
+		repos, execadaptermock.NewMockRunner(t), passthrough{})
+
+	repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+	answersOnce(t, caller, map[string]any{"language": "go"})
+	answersOnce(t, caller, map[string]any{"files": []any{}})
+	fs.EXPECT().ReadFile(mock.Anything).Return(nil, errors.New("absent")).Maybe()
+	fs.EXPECT().Exists(mock.Anything).Return(false, nil).Maybe()
+	fs.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(nil).Maybe()
+	fs.EXPECT().MkdirAll(mock.Anything).Return(assert.AnError).Once()
+
+	_, err := c.Sync(t.Context(), parse(t, factory), "/w", "")
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Contains(t, err.Error(), "recording generated files")
 }
