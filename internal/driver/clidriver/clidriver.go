@@ -262,6 +262,10 @@ func renderRuntimes(report runtimecontroller.Report) string {
 		fmt.Fprintf(&b, "  installed %s\n", name)
 	}
 
+	for _, name := range report.Rebuilt {
+		fmt.Fprintf(&b, "  rebuilt %s: the entry lacked a bin its description names\n", name)
+	}
+
 	for _, name := range report.Reused {
 		fmt.Fprintf(&b, "  reused %s\n", name)
 	}

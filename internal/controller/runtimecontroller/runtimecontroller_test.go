@@ -714,19 +714,26 @@ func TestAnUnlockableStoreIsAnError(t *testing.T) {
 	require.ErrorContains(t, err, "locking the store for toygo@1.0.0")
 }
 
-// A store entry from before the description grew lacks the new bin. Reuse
-// must refuse it loud, or the expose lays a dangling symlink and the
-// toolchain fails only when the missing tool is called - which is how a
-// grown Rust description would have kept failing on a warm store.
-func TestAStaleStoreEntryMissingADescribedBinIsRefused(t *testing.T) {
+// A store entry from before the description grew lacks the new bin - the
+// shape a restored CI cache or an old machine store has. Reusing it would
+// expose a dangling symlink that fails only when the missing tool is
+// called, so the entry is rebuilt in place and the report says so.
+func TestAStaleStoreEntryMissingADescribedBinIsRebuilt(t *testing.T) {
 	h := newHarness(t)
 
 	// The entry predates the description: no bin/toygo inside.
 	require.NoError(t, os.MkdirAll(filepath.Join(h.store, "runtimes", "toygo@1.0.0"), 0o750))
 	h.expectDescribe(t, description(nil))
+	h.expectFetchAndInstall(t)
 
-	_, err := h.c.Provision(context.Background(), factoryWith(toyEngine()), h.root, h.store,
+	report, err := h.c.Provision(context.Background(), factoryWith(toyEngine()), h.root, h.store,
 		[]runtimecontroller.Pin{{Name: "toygo", Version: "1.0.0"}})
-	require.ErrorContains(t, err, "does not carry bin/toygo")
-	require.ErrorContains(t, err, "remove that directory and sync again")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"toygo@1.0.0"}, report.Rebuilt)
+	assert.Empty(t, report.Reused)
+
+	// The rebuilt entry carries the described bin now.
+	_, statErr := os.Stat(filepath.Join(h.store, "runtimes", "toygo@1.0.0", "bin", "toygo"))
+	require.NoError(t, statErr)
 }

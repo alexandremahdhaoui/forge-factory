@@ -59,6 +59,10 @@ type Report struct {
 	// Installed and Reused are name@version, per runtime.
 	Installed []string
 	Reused    []string
+	// Rebuilt names entries that existed but lacked a bin the description
+	// names - a restored cache or an old machine store after the
+	// description grew - and were reinstalled in place.
+	Rebuilt []string
 	// Satisfied is one line per prerequisite, naming what satisfied it.
 	Satisfied []string
 	// Exposed is each executable linked into the workspace's .forge/bin.
@@ -360,11 +364,7 @@ func (c *Controller) materialize(
 ) error {
 	name := d.pin.Name + "@" + d.pin.Version
 
-	if ok, _ := c.fs.Exists(d.prefix); ok {
-		if err := c.entryCarriesTheBins(name, d); err != nil {
-			return err
-		}
-
+	if ok, _ := c.fs.Exists(d.prefix); ok && c.entryCarriesTheBins(d) {
 		report.Reused = append(report.Reused, name)
 
 		return nil
@@ -381,14 +381,26 @@ func (c *Controller) materialize(
 
 	defer release()
 
+	rebuilt := false
+
 	if ok, _ := c.fs.Exists(d.prefix); ok {
-		if err := c.entryCarriesTheBins(name, d); err != nil {
-			return err
+		if c.entryCarriesTheBins(d) {
+			report.Reused = append(report.Reused, name)
+
+			return nil
 		}
 
-		report.Reused = append(report.Reused, name)
+		// The entry exists but lacks a bin the description names: the
+		// description grew after the entry was installed, which is what a
+		// restored cache or an old machine store looks like. The entry is
+		// rebuilt under the held lock and the report says so - silently
+		// reusing it would expose a dangling symlink that fails only when
+		// the missing tool is called.
+		if err := c.fs.Remove(d.prefix); err != nil {
+			return fmt.Errorf("removing the stale store entry %s: %w", name, err)
+		}
 
-		return nil
+		rebuilt = true
 	}
 
 	fetchURI, fetchSpec := c.engineOr(f, "fetch", DefaultFetchEngine)
@@ -434,27 +446,29 @@ func (c *Controller) materialize(
 		return fmt.Errorf("landing %s: %w", name, err)
 	}
 
-	report.Installed = append(report.Installed, name)
+	if rebuilt {
+		report.Rebuilt = append(report.Rebuilt, name)
+	} else {
+		report.Installed = append(report.Installed, name)
+	}
 
 	return nil
 }
 
-// entryCarriesTheBins refuses to reuse a store entry that lacks a bin the
+// entryCarriesTheBins answers whether a store entry holds every bin the
 // description names. The store is keyed on name@version alone, so a
-// description that grows a component after the entry was installed would
-// otherwise be exposed as a dangling symlink - a toolchain that reads as
-// provisioned and fails only when the missing tool is called.
-func (c *Controller) entryCarriesTheBins(name string, d described) error {
+// description that grows a component after the entry was installed leaves
+// an entry that reads as installed and fails only when the missing tool is
+// called. An entry that fails this check is rebuilt, never reused.
+func (c *Controller) entryCarriesTheBins(d described) bool {
 	for _, bin := range d.desc.Bins {
 		target := filepath.Join(d.prefix, filepath.FromSlash(bin))
 		if ok, _ := c.fs.Exists(target); !ok {
-			return fmt.Errorf(
-				"store entry %s at %s does not carry %s: the runtime's description grew since the entry was installed; remove that directory and sync again",
-				name, d.prefix, bin)
+			return false
 		}
 	}
 
-	return nil
+	return true
 }
 
 // engineOr answers the engine behind an alias, or the default when the
