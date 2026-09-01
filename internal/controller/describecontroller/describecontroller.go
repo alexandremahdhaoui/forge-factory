@@ -81,9 +81,13 @@ func (Go) Describe(in runtimetypes.Input) (runtimetypes.Description, error) {
 }
 
 // Rust describes the Rust toolchain. The combined dist tarball holds
-// components - rustc/, cargo/, rust-std-<triple>/ - that its install script
-// merges into one prefix; the picks express that merge as data. rustup is
-// only a downloader of these same tarballs, so nothing here needs it.
+// components - rustc/, cargo/, rust-std-<triple>/, rustfmt-preview/,
+// clippy-preview/ - that its install script merges into one prefix; the
+// picks express that merge as data. rustfmt and clippy ride along because
+// cargo resolves `cargo fmt` and `cargo clippy` as cargo-fmt and
+// cargo-clippy on PATH, and a toolchain that cannot format or lint fails
+// the stages that call them. rustup is only a downloader of these same
+// tarballs, so nothing here needs it.
 type Rust struct{}
 
 // Language answers the runtime name this describer serves.
@@ -129,9 +133,15 @@ func (Rust) Describe(in runtimetypes.Input) (runtimetypes.Description, error) {
 				{From: "rustc"},
 				{From: "cargo"},
 				{From: "rust-std-" + build.triple},
+				{From: "rustfmt-preview"},
+				{From: "clippy-preview"},
 			},
 		}},
-		Bins: []string{"bin/rustc", "bin/cargo", "bin/rustdoc"},
+		Bins: []string{
+			"bin/rustc", "bin/cargo", "bin/rustdoc",
+			"bin/cargo-fmt", "bin/rustfmt",
+			"bin/cargo-clippy", "bin/clippy-driver",
+		},
 		Prerequisites: []runtimetypes.Prerequisite{{
 			Name: "c-compiler", Reason: "cc is the default linker driver", Verify: "cc",
 		}},

@@ -361,6 +361,10 @@ func (c *Controller) materialize(
 	name := d.pin.Name + "@" + d.pin.Version
 
 	if ok, _ := c.fs.Exists(d.prefix); ok {
+		if err := c.entryCarriesTheBins(name, d); err != nil {
+			return err
+		}
+
 		report.Reused = append(report.Reused, name)
 
 		return nil
@@ -378,6 +382,10 @@ func (c *Controller) materialize(
 	defer release()
 
 	if ok, _ := c.fs.Exists(d.prefix); ok {
+		if err := c.entryCarriesTheBins(name, d); err != nil {
+			return err
+		}
+
 		report.Reused = append(report.Reused, name)
 
 		return nil
@@ -427,6 +435,24 @@ func (c *Controller) materialize(
 	}
 
 	report.Installed = append(report.Installed, name)
+
+	return nil
+}
+
+// entryCarriesTheBins refuses to reuse a store entry that lacks a bin the
+// description names. The store is keyed on name@version alone, so a
+// description that grows a component after the entry was installed would
+// otherwise be exposed as a dangling symlink - a toolchain that reads as
+// provisioned and fails only when the missing tool is called.
+func (c *Controller) entryCarriesTheBins(name string, d described) error {
+	for _, bin := range d.desc.Bins {
+		target := filepath.Join(d.prefix, filepath.FromSlash(bin))
+		if ok, _ := c.fs.Exists(target); !ok {
+			return fmt.Errorf(
+				"store entry %s at %s does not carry %s: the runtime's description grew since the entry was installed; remove that directory and sync again",
+				name, d.prefix, bin)
+		}
+	}
 
 	return nil
 }

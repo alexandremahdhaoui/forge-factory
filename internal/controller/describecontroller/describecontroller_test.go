@@ -148,7 +148,10 @@ func TestRustPicksCarryTheTriple(t *testing.T) {
 		froms = append(froms, p.From)
 	}
 
-	assert.ElementsMatch(t, []string{"rustc", "cargo", "rust-std-aarch64-unknown-linux-gnu"}, froms)
+	assert.ElementsMatch(t, []string{
+		"rustc", "cargo", "rust-std-aarch64-unknown-linux-gnu",
+		"rustfmt-preview", "clippy-preview",
+	}, froms)
 }
 
 // The JRE provides the capability the jar assumes, and its env names the

@@ -79,6 +79,21 @@ func description(overrides map[string]any) map[string]any {
 	return d
 }
 
+// preinstall lays a store entry carrying the bins its description names -
+// the shape a real installed entry has. Reuse verifies the bins now, so a
+// bare directory no longer passes for an installed runtime.
+func preinstall(t *testing.T, store, entry string, bins ...string) {
+	t.Helper()
+
+	prefix := filepath.Join(store, "runtimes", entry)
+	require.NoError(t, os.MkdirAll(filepath.Join(prefix, "bin"), 0o750))
+
+	for _, b := range bins {
+		require.NoError(t, os.WriteFile(
+			filepath.Join(prefix, filepath.FromSlash(b)), []byte("#!/bin/sh\n"), 0o755)) //nolint:gosec // the fixture is an executable
+	}
+}
+
 func (h *harness) expectDescribe(t *testing.T, desc map[string]any) {
 	t.Helper()
 
@@ -250,9 +265,8 @@ func TestAPrerequisiteProvidedByADeclaredRuntime(t *testing.T) {
 
 	// Both prefixes pre-exist so nothing fetches; the point is the
 	// prerequisite resolution.
-	for _, p := range []string{"toycc@2.0.0", "toygo@1.0.0"} {
-		require.NoError(t, os.MkdirAll(filepath.Join(h.store, "runtimes", p), 0o750))
-	}
+	preinstall(t, h.store, "toycc@2.0.0")
+	preinstall(t, h.store, "toygo@1.0.0", "bin/toygo")
 
 	f := factoryWith(toyEngine(), config.Engine{Alias: "toycc", Engine: "forge://example.com/cc-provider"})
 
@@ -274,7 +288,7 @@ func TestAPrerequisiteVerifiedOnTheHost(t *testing.T) {
 		},
 	}))
 
-	require.NoError(t, os.MkdirAll(filepath.Join(h.store, "runtimes", "toygo@1.0.0"), 0o750))
+	preinstall(t, h.store, "toygo@1.0.0", "bin/toygo")
 
 	report, err := h.c.Provision(context.Background(), factoryWith(toyEngine()), h.root, h.store,
 		[]runtimecontroller.Pin{{Name: "toygo", Version: "1.0.0"}})
@@ -325,7 +339,7 @@ func TestSatisfyOverridesToTheHost(t *testing.T) {
 		},
 	}))
 
-	require.NoError(t, os.MkdirAll(filepath.Join(h.store, "runtimes", "toygo@1.0.0"), 0o750))
+	preinstall(t, h.store, "toygo@1.0.0", "bin/toygo")
 
 	f := factoryWith(toyEngine())
 	f.Toolchain = &config.Toolchain{Satisfy: map[string]string{"posix-shell": "host"}}
@@ -433,7 +447,7 @@ func TestTheStoreResolvesFromTheEnvironment(t *testing.T) {
 	h := newHarness(t)
 	t.Setenv("FORGE_STORE_DIR", h.store)
 
-	require.NoError(t, os.MkdirAll(filepath.Join(h.store, "runtimes", "toygo@1.0.0"), 0o750))
+	preinstall(t, h.store, "toygo@1.0.0", "bin/toygo")
 	h.expectDescribe(t, description(nil))
 
 	// StoreDir empty: FORGE_STORE_DIR decides, which is how CI points every
@@ -492,9 +506,8 @@ func TestSatisfyNamingTheProviderIsHonored(t *testing.T) {
 			return nil
 		}).Once()
 
-	for _, p := range []string{"toygo@1.0.0", "toyjre@21"} {
-		require.NoError(t, os.MkdirAll(filepath.Join(h.store, "runtimes", p), 0o750))
-	}
+	preinstall(t, h.store, "toygo@1.0.0", "bin/toygo")
+	preinstall(t, h.store, "toyjre@21")
 
 	f := factoryWith(toyEngine(), config.Engine{Alias: "toyjre", Engine: "forge://example.com/jre-provider"})
 	f.Toolchain = &config.Toolchain{Satisfy: map[string]string{"jvm": "toyjre"}}
@@ -556,7 +569,7 @@ func TestTheStoreDefaultsToTheUserCache(t *testing.T) {
 	t.Setenv("FORGE_STORE_DIR", "")
 	t.Setenv("XDG_CACHE_HOME", cache)
 
-	require.NoError(t, os.MkdirAll(filepath.Join(cache, "forge", "store", "runtimes", "toygo@1.0.0"), 0o750))
+	preinstall(t, filepath.Join(cache, "forge", "store"), "toygo@1.0.0", "bin/toygo")
 	h.expectDescribe(t, description(nil))
 
 	report, err := h.c.Provision(context.Background(), factoryWith(toyEngine()), h.root, "",
@@ -604,7 +617,12 @@ func TestAnAwkwardURLStillStages(t *testing.T) {
 type raceLock struct{ prefix string }
 
 func (r raceLock) Lock(string) (func(), error) {
-	if err := os.MkdirAll(r.prefix, 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Join(r.prefix, "bin"), 0o750); err != nil {
+		return nil, err
+	}
+
+	// The winner's install carries the described bin.
+	if err := os.WriteFile(filepath.Join(r.prefix, "bin", "toygo"), []byte("#!/bin/sh\n"), 0o755); err != nil { //nolint:gosec // the fixture is an executable
 		return nil, err
 	}
 
@@ -628,7 +646,7 @@ func TestTheLoserOfAStoreRaceReusesTheWinnersInstall(t *testing.T) {
 func TestAnUnwritableBinDirFailsTheExpose(t *testing.T) {
 	h := newHarness(t)
 
-	require.NoError(t, os.MkdirAll(filepath.Join(h.store, "runtimes", "toygo@1.0.0"), 0o750))
+	preinstall(t, h.store, "toygo@1.0.0", "bin/toygo")
 	require.NoError(t, os.MkdirAll(filepath.Join(h.root, ".forge"), 0o750))
 	// .forge/bin exists as a FILE, so the expose cannot create the dir.
 	require.NoError(t, os.WriteFile(filepath.Join(h.root, ".forge", "bin"), []byte("x"), 0o600))
@@ -645,7 +663,7 @@ func TestAVersionWithHostileCharactersStoresSafely(t *testing.T) {
 
 	// The version string comes from config and lands in a directory name;
 	// path-meaningful characters are flattened.
-	require.NoError(t, os.MkdirAll(filepath.Join(h.store, "runtimes", "toygo@1.0-rc-2"), 0o750))
+	preinstall(t, h.store, "toygo@1.0-rc-2", "bin/toygo")
 	h.expectDescribe(t, description(map[string]any{"version": "1.0@rc:2"}))
 
 	report, err := h.c.Provision(context.Background(), factoryWith(toyEngine()), h.root, h.store,
@@ -657,7 +675,7 @@ func TestAVersionWithHostileCharactersStoresSafely(t *testing.T) {
 func TestABlockedBinLinkFailsTheExpose(t *testing.T) {
 	h := newHarness(t)
 
-	require.NoError(t, os.MkdirAll(filepath.Join(h.store, "runtimes", "toygo@1.0.0"), 0o750))
+	preinstall(t, h.store, "toygo@1.0.0", "bin/toygo")
 	// A non-empty DIRECTORY sits where the link must go, which nothing may
 	// silently delete.
 	require.NoError(t, os.MkdirAll(filepath.Join(h.root, ".forge", "bin", "toygo"), 0o750))
@@ -694,4 +712,21 @@ func TestAnUnlockableStoreIsAnError(t *testing.T) {
 	_, err := c.Provision(context.Background(), factoryWith(toyEngine()), h.root, h.store,
 		[]runtimecontroller.Pin{{Name: "toygo", Version: "1.0.0"}})
 	require.ErrorContains(t, err, "locking the store for toygo@1.0.0")
+}
+
+// A store entry from before the description grew lacks the new bin. Reuse
+// must refuse it loud, or the expose lays a dangling symlink and the
+// toolchain fails only when the missing tool is called - which is how a
+// grown Rust description would have kept failing on a warm store.
+func TestAStaleStoreEntryMissingADescribedBinIsRefused(t *testing.T) {
+	h := newHarness(t)
+
+	// The entry predates the description: no bin/toygo inside.
+	require.NoError(t, os.MkdirAll(filepath.Join(h.store, "runtimes", "toygo@1.0.0"), 0o750))
+	h.expectDescribe(t, description(nil))
+
+	_, err := h.c.Provision(context.Background(), factoryWith(toyEngine()), h.root, h.store,
+		[]runtimecontroller.Pin{{Name: "toygo", Version: "1.0.0"}})
+	require.ErrorContains(t, err, "does not carry bin/toygo")
+	require.ErrorContains(t, err, "remove that directory and sync again")
 }
