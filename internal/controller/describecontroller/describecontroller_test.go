@@ -34,6 +34,7 @@ func TestEveryDescriberAnswersBothLinuxPlatforms(t *testing.T) {
 		{"jre", describecontroller.Archive{}, runtimetypes.Input{Runtime: "jre", Version: "21.0.5+11"}},
 		{"pnpm", describecontroller.Archive{}, runtimetypes.Input{Runtime: "pnpm", Version: "10.33.0"}},
 		{"uv", describecontroller.Archive{}, runtimetypes.Input{Runtime: "uv", Version: "0.8.17"}},
+		{"bun", describecontroller.Archive{}, runtimetypes.Input{Runtime: "bun", Version: "1.3.14"}},
 		{"openapi-generator", describecontroller.Archive{}, runtimetypes.Input{
 			Runtime: "openapi-generator", Version: "7.19.0",
 		}},

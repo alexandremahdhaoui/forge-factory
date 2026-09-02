@@ -78,6 +78,23 @@ var archiveTable = map[string]map[string]archiveEntry{
 			bins: []string{"uv", "uvx"},
 		},
 	},
+	"bun": {
+		"1.3.14": {
+			artifacts: map[string]runtimetypes.Artifact{
+				"linux/amd64": {
+					URL:    "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-x64.zip",
+					SHA256: "951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f",
+					Unpack: "zip", Strip: 1,
+				},
+				"linux/arm64": {
+					URL:    "https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-aarch64.zip",
+					SHA256: "a27ffb63a8310375836e0d6f668ae17fa8d8d18b88c37c821c65331973a19a3b",
+					Unpack: "zip", Strip: 1,
+				},
+			},
+			bins: []string{"bun"},
+		},
+	},
 	"openapi-generator": {
 		"7.19.0": {
 			artifacts: map[string]runtimetypes.Artifact{
