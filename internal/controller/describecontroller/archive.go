@@ -95,6 +95,23 @@ var archiveTable = map[string]map[string]archiveEntry{
 			bins: []string{"bun"},
 		},
 	},
+	"cargo-deny": {
+		"0.20.2": {
+			artifacts: map[string]runtimetypes.Artifact{
+				"linux/amd64": {
+					URL:    "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz",
+					SHA256: "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f",
+					Unpack: "tar-gz", Strip: 1,
+				},
+				"linux/arm64": {
+					URL:    "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-aarch64-unknown-linux-musl.tar.gz",
+					SHA256: "995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d",
+					Unpack: "tar-gz", Strip: 1,
+				},
+			},
+			bins: []string{"cargo-deny"},
+		},
+	},
 	"openapi-generator": {
 		"7.19.0": {
 			artifacts: map[string]runtimetypes.Artifact{

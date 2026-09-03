@@ -38,6 +38,7 @@ func TestEveryDescriberAnswersBothLinuxPlatforms(t *testing.T) {
 		{"openapi-generator", describecontroller.Archive{}, runtimetypes.Input{
 			Runtime: "openapi-generator", Version: "7.19.0",
 		}},
+		{"cargo-deny", describecontroller.Archive{}, runtimetypes.Input{Runtime: "cargo-deny", Version: "0.20.2"}},
 	}
 
 	for _, tc := range cases {
@@ -194,6 +195,15 @@ func TestPnpmRenamesItsReleaseAsset(t *testing.T) {
 	require.Len(t, out.Artifacts[0].Picks, 1)
 	assert.Equal(t, "pnpm", out.Artifacts[0].Picks[0].At)
 	assert.Equal(t, []string{"pnpm"}, out.Bins)
+}
+
+func TestCargoDenyExposesItsBinaryOnThePrefixBin(t *testing.T) {
+	t.Parallel()
+
+	out, err := describecontroller.Archive{}.Describe(
+		runtimetypes.Input{Runtime: "cargo-deny", Version: "0.20.2", OS: "linux", Arch: "amd64"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"cargo-deny"}, out.Bins)
 }
 
 func TestEachLanguageDescriberNamesItsLanguage(t *testing.T) {
