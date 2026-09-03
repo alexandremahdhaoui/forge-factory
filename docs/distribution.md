@@ -28,16 +28,17 @@ view simply outranks it.
 
 ## Producing a distribution
 
-The pipeline's release stage (forge-ci's `ci-artifact-release`) runs after
-a revision is proven:
+A substage naming forge-ci's `ci-artifact-release` runs in a stage after the
+one that built, so it publishes what the stages before it proved:
 
-- every member is tagged with the next semver at the revision's sha;
-- ONE release tagged `dist-<revision>` is created in the `releaseIn` repo,
+- every member is tagged with the next semver at the revision's sha, less
+  whatever the engine's `ignoreRepos` names;
+- ONE release under that same version is created in the engine's `repo`,
   carrying every binary the runs built (plus `spec.assets` globs - the
   door for cross-built files) and `index.json`;
 - every digest in the index is measured on the actual uploaded bytes.
 
-Members cross-build through their `dist` test stage (`hack/build-dist.sh`):
+Members cross-build through their `build-artifacts` test stage:
 `CGO_ENABLED=0`, `-trimpath -ldflags "-s -w"`, linux amd64+arm64, named by
 the `<name>_<os>_<arch>` travel convention. The pipeline hands every target
 `FORGE_CI_REVISION`, which the script stamps into the binaries - a released
@@ -84,8 +85,8 @@ the toolchain without compiling or downloading anything, and a seed of
 exactly one pinned binary: `go run …/forge-factory@<proven sha>`. The
 consuming half is built and tested; nothing renders that step yet, and
 `FORGE_DIST_MIRROR` has no producer. `golden-register/forge-ci.yaml`
-carries the block commented out, waiting on dist-release being activated
-in forge-self-factory's pipeline.
+carries the block commented out, waiting on the release-artifacts substage
+being activated in forge-self-factory's pipeline.
 
 Until then this section describes a destination, not the current step.
 
