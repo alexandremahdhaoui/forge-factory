@@ -30,6 +30,7 @@ type Git interface {
 	WorktreePrune(ctx context.Context, dir string) error
 	LsTree(ctx context.Context, dir, rev, path string) ([]string, error)
 	AheadBehind(ctx context.Context, dir, ref string) (int, int, error)
+	LogAll(ctx context.Context, dir, path string) ([]string, error)
 }
 
 type CLI struct {
@@ -275,6 +276,23 @@ func (g *CLI) AheadBehind(ctx context.Context, dir, ref string) (int, int, error
 	}
 
 	return ahead, behind, nil
+}
+
+func (g *CLI) LogAll(ctx context.Context, dir, path string) ([]string, error) {
+	res, err := g.run(ctx, dir, "reading the history of "+path, "log", "--all", "--format=%H", "--", path)
+	if err != nil {
+		return nil, err
+	}
+
+	var shas []string
+
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if sha := strings.TrimSpace(line); sha != "" {
+			shas = append(shas, sha)
+		}
+	}
+
+	return shas, nil
 }
 
 func (g *CLI) LatestTag(ctx context.Context, dir string) (string, error) {

@@ -470,6 +470,9 @@ func (d *Driver) runBootstrap(ctx context.Context, args []string) error {
 	fs.SetOutput(d.out)
 	quiet := fs.Bool("quiet", false, "silence the progress lines")
 	cache := fs.String("cache", "", "cache directory, defaults to the user cache")
+	backup := fs.Bool("backup", false,
+		"keep a hand edited placed file as <name>.bak, then write the factory's version")
+	force := fs.Bool("force", false, "overwrite a hand edited placed file with no backup")
 
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parsing flags: %w", err)
@@ -487,6 +490,7 @@ func (d *Driver) runBootstrap(ctx context.Context, args []string) error {
 
 	f, root, err := d.run.Bootstrap(ctx, runcontroller.BootstrapRequest{
 		Factory: rest[0], Dir: dir, Quiet: *quiet, CacheDir: *cache,
+		Backup: *backup, Force: *force,
 	})
 	if err != nil {
 		return err

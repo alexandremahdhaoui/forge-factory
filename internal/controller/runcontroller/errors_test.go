@@ -53,20 +53,24 @@ const registeredFactoryYaml = claimingFactoryYaml + `register:
 `
 
 type fakeFS struct {
-	files    map[string]string
-	dirs     map[string]bool
-	readErr  map[string]error
-	writeErr map[string]error
-	writes   map[string]string
+	files     map[string]string
+	dirs      map[string]bool
+	readErr   map[string]error
+	writeErr  map[string]error
+	existsErr map[string]error
+	renameErr map[string]error
+	writes    map[string]string
 }
 
 func newFakeFS() *fakeFS {
 	return &fakeFS{
-		files:    map[string]string{},
-		dirs:     map[string]bool{},
-		readErr:  map[string]error{},
-		writeErr: map[string]error{},
-		writes:   map[string]string{},
+		files:     map[string]string{},
+		dirs:      map[string]bool{},
+		readErr:   map[string]error{},
+		writeErr:  map[string]error{},
+		existsErr: map[string]error{},
+		renameErr: map[string]error{},
+		writes:    map[string]string{},
 	}
 }
 
@@ -99,6 +103,10 @@ func (f *fakeFS) WriteFile(path string, data []byte) error {
 func (f *fakeFS) MkdirAll(path string) error { return nil }
 
 func (f *fakeFS) Exists(path string) (bool, error) {
+	if err := f.existsErr[path]; err != nil {
+		return false, err
+	}
+
 	if _, ok := f.files[path]; ok {
 		return true, nil
 	}
@@ -119,6 +127,10 @@ func (f *fakeFS) Remove(path string) error { return nil }
 func (f *fakeFS) WriteExecutable(path string, data []byte) error { return f.WriteFile(path, data) }
 
 func (f *fakeFS) Rename(oldPath, newPath string) error {
+	if err := f.renameErr[oldPath]; err != nil {
+		return err
+	}
+
 	f.writes[newPath] = f.writes[oldPath]
 	delete(f.writes, oldPath)
 
@@ -823,6 +835,205 @@ func TestBootstrapErrorShapes(t *testing.T) {
 			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
 		})
 		require.ErrorContains(t, err, "placing forge-ci.yaml")
+	})
+}
+
+func TestBootstrapProtectsThePlacedWorkspaceFiles(t *testing.T) {
+	ctx := context.Background()
+	factoryURL := "git@example.com:org/factory.git"
+
+	const oldCommittedYaml = "version: v1\nname: fixture\nrepos: []\n"
+
+	const handEditedYaml = "version: v1\nname: fixture\n# a person changed this by hand\nrepos: []\n"
+
+	factoryFlow := func(r *rig) {
+		r.git.EXPECT().Clone(mock.Anything, factoryURL, mock.Anything).Return(nil)
+		r.git.EXPECT().ResolveRev(mock.Anything, mock.Anything, "origin/HEAD").Return(shaA, nil)
+		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaA, "workspace/forge-factory.yaml").
+			Return(claimingFactoryYaml, true, nil)
+		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaA, mock.Anything).
+			Return("", false, nil).Maybe()
+	}
+
+	t.Run("an unchanged file is rewritten silently", func(t *testing.T) {
+		r := newRig(t)
+		factoryFlow(r)
+
+		dir := t.TempDir()
+		dest := filepath.Join(dir, "forge-factory.yaml")
+		r.fs.files[dest] = claimingFactoryYaml
+
+		_, root, err := r.c.Bootstrap(ctx, BootstrapRequest{
+			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, dir, root)
+		require.Equal(t, claimingFactoryYaml, r.fs.writes[dest])
+	})
+
+	t.Run("a file matching an older committed version is rewritten silently", func(t *testing.T) {
+		r := newRig(t)
+		factoryFlow(r)
+		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
+			Return([]string{shaB}, nil)
+		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaB, "workspace/forge-factory.yaml").
+			Return(oldCommittedYaml, true, nil)
+
+		dir := t.TempDir()
+		dest := filepath.Join(dir, "forge-factory.yaml")
+		r.fs.files[dest] = oldCommittedYaml
+
+		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
+			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, claimingFactoryYaml, r.fs.writes[dest])
+	})
+
+	t.Run("a hand edited file is refused with neither flag", func(t *testing.T) {
+		r := newRig(t)
+		factoryFlow(r)
+		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
+			Return([]string{shaB}, nil)
+		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaB, "workspace/forge-factory.yaml").
+			Return(oldCommittedYaml, true, nil)
+
+		dir := t.TempDir()
+		dest := filepath.Join(dir, "forge-factory.yaml")
+		r.fs.files[dest] = handEditedYaml
+
+		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
+			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
+		})
+		require.ErrorIs(t, err, ErrProtectedFile)
+		require.ErrorContains(t, err, "--backup")
+		require.ErrorContains(t, err, "--force")
+
+		_, written := r.fs.writes[dest]
+		require.False(t, written, "a refused write touches nothing")
+	})
+
+	t.Run("--backup keeps the hand edited file as .bak and writes the new one", func(t *testing.T) {
+		r := newRig(t)
+		factoryFlow(r)
+		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
+			Return([]string{shaB}, nil)
+		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaB, "workspace/forge-factory.yaml").
+			Return(oldCommittedYaml, true, nil)
+
+		dir := t.TempDir()
+		dest := filepath.Join(dir, "forge-factory.yaml")
+		r.fs.files[dest] = handEditedYaml
+		r.fs.writes[dest] = handEditedYaml
+
+		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
+			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true, Backup: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, handEditedYaml, r.fs.writes[dest+".bak"])
+		require.Equal(t, claimingFactoryYaml, r.fs.writes[dest])
+	})
+
+	t.Run("--force overwrites the hand edited file with no backup", func(t *testing.T) {
+		r := newRig(t)
+		factoryFlow(r)
+
+		dir := t.TempDir()
+		dest := filepath.Join(dir, "forge-factory.yaml")
+		r.fs.files[dest] = handEditedYaml
+
+		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
+			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true, Force: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, claimingFactoryYaml, r.fs.writes[dest])
+
+		_, hasBackup := r.fs.writes[dest+".bak"]
+		require.False(t, hasBackup, "--force keeps no backup")
+	})
+
+	t.Run("an unreadable placed file's existence check fails", func(t *testing.T) {
+		r := newRig(t)
+		factoryFlow(r)
+
+		dir := t.TempDir()
+		dest := filepath.Join(dir, "forge-factory.yaml")
+		r.fs.existsErr[dest] = errors.New("stat refused")
+
+		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
+			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
+		})
+		require.ErrorContains(t, err, "stat refused")
+	})
+
+	t.Run("an unreadable placed file fails the comparison", func(t *testing.T) {
+		r := newRig(t)
+		factoryFlow(r)
+
+		dir := t.TempDir()
+		dest := filepath.Join(dir, "forge-factory.yaml")
+		r.fs.files[dest] = handEditedYaml
+		r.fs.readErr[dest] = errors.New("read refused")
+
+		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
+			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
+		})
+		require.ErrorContains(t, err, "read refused")
+	})
+
+	t.Run("a history lookup that cannot resolve fails", func(t *testing.T) {
+		r := newRig(t)
+		factoryFlow(r)
+		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
+			Return(nil, errors.New("git log refused"))
+
+		dir := t.TempDir()
+		dest := filepath.Join(dir, "forge-factory.yaml")
+		r.fs.files[dest] = handEditedYaml
+
+		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
+			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
+		})
+		require.ErrorContains(t, err, "reading the history of workspace/forge-factory.yaml")
+		require.ErrorContains(t, err, "git log refused")
+	})
+
+	t.Run("a committed version that cannot be shown fails", func(t *testing.T) {
+		r := newRig(t)
+		factoryFlow(r)
+		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
+			Return([]string{shaB}, nil)
+		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaB, "workspace/forge-factory.yaml").
+			Return("", false, errors.New("git show refused"))
+
+		dir := t.TempDir()
+		dest := filepath.Join(dir, "forge-factory.yaml")
+		r.fs.files[dest] = handEditedYaml
+
+		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
+			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
+		})
+		require.ErrorContains(t, err, "git show refused")
+	})
+
+	t.Run("--backup fails when the old file cannot be moved aside", func(t *testing.T) {
+		r := newRig(t)
+		factoryFlow(r)
+		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
+			Return([]string{shaB}, nil)
+		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaB, "workspace/forge-factory.yaml").
+			Return(oldCommittedYaml, true, nil)
+
+		dir := t.TempDir()
+		dest := filepath.Join(dir, "forge-factory.yaml")
+		r.fs.files[dest] = handEditedYaml
+		r.fs.renameErr[dest] = errors.New("rename refused")
+
+		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
+			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true, Backup: true,
+		})
+		require.ErrorContains(t, err, "backing up "+dest)
+		require.ErrorContains(t, err, "rename refused")
 	})
 }
 

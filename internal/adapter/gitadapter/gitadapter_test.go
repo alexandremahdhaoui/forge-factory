@@ -361,3 +361,39 @@ func TestAheadBehindReportsFailures(t *testing.T) {
 	_, _, err = gitadapter.New(r3).AheadBehind(context.Background(), "/repo", "origin/main")
 	require.Error(t, err)
 }
+
+func TestLogAllListsEveryCommitThatTouchedThePath(t *testing.T) {
+	r := execadaptermock.NewMockRunner(t)
+	r.EXPECT().Run(mock.Anything, "/repo", "git", "log", "--all", "--format=%H", "--", "workspace/CLAUDE.md").
+		Return(ok("aaa\nbbb\n\n"), nil).Once()
+
+	shas, err := gitadapter.New(r).LogAll(context.Background(), "/repo", "workspace/CLAUDE.md")
+	require.NoError(t, err)
+	require.Equal(t, []string{"aaa", "bbb"}, shas)
+}
+
+func TestLogAllAnswersNothingForAPathWithNoHistory(t *testing.T) {
+	r := execadaptermock.NewMockRunner(t)
+	r.EXPECT().Run(mock.Anything, "/repo", "git", "log", "--all", "--format=%H", "--", "workspace/never.md").
+		Return(ok(""), nil).Once()
+
+	shas, err := gitadapter.New(r).LogAll(context.Background(), "/repo", "workspace/never.md")
+	require.NoError(t, err)
+	require.Empty(t, shas)
+}
+
+func TestLogAllReportsAFailure(t *testing.T) {
+	r := execadaptermock.NewMockRunner(t)
+	r.EXPECT().Run(mock.Anything, "/repo", "git", "log", "--all", "--format=%H", "--", "workspace/x").
+		Return(execadapter.Result{ExitCode: 128, Stderr: "fatal: bad revision"}, nil).Once()
+
+	_, err := gitadapter.New(r).LogAll(context.Background(), "/repo", "workspace/x")
+	require.ErrorContains(t, err, "bad revision")
+
+	r2 := execadaptermock.NewMockRunner(t)
+	r2.EXPECT().Run(mock.Anything, "/repo", "git", "log", "--all", "--format=%H", "--", "workspace/x").
+		Return(execadapter.Result{}, errBoom).Once()
+
+	_, err = gitadapter.New(r2).LogAll(context.Background(), "/repo", "workspace/x")
+	require.ErrorIs(t, err, errBoom)
+}
