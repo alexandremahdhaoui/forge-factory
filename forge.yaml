@@ -172,7 +172,7 @@ test:
   # The distribution build: every command cross-built CGO-off for the
   # release, named by the <name>_<os>_<arch> travel convention. The
   # pipeline's release stage globs build/dist into the aggregated release.
-  - name: dist
+  - name: build-artifacts
     runner: forge://generic-test-runner
     spec:
       command: forge
