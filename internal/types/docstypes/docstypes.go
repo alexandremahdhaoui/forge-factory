@@ -52,9 +52,9 @@ type Engine struct {
 		PackageName string `json:"packageName"`
 		DocsBaseURL string `json:"docsBaseURL"`
 	} `json:"generate"`
-	Surface struct {
+	Layout struct {
 		Tools []Tool `json:"tools"`
-	} `json:"surface"`
+	} `json:"layout"`
 	OpenAPI struct {
 		SpecPath string `json:"specPath"`
 	} `json:"openapi"`

@@ -88,7 +88,7 @@ func engine() docstypes.Engine {
 		Version:     "0.1.0",
 		Description: "Render Go manifests.",
 	}
-	e.Surface.Tools = []docstypes.Tool{
+	e.Layout.Tools = []docstypes.Tool{
 		{Name: "render", Description: "Render every manifest.", Input: "RenderInput", Output: "RenderOutput"},
 	}
 
