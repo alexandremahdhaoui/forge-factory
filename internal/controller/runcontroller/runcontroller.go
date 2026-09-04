@@ -1311,6 +1311,15 @@ func (c *Controller) placeProtected(
 						ErrProtectedFile, dest, diffSummary(existing, content), dest)
 				}
 
+				bakExists, err := c.fs.Exists(dest + ".bak")
+				if err != nil {
+					return err
+				}
+
+				if bakExists {
+					return fmt.Errorf("%w: %s.bak already exists, move it away first", ErrProtectedFile, dest)
+				}
+
 				if err := c.fs.Rename(dest, dest+".bak"); err != nil {
 					return fmt.Errorf("backing up %s: %w", dest, err)
 				}

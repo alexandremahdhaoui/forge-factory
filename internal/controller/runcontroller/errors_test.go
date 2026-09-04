@@ -1035,6 +1035,48 @@ func TestBootstrapProtectsThePlacedWorkspaceFiles(t *testing.T) {
 		require.ErrorContains(t, err, "backing up "+dest)
 		require.ErrorContains(t, err, "rename refused")
 	})
+
+	t.Run("--backup refuses to clobber a prior backup", func(t *testing.T) {
+		r := newRig(t)
+		factoryFlow(r)
+		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
+			Return([]string{shaB}, nil)
+		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaB, "workspace/forge-factory.yaml").
+			Return(oldCommittedYaml, true, nil)
+
+		dir := t.TempDir()
+		dest := filepath.Join(dir, "forge-factory.yaml")
+		r.fs.files[dest] = handEditedYaml
+		r.fs.files[dest+".bak"] = "an earlier backup, from an earlier refused bootstrap\n"
+
+		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
+			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true, Backup: true,
+		})
+		require.ErrorIs(t, err, ErrProtectedFile)
+		require.ErrorContains(t, err, dest+".bak already exists, move it away first")
+
+		_, written := r.fs.writes[dest]
+		require.False(t, written, "a refused backup touches nothing")
+	})
+
+	t.Run("--backup fails when checking for a prior backup fails", func(t *testing.T) {
+		r := newRig(t)
+		factoryFlow(r)
+		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
+			Return([]string{shaB}, nil)
+		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaB, "workspace/forge-factory.yaml").
+			Return(oldCommittedYaml, true, nil)
+
+		dir := t.TempDir()
+		dest := filepath.Join(dir, "forge-factory.yaml")
+		r.fs.files[dest] = handEditedYaml
+		r.fs.existsErr[dest+".bak"] = errors.New("stat refused")
+
+		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
+			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true, Backup: true,
+		})
+		require.ErrorContains(t, err, "stat refused")
+	})
 }
 
 // nopLocker is what a unit rig locks with. The real lock writes a file
