@@ -7,7 +7,7 @@ openapi:
 generate:
   packageName: main
   docsBaseURL: https://raw.githubusercontent.com/alexandremahdhaoui/forge-factory/refs/heads/main
-surface:
+layout:
   tools:
     - name: language
       description: Report which language this engine speaks.

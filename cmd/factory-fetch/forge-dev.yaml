@@ -7,7 +7,7 @@ openapi:
 generate:
   packageName: main
   docsBaseURL: https://raw.githubusercontent.com/alexandremahdhaoui/forge-factory/refs/heads/main
-surface:
+layout:
   tools:
     - name: fetch
       description: Bring one artifact's bytes to a local path, hash-verified. The spec's rewrite rules retarget url prefixes at a mirror or an internal artifact store.

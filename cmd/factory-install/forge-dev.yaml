@@ -7,7 +7,7 @@ openapi:
 generate:
   packageName: main
   docsBaseURL: https://raw.githubusercontent.com/alexandremahdhaoui/forge-factory/refs/heads/main
-surface:
+layout:
   tools:
     - name: install
       description: Lay fetched archives out under the prefix per the description's strip and picks. Writes under the prefix and nowhere else.

@@ -7,7 +7,7 @@ openapi:
 generate:
   packageName: main
   docsBaseURL: https://raw.githubusercontent.com/alexandremahdhaoui/forge-factory/refs/heads/main
-surface:
+layout:
   tools:
     - name: describe
       description: Answer the runtime's artifacts, layout, env and prerequisites from the engine's table. Pure data.
