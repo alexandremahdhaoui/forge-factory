@@ -12,6 +12,7 @@ import (
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/lockadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/toolingcontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/execadaptermock"
 )
@@ -41,7 +42,7 @@ func TestProvisionBinariesBuildsIntoTheStoreAndLinks(t *testing.T) {
 	runner := execadaptermock.NewMockRunner(t)
 	goInstallFake(t, runner, "the-built-binary")
 
-	c := toolingcontroller.New(fsadapter.New(), runner)
+	c := toolingcontroller.New(fsadapter.New(), runner, lockadapter.New())
 
 	report, err := c.ProvisionBinaries(context.Background(), root, store,
 		[]toolingcontroller.Binary{{
@@ -60,7 +61,7 @@ func TestProvisionBinariesBuildsIntoTheStoreAndLinks(t *testing.T) {
 	assert.NotZero(t, info.Mode()&0o111, "a provisioned tool must execute")
 
 	// A second provision reuses the (module, version) build: no runner call.
-	again, err := toolingcontroller.New(fsadapter.New(), execadaptermock.NewMockRunner(t)).
+	again, err := toolingcontroller.New(fsadapter.New(), execadaptermock.NewMockRunner(t), lockadapter.New()).
 		ProvisionBinaries(context.Background(), root, store,
 			[]toolingcontroller.Binary{{
 				Name: "mockery", Module: "github.com/vektra/mockery/v3", Version: "v3.5.5",
@@ -73,7 +74,7 @@ func TestProvisionBinariesBuildsIntoTheStoreAndLinks(t *testing.T) {
 func TestProvisionBinariesRefusesAFloatingVersion(t *testing.T) {
 	t.Parallel()
 
-	c := toolingcontroller.New(fsadapter.New(), execadaptermock.NewMockRunner(t))
+	c := toolingcontroller.New(fsadapter.New(), execadaptermock.NewMockRunner(t), lockadapter.New())
 
 	for _, version := range []string{"", "latest"} {
 		_, err := c.ProvisionBinaries(context.Background(), t.TempDir(), t.TempDir(),
@@ -89,7 +90,7 @@ func TestProvisionBinariesSurfacesABuildFailure(t *testing.T) {
 	runner.EXPECT().RunEnv(mock.Anything, "", mock.Anything, "go", "install", "m/x@v1.0.0").
 		Return(execadapter.Result{ExitCode: 1, Stderr: "no required module"}, nil).Once()
 
-	c := toolingcontroller.New(fsadapter.New(), runner)
+	c := toolingcontroller.New(fsadapter.New(), runner, lockadapter.New())
 
 	_, err := c.ProvisionBinaries(context.Background(), t.TempDir(), t.TempDir(),
 		[]toolingcontroller.Binary{{Name: "x", Module: "m/x", Version: "v1.0.0"}})
@@ -100,7 +101,7 @@ func TestProvisionBinariesSurfacesABuildFailure(t *testing.T) {
 func TestProvisionBinariesWithNothingDeclaredDoesNothing(t *testing.T) {
 	t.Parallel()
 
-	report, err := toolingcontroller.New(fsadapter.New(), execadaptermock.NewMockRunner(t)).
+	report, err := toolingcontroller.New(fsadapter.New(), execadaptermock.NewMockRunner(t), lockadapter.New()).
 		ProvisionBinaries(context.Background(), t.TempDir(), t.TempDir(), nil)
 	require.NoError(t, err)
 	assert.Empty(t, report.Installed)
@@ -136,7 +137,7 @@ func TestTwoVersionsOfOneToolDoNotShareAStagingDir(t *testing.T) {
 			return execadapter.Result{}, nil
 		}).Twice()
 
-	c := toolingcontroller.New(fsadapter.New(), runner)
+	c := toolingcontroller.New(fsadapter.New(), runner, lockadapter.New())
 
 	type result struct {
 		root string

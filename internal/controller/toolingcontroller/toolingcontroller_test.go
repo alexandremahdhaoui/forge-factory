@@ -14,6 +14,7 @@ import (
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/lockadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/toolingcontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/types/disttypes"
 )
@@ -80,7 +81,7 @@ func distribution(t *testing.T, revision string, tools map[string]string) mapSou
 func apply(t *testing.T, req toolingcontroller.Request) (toolingcontroller.Report, error) {
 	t.Helper()
 
-	return toolingcontroller.New(fsadapter.New(), execadapter.New()).Apply(req)
+	return toolingcontroller.New(fsadapter.New(), execadapter.New(), lockadapter.New()).Apply(req)
 }
 
 func TestApplyPopulatesTheStoreAndLinksTheWorkspace(t *testing.T) {

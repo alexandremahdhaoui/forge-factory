@@ -29,6 +29,7 @@ import (
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/lockadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/types/disttypes"
 )
 
@@ -75,12 +76,16 @@ type Applier interface {
 type Controller struct {
 	fs     fsadapter.FS
 	runner execadapter.Runner
+	// lock serializes builds of one (module, version, platform) across
+	// processes. The store is user-global; two workspaces syncing at once,
+	// or two CI jobs on one restored cache, is the ordinary case.
+	lock lockadapter.Locker
 }
 
 var _ Applier = (*Controller)(nil)
 
-func New(fs fsadapter.FS, runner execadapter.Runner) *Controller {
-	return &Controller{fs: fs, runner: runner}
+func New(fs fsadapter.FS, runner execadapter.Runner, lock lockadapter.Locker) *Controller {
+	return &Controller{fs: fs, runner: runner, lock: lock}
 }
 
 // Apply consumes the source's index: verify every blob into the store,
@@ -351,26 +356,45 @@ func (c *Controller) buildBinary(
 			"toolchain binary %s: nothing pins a version; latest is never a fallback", binary.Name)
 	}
 
-	tool := filepath.Join(store, "tools",
-		sanitize(binary.Module)+"@"+sanitize(binary.Version), binary.Name)
+	// The path carries the platform. A store restored from a cache, or one
+	// shared between a container job and a host job, is read on more than
+	// one architecture, and a (module, version) built for the other one
+	// answered by name alone.
+	entry := filepath.Join(store, "tools",
+		sanitize(binary.Module)+"@"+sanitize(binary.Version), runtime.GOOS+"-"+runtime.GOARCH)
 
-	absTool, err := filepath.Abs(tool)
+	absEntry, err := filepath.Abs(entry)
 	if err != nil {
 		return "", false, fmt.Errorf("resolving the store: %w", err)
 	}
+
+	absTool := filepath.Join(absEntry, binary.Name)
 
 	if ok, _ := c.fs.Exists(absTool); ok {
 		return absTool, true, nil
 	}
 
-	// Keyed by module, version AND process. The store is user-global and
-	// nothing locks it, so a staging dir keyed on the binary's name alone
-	// was shared by every concurrent build of that name: two workspaces
-	// syncing at once with different pins for one tool raced, and the loser
-	// symlinked the winner's binary under its own version - permanently,
-	// because the tools path is then "carried" and reused forever. Two
-	// workspaces on one machine, or two CI jobs sharing a cached store, is
-	// all it took.
+	// The store is user-global and two workspaces may sync at once, so the
+	// entry is built under a lock and re-checked once it is held: the loser
+	// of the race finds the winner's build and reuses it, instead of both
+	// building and the last symlink silently winning.
+	if err := c.fs.MkdirAll(filepath.Dir(absEntry)); err != nil {
+		return "", false, fmt.Errorf("preparing the store for %s: %w", binary.Name, err)
+	}
+
+	release, err := c.lock.Lock(absEntry)
+	if err != nil {
+		return "", false, fmt.Errorf("locking the store for %s: %w", binary.Name, err)
+	}
+
+	defer release()
+
+	if ok, _ := c.fs.Exists(absTool); ok {
+		return absTool, true, nil
+	}
+
+	// Keyed by module, version AND process, so the staging dir of one build
+	// is never another's.
 	staging := filepath.Join(store, "tmp", fmt.Sprintf("gobin-%s@%s-%d",
 		sanitize(binary.Module), sanitize(binary.Version), os.Getpid()))
 
