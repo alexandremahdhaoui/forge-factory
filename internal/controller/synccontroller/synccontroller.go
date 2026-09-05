@@ -750,9 +750,13 @@ func (c *Controller) ensureEnvrcs(f config.Factory, root string, report *Report)
 	// The env file is where runtime provisioning composes each runtime's
 	// environment - JAVA_HOME and its kind. Sourced conditionally: it does
 	// not exist until the first provision, and a workspace with no declared
-	// runtimes never writes it.
+	// runtimes never writes it. An if, not `[ -f ] && .`: that form's exit
+	// status is 1 when the file is absent, and when the block is the last
+	// thing in .envrc that status is the file's - forge refused to source
+	// every .envrc a fresh runner had, in a factory with no runtimes
+	// (forge-self run 87).
 	envFile := filepath.Join(absRoot, filepath.FromSlash(runtimecontroller.EnvPath))
-	block := fmt.Sprintf("%s\nexport PATH=\"%s:$PATH\"\n[ -f %q ] && . %q\n%s\n",
+	block := fmt.Sprintf("%s\nexport PATH=\"%s:$PATH\"\nif [ -f %q ]; then . %q; fi\n%s\n",
 		envrcBegin, filepath.Join(absRoot, ".forge", "bin"), envFile, envFile, envrcEnd)
 
 	for _, r := range f.Repos {

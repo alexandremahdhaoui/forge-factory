@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1319,8 +1321,24 @@ func managedEnvrc(t *testing.T) string {
 
 	env := filepath.Join(abs, ".forge", "env")
 
-	return fmt.Sprintf("# BEGIN forge-factory\nexport PATH=\"%s:$PATH\"\n[ -f %q ] && . %q\n# END forge-factory\n",
+	return fmt.Sprintf("# BEGIN forge-factory\nexport PATH=\"%s:$PATH\"\nif [ -f %q ]; then . %q; fi\n# END forge-factory\n",
 		filepath.Join(abs, ".forge", "bin"), env, env)
+}
+
+// The block is the whole .envrc on a fresh runner in a factory with no
+// runtimes, so its last line's exit status is the file's, and forge sources
+// every .envrc with the shell's own status as the verdict. `[ -f ] && .`
+// answered 1 with the env file absent and forge refused the file (forge-self
+// run 87). A real shell decides this, not a string comparison.
+func TestTheManagedEnvrcSourcesCleanlyWithNoEnvFile(t *testing.T) {
+	t.Parallel()
+
+	envrc := filepath.Join(t.TempDir(), ".envrc")
+	require.NoError(t, os.WriteFile(envrc, []byte(managedEnvrc(t)), 0o600))
+
+	out, err := exec.Command("sh", "-e", "-c", ". "+envrc+" && echo sourced").CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "sourced")
 }
 
 // The reason the block exists. Keying on "/.forge/bin" appearing anywhere
