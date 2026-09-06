@@ -196,4 +196,4 @@ test:
 factory:
   module: github.com/alexandremahdhaoui/forge-factory
   goVersion: "1.26.5"
-  manifest: own
+  manifest: committed
