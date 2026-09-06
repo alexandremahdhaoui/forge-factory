@@ -5,9 +5,9 @@ module github.com/alexandremahdhaoui/forge-factory
 go 1.26.5
 
 require (
-	github.com/alexandremahdhaoui/forge v0.45.110-0.20260906204214-4ed45f35ccc1
-	github.com/alexandremahdhaoui/forge-register-spec v0.2.0
-	github.com/alexandremahdhaoui/forge-revision-spec v0.3.0
+	github.com/alexandremahdhaoui/forge v1.0.0
+	github.com/alexandremahdhaoui/forge-register-spec v1.0.0
+	github.com/alexandremahdhaoui/forge-revision-spec v1.0.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/stretchr/testify v1.12.1
 	sigs.k8s.io/yaml v1.6.0
