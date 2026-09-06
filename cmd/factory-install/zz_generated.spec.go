@@ -193,6 +193,22 @@ func CommandFromMap(m map[string]interface{}) (*Command, error) {
 	}
 
 	s := &Command{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "args":
+		case "command":
+		case "dir":
+		case "env":
+		case "optional":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of Command; the keys are args, command, dir, env, optional", key)
+		}
+	}
 	// Parse args
 	if v, ok := m["args"]; ok && v != nil {
 		if arr, ok := v.([]interface{}); ok {
@@ -261,6 +277,17 @@ func SpecFromMap(m map[string]interface{}) (*Spec, error) {
 	}
 
 	s := &Spec{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		default:
+			return nil, fmt.Errorf("field %s: not a key of Spec; the keys are", key)
+		}
+	}
 	return s, nil
 }
 
@@ -271,6 +298,19 @@ func RuntimePickFromMap(m map[string]interface{}) (*RuntimePick, error) {
 	}
 
 	s := &RuntimePick{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "at":
+		case "from":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of RuntimePick; the keys are at, from", key)
+		}
+	}
 	// Parse at
 	if v, ok := m["at"]; ok && v != nil {
 		if val, ok := v.(string); ok {
@@ -297,6 +337,19 @@ func FetchOutputFromMap(m map[string]interface{}) (*FetchOutput, error) {
 	}
 
 	s := &FetchOutput{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "path":
+		case "sha256":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of FetchOutput; the keys are path, sha256", key)
+		}
+	}
 	// Parse path
 	if v, ok := m["path"]; ok && v != nil {
 		if val, ok := v.(string); ok {
@@ -323,6 +376,21 @@ func FileFromMap(m map[string]interface{}) (*File, error) {
 	}
 
 	s := &File{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "alsoIgnore":
+		case "content":
+		case "gitignore":
+		case "path":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of File; the keys are alsoIgnore, content, gitignore, path", key)
+		}
+	}
 	// Parse alsoIgnore
 	if v, ok := m["alsoIgnore"]; ok && v != nil {
 		if arr, ok := v.([]interface{}); ok {
@@ -374,6 +442,18 @@ func InstallOutputFromMap(m map[string]interface{}) (*InstallOutput, error) {
 	}
 
 	s := &InstallOutput{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "installed":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of InstallOutput; the keys are installed", key)
+		}
+	}
 	// Parse installed
 	if v, ok := m["installed"]; ok && v != nil {
 		if arr, ok := v.([]interface{}); ok {
@@ -401,6 +481,18 @@ func LanguageOutputFromMap(m map[string]interface{}) (*LanguageOutput, error) {
 	}
 
 	s := &LanguageOutput{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "language":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of LanguageOutput; the keys are language", key)
+		}
+	}
 	// Parse language
 	if v, ok := m["language"]; ok && v != nil {
 		if val, ok := v.(string); ok {
@@ -419,6 +511,21 @@ func RepoFromMap(m map[string]interface{}) (*Repo, error) {
 	}
 
 	s := &Repo{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "identity":
+		case "languages":
+		case "name":
+		case "path":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of Repo; the keys are identity, languages, name, path", key)
+		}
+	}
 	// Parse identity
 	if v, ok := m["identity"]; ok && v != nil {
 		if mapVal, ok := v.(map[string]interface{}); ok {
@@ -479,6 +586,20 @@ func RuntimePrerequisiteFromMap(m map[string]interface{}) (*RuntimePrerequisite,
 	}
 
 	s := &RuntimePrerequisite{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "name":
+		case "reason":
+		case "verify":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of RuntimePrerequisite; the keys are name, reason, verify", key)
+		}
+	}
 	// Parse name
 	if v, ok := m["name"]; ok && v != nil {
 		if val, ok := v.(string); ok {
@@ -513,6 +634,23 @@ func DescribeInputFromMap(m map[string]interface{}) (*DescribeInput, error) {
 	}
 
 	s := &DescribeInput{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "arch":
+		case "os":
+		case "params":
+		case "runtime":
+		case "spec":
+		case "version":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of DescribeInput; the keys are arch, os, params, runtime, spec, version", key)
+		}
+	}
 	// Parse arch
 	if v, ok := m["arch"]; ok && v != nil {
 		if val, ok := v.(string); ok {
@@ -586,6 +724,22 @@ func RuntimeArtifactFromMap(m map[string]interface{}) (*RuntimeArtifact, error) 
 	}
 
 	s := &RuntimeArtifact{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "picks":
+		case "sha256":
+		case "strip":
+		case "unpack":
+		case "url":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of RuntimeArtifact; the keys are picks, sha256, strip, unpack, url", key)
+		}
+	}
 	// Parse picks
 	if v, ok := m["picks"]; ok && v != nil {
 		if arr, ok := v.([]interface{}); ok {
@@ -654,6 +808,20 @@ func RenderOutputFromMap(m map[string]interface{}) (*RenderOutput, error) {
 	}
 
 	s := &RenderOutput{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "dependencyLock":
+		case "files":
+		case "lockfiles":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of RenderOutput; the keys are dependencyLock, files, lockfiles", key)
+		}
+	}
 	// Parse dependencyLock
 	if v, ok := m["dependencyLock"]; ok && v != nil {
 		if arr, ok := v.([]interface{}); ok {
@@ -723,6 +891,22 @@ func RenderInputFromMap(m map[string]interface{}) (*RenderInput, error) {
 	}
 
 	s := &RenderInput{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "dependencies":
+		case "devDependencies":
+		case "repos":
+		case "root":
+		case "spec":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of RenderInput; the keys are dependencies, devDependencies, repos, root, spec", key)
+		}
+	}
 	// Parse dependencies
 	if v, ok := m["dependencies"]; ok && v != nil {
 		if mapVal, ok := v.(map[string]interface{}); ok {
@@ -810,6 +994,20 @@ func FetchInputFromMap(m map[string]interface{}) (*FetchInput, error) {
 	}
 
 	s := &FetchInput{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "artifact":
+		case "dest":
+		case "spec":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of FetchInput; the keys are artifact, dest, spec", key)
+		}
+	}
 	// Parse artifact
 	if v, ok := m["artifact"]; ok && v != nil {
 		if obj, ok := v.(map[string]interface{}); ok {
@@ -856,6 +1054,19 @@ func FetchedArchiveFromMap(m map[string]interface{}) (*FetchedArchive, error) {
 	}
 
 	s := &FetchedArchive{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "artifact":
+		case "path":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of FetchedArchive; the keys are artifact, path", key)
+		}
+	}
 	// Parse artifact
 	if v, ok := m["artifact"]; ok && v != nil {
 		if obj, ok := v.(map[string]interface{}); ok {
@@ -888,6 +1099,24 @@ func RuntimeDescriptionFromMap(m map[string]interface{}) (*RuntimeDescription, e
 	}
 
 	s := &RuntimeDescription{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "artifacts":
+		case "bins":
+		case "env":
+		case "prerequisites":
+		case "provides":
+		case "runtime":
+		case "version":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of RuntimeDescription; the keys are artifacts, bins, env, prerequisites, provides, runtime, version", key)
+		}
+	}
 	// Parse artifacts
 	if v, ok := m["artifacts"]; ok && v != nil {
 		if arr, ok := v.([]interface{}); ok {
@@ -1007,6 +1236,20 @@ func InstallInputFromMap(m map[string]interface{}) (*InstallInput, error) {
 	}
 
 	s := &InstallInput{}
+
+	// A key the schema does not name is refused, by name, with the keys
+	// it could have been. A spec that silently dropped it read as
+	// configuration that took effect: forge's own ldflags on go-build was
+	// exactly that for weeks.
+	for key := range m {
+		switch key {
+		case "archives":
+		case "prefix":
+		case "spec":
+		default:
+			return nil, fmt.Errorf("field %s: not a key of InstallInput; the keys are archives, prefix, spec", key)
+		}
+	}
 	// Parse archives
 	if v, ok := m["archives"]; ok && v != nil {
 		if arr, ok := v.([]interface{}); ok {
