@@ -1,5 +1,5 @@
-github.com/alexandremahdhaoui/forge v0.48.1 h1:rn0yPw999Xo0BmLUlY376ibGfE9/oYxrDQ6giwWD0EU=
-github.com/alexandremahdhaoui/forge v0.48.1/go.mod h1:ocFJEGSm8Xp4CQC4n5IURCYPJZnOyWeboUrJDEbn8E8=
+github.com/alexandremahdhaoui/forge v0.48.4-0.20260908124737-adb6bbeb455e h1:4Yee6Kwcr2sRfLchNnxAQV8V+cl1XeTX1WdHiKSqPco=
+github.com/alexandremahdhaoui/forge v0.48.4-0.20260908124737-adb6bbeb455e/go.mod h1:ocFJEGSm8Xp4CQC4n5IURCYPJZnOyWeboUrJDEbn8E8=
 github.com/alexandremahdhaoui/forge-register-spec v0.48.1 h1:H03VhobqcOc13DxXqMJlV8FO+wnqoHLK8PvjzfI2z2Y=
 github.com/alexandremahdhaoui/forge-register-spec v0.48.1/go.mod h1:Tbe1av9fmaOf+t5j+ptdMXFdF5tdxkIxuGvPkfNnmWI=
 github.com/alexandremahdhaoui/forge-revision-spec v0.48.1 h1:rq1QbLPO/5EazokWuQyIpnDcWHBptzYUH58qqkvlGHg=
