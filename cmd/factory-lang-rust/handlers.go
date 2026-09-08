@@ -9,9 +9,6 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/types/runtimetypes"
 )
 
-// NewHandlers wires one renderer into the generated tool surface. The generated
-// types are the wire, so they are mapped here rather than reaching the
-// controller.
 func NewHandlers() Handlers {
 	renderer := rendercontroller.Rust{}
 
@@ -86,16 +83,13 @@ func fromFiles(files []rendertypes.File) []File {
 	return out
 }
 
-// describeHandler answers the runtime description through the language's
-// describer. Declared apart from NewHandlers so the wiring above stays the
-// render story it always was.
 func describeHandler() func(context.Context, DescribeInput) (*RuntimeDescription, error) {
 	describer := describecontroller.Rust{}
 
 	return func(_ context.Context, in DescribeInput) (*RuntimeDescription, error) {
 		out, err := describer.Describe(runtimetypes.Input{
 			Runtime: in.Runtime, Version: in.Version,
-			OS: in.Os, Arch: in.Arch, Params: in.Params,
+			OS: in.Os, Arch: in.Arch, Params: in.Params, Targets: in.Targets,
 		})
 		if err != nil {
 			return nil, err

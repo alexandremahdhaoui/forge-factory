@@ -1,14 +1,3 @@
-// Package runtimecontroller walks each declared runtime through its
-// lifecycle: DECLARED -> DESCRIBED (the provider engine answers pure data)
-// -> FETCHED (the fetch engine brings sha256-verified bytes) -> INSTALLED
-// (the install engine lays them out, contained to one store prefix) ->
-// EXPOSED (core: symlinks into the workspace's .forge/bin, env into a
-// generated file and this process's own environment).
-//
-// Everything that touches a toolchain is an engine; this controller only
-// orchestrates. The store is user-global and content-keyed by
-// runtimes/<name>@<version>, so a second factory on the same machine reuses
-// the install, and a re-run converges to a no-op.
 package runtimecontroller
 
 import (
@@ -27,10 +16,6 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
 )
 
-// The default fetch and install engines. A factory that declares an engine
-// under the alias overrides them - that is the whole customization story: a
-// mirror is the default fetch engine plus a rewrite rule in its spec, and an
-// exotic store is a different engine behind the same alias.
 const (
 	DefaultFetchEngine   = "forge://github.com/alexandremahdhaoui/forge-factory/cmd/factory-fetch"
 	DefaultInstallEngine = "forge://github.com/alexandremahdhaoui/forge-factory/cmd/factory-install"
@@ -39,42 +24,25 @@ const (
 	ToolFetch    = "fetch"
 	ToolInstall  = "install"
 
-	// EnvPath is where expose writes the runtimes' environment,
-	// root-relative. The managed .envrc block sources it, and this process
-	// applies it to itself so the commands that follow provisioning in the
-	// same run already see it.
 	EnvPath = ".forge/env"
 )
 
-// Pin is one declared runtime resolved to a version: the factory's literal
-// pin, or the register track's current.
 type Pin struct {
 	Name    string            `json:"name"`
 	Version string            `json:"version"`
 	Params  map[string]string `json:"params,omitempty"`
+	Targets []string          `json:"targets,omitempty"`
 }
 
-// Report says what one provision did.
 type Report struct {
-	// Installed and Reused are name@version, per runtime.
 	Installed []string
 	Reused    []string
-	// Rebuilt names entries that existed but lacked a bin the description
-	// names - a restored cache or an old machine store after the
-	// description grew - and were reinstalled in place.
-	Rebuilt []string
-	// Satisfied is one line per prerequisite, naming what satisfied it.
+	Rebuilt   []string
 	Satisfied []string
-	// Exposed is each executable linked into the workspace's .forge/bin.
-	Exposed []string
+	Exposed   []string
 }
 
-// Provisioner is what a driver accepts, declared in the package that
-// implements it.
 type Provisioner interface {
-	// Provision walks every pin through the lifecycle and exposes the
-	// result at root. StoreDir overrides the store root; empty resolves
-	// FORGE_STORE_DIR then the user cache.
 	Provision(ctx context.Context, f config.Factory, root, storeDir string, pins []Pin) (Report, error)
 }
 
@@ -83,9 +51,7 @@ type Controller struct {
 	fs     fsadapter.FS
 	lock   lockadapter.Locker
 
-	// lookPath verifies a host prerequisite; exec.LookPath in production.
 	lookPath func(string) (string, error)
-	// platform overrides "GOOS/GOARCH" in tests.
 	platform string
 }
 
@@ -95,14 +61,13 @@ func New(caller engineadapter.Caller, fs fsadapter.FS, lock lockadapter.Locker) 
 	return &Controller{caller: caller, fs: fs, lock: lock, lookPath: exec.LookPath}
 }
 
-// The wire shapes, mirroring api/factory.v1.yaml. They are mapped here at
-// the boundary so generated types never reach the orchestration.
 type describeInput struct {
 	Runtime string            `json:"runtime"`
 	Version string            `json:"version"`
 	OS      string            `json:"os"`
 	Arch    string            `json:"arch"`
 	Params  map[string]string `json:"params"`
+	Targets []string          `json:"targets,omitempty"`
 	Spec    map[string]any    `json:"spec"`
 }
 
@@ -161,17 +126,12 @@ type installOutput struct {
 	Installed []string `json:"installed"`
 }
 
-// described is one runtime after the provider answered, with the store
-// prefix it lives (or will live) at.
 type described struct {
 	pin    Pin
 	desc   descriptionWire
 	prefix string
 }
 
-// Provision walks every pin through the lifecycle. Descriptions are
-// gathered first, because prerequisites resolve across runtimes - zig
-// provides c-compiler for go - and only then is anything fetched.
 func (c *Controller) Provision(
 	ctx context.Context, f config.Factory, root, storeDir string, pins []Pin,
 ) (Report, error) {
@@ -213,8 +173,6 @@ func (c *Controller) Provision(
 	return report, nil
 }
 
-// describeAll asks each runtime's provider engine - bound by alias, exactly
-// as a repo's language binds - for its pure-data description.
 func (c *Controller) describeAll(
 	ctx context.Context, f config.Factory, store string, pins []Pin,
 ) ([]described, error) {
@@ -250,7 +208,7 @@ func (c *Controller) describeAll(
 		in := describeInput{
 			Runtime: pin.Name, Version: pin.Version,
 			OS: osName, Arch: arch,
-			Params: params, Spec: orEmpty(f.SpecFor(pin.Name)),
+			Params: params, Targets: pin.Targets, Spec: orEmpty(f.SpecFor(pin.Name)),
 		}
 
 		if err := c.caller.Call(ctx, uri, ToolDescribe, in, &desc); err != nil {
@@ -272,10 +230,6 @@ func (c *Controller) describeAll(
 	return out, nil
 }
 
-// checkPrerequisites resolves what each runtime assumes about the machine.
-// A declared runtime that provides the capability wins; an explicit
-// toolchain.satisfy entry overrides; the host is verified last; and nothing
-// is ever installed into the host - a miss fails loud with the avenues.
 func (c *Controller) checkPrerequisites(f config.Factory, ds []described, report *Report) error {
 	provides := map[string]string{}
 
@@ -355,10 +309,6 @@ func (c *Controller) verifyHost(runtimeName string, p prerequisiteWire, how stri
 	return fmt.Sprintf("%s (%s at %s)", how, p.Verify, path), nil
 }
 
-// materialize brings one runtime into the store: fetch every artifact
-// through the fetch engine, lay them out through the install engine into a
-// staging prefix, and land it atomically. An already-present prefix is the
-// converged state and is reused untouched - the store is immutable.
 func (c *Controller) materialize(
 	ctx context.Context, f config.Factory, store string, d described, report *Report,
 ) error {
@@ -370,10 +320,6 @@ func (c *Controller) materialize(
 		return nil
 	}
 
-	// The store is user-global and two workspaces may sync at once, so the
-	// prefix is built under a lock and re-checked once it is held: the
-	// loser of the race finds the winner's install and reuses it.
-	// The locker derives its own lock-file name from the prefix.
 	release, err := c.lock.Lock(d.prefix)
 	if err != nil {
 		return fmt.Errorf("locking the store for %s: %w", name, err)
@@ -390,12 +336,6 @@ func (c *Controller) materialize(
 			return nil
 		}
 
-		// The entry exists but lacks a bin the description names: the
-		// description grew after the entry was installed, which is what a
-		// restored cache or an old machine store looks like. The entry is
-		// rebuilt under the held lock and the report says so - silently
-		// reusing it would expose a dangling symlink that fails only when
-		// the missing tool is called.
 		if err := c.fs.Remove(d.prefix); err != nil {
 			return fmt.Errorf("removing the stale store entry %s: %w", name, err)
 		}
@@ -455,11 +395,6 @@ func (c *Controller) materialize(
 	return nil
 }
 
-// entryCarriesTheBins answers whether a store entry holds every bin the
-// description names. The store is keyed on name@version alone, so a
-// description that grows a component after the entry was installed leaves
-// an entry that reads as installed and fails only when the missing tool is
-// called. An entry that fails this check is rebuilt, never reused.
 func (c *Controller) entryCarriesTheBins(d described) bool {
 	for _, bin := range d.desc.Bins {
 		target := filepath.Join(d.prefix, filepath.FromSlash(bin))
@@ -471,8 +406,6 @@ func (c *Controller) entryCarriesTheBins(d described) bool {
 	return true
 }
 
-// engineOr answers the engine behind an alias, or the default when the
-// factory declares none. The declared entry's spec travels with it.
 func (c *Controller) engineOr(f config.Factory, alias, fallback string) (string, map[string]any) {
 	if uri, ok := f.EngineFor(alias); ok {
 		return uri, orEmpty(f.SpecFor(alias))
@@ -481,10 +414,6 @@ func (c *Controller) engineOr(f config.Factory, alias, fallback string) (string,
 	return fallback, map[string]any{}
 }
 
-// expose links every runtime's executables into the workspace's .forge/bin,
-// writes the composed environment into .forge/env for the managed .envrc
-// block to source, and applies both to this very process - the commands
-// that follow provisioning in the same run must already see them.
 func (c *Controller) expose(root string, ds []described, report *Report) error {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -543,8 +472,6 @@ func (c *Controller) expose(root string, ds []described, report *Report) error {
 	return nil
 }
 
-// safeBase keeps the artifact's file name for the staging path, defensively:
-// a URL is engine-answered data, not a path.
 func safeBase(url string) string {
 	base := url
 	if i := strings.LastIndex(base, "/"); i >= 0 {

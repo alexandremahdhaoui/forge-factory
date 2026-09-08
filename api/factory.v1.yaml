@@ -190,6 +190,14 @@ components:
             Extra keys from the runtime's factory entry, passed through
             verbatim. A generic provider parameterizes on them - the JRE's
             source vendor, for example. A language provider may ignore them.
+        targets:
+          type: array
+          items:
+            type: string
+          description: >-
+            Target triples the runtime must carry a standard library for
+            beside the host. The rust provider answers one artifact per
+            target. A provider with no notion of a target ignores them.
         spec:
           $ref: '#/components/schemas/Spec'
 

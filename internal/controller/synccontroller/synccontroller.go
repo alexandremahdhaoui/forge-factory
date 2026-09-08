@@ -35,7 +35,6 @@ var (
 	ErrCommand  = errors.New("a command an engine asked for failed")
 )
 
-// tail keeps the end of a command's stderr, which is where the reason is.
 func tail(s string) string {
 	s = strings.TrimSpace(s)
 	if len(s) > 400 {
@@ -45,31 +44,16 @@ func tail(s string) string {
 	return s
 }
 
-// Report is what a sync did, so a caller can print it and a test can assert it.
-// Notes carry the resolver's diagnostics: pins standing, pins to remove,
-// deprecated tracks.
 type Report struct {
-	Root    string   `json:"root"`
-	Written []string `json:"written"`
-	Ignored []string `json:"ignored"`
-	// Locked is each dependency-lock command that ran clean; Unlocked is each
-	// optional one that failed, with why. The vocabulary is deliberate: what
-	// these commands resolve is a language's dependency closure into its
-	// lockfile, and "tidy" is one language's word for it.
-	Locked   []string `json:"locked"`
-	Unlocked []string `json:"unlocked"`
-	Notes    []string `json:"notes,omitempty"`
-	// Toolchain is every declared binary resolved to its pinned version;
-	// the driver provisions them into the store.
+	Root      string                     `json:"root"`
+	Written   []string                   `json:"written"`
+	Ignored   []string                   `json:"ignored"`
+	Locked    []string                   `json:"locked"`
+	Unlocked  []string                   `json:"unlocked"`
+	Notes     []string                   `json:"notes,omitempty"`
 	Toolchain []toolingcontroller.Binary `json:"toolchain,omitempty"`
-	// Runtimes is every declared runtime resolved to its pinned version;
-	// the driver provisions them before the binaries, because building a
-	// binary needs the runtime that compiles it.
-	Runtimes []runtimecontroller.Pin `json:"runtimes,omitempty"`
-	// Image is the resolved toolchain container reference, tag included,
-	// when the factory declares one. Sync persists it into
-	// ToolchainImagePath for the CI layer to read.
-	Image string `json:"image,omitempty"`
+	Runtimes  []runtimecontroller.Pin    `json:"runtimes,omitempty"`
+	Image     string                     `json:"image,omitempty"`
 }
 
 type repoWire struct {
@@ -111,19 +95,8 @@ type languageOutput struct {
 	Language string `json:"language"`
 }
 
-// Syncer is what a driver accepts. It is declared here, in the package that
-// implements it, as golden-go does.
 type Syncer interface {
-	// Sync writes every member's manifest and stops: resolving the
-	// dependency closure is Lock's job, because cloning is not building.
-	// Only restricts writes to one member - the ephemeral run context uses
-	// it, where the other members are not on disk at all. Empty means
-	// everything.
 	Sync(ctx context.Context, f config.Factory, root, only string) (Report, error)
-	// Lock resolves every member's dependency closure by running the
-	// commands its language engine declares - the manifests sync wrote name
-	// only the direct requires, and these put the indirect ones and the
-	// integrity sums back. The build phase calls it; a clone never does.
 	Lock(ctx context.Context, f config.Factory, root, only string) (Report, error)
 }
 
@@ -147,13 +120,6 @@ func New(
 	return &Controller{caller: caller, fs: fs, repos: repos, runner: runner, resolver: resolver}
 }
 
-// Sync asks every language engine what to write, writes it, and keeps each
-// repo's gitignore in step. A version is written in the factory and nowhere
-// else, so everything written here is ignored by git.
-//
-// Sync never runs the engines' dependency-lock commands: cloning is not
-// building, and a workspace stood up offline must come up clean. Lock is
-// the verb that resolves the closure, and the build phase owns calling it.
 func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only string) (Report, error) {
 	f = restrictTo(f, only)
 
@@ -167,18 +133,6 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 
 	ignores := map[string][]string{}
 
-	// forge sources a .envrc in every repo it builds, so the file must
-	// exist; its content is the machine's own (gitignored). Creating it here
-	// retires the touch-loop every fresh workspace used to need. One managed
-	// block is kept present in every file - the workspace tooling PATH entry,
-	// which puts the pinned store's view ahead of whatever a user installed -
-	// and the rest of the file is never touched.
-	//
-	// The ignore travels with it. This writes a file into somebody's checkout
-	// that holds their machine's own environment, and the .gitignore lines
-	// keeping it out of git were hand-written per repo - so a member added
-	// without one got an untracked .envrc that a careless `git add -A`
-	// commits, secrets and all.
 	if err := c.ensureEnvrcs(f, root, &report); err != nil {
 		return Report{}, err
 	}
@@ -187,12 +141,7 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		ignores[r.Name] = append(ignores[r.Name], ".envrc")
 	}
 
-	// Toolchain binaries resolve here - a literal pin as written, a track
-	// through the register like any dependency - and the driver provisions
-	// what this reports into the store.
 	if f.Toolchain != nil {
-		// Runtimes resolve the same way, and first: a binary's `go install`
-		// needs the go the runtimes provision.
 		for _, name := range sortedKeys(f.Toolchain.Runtimes) {
 			r := f.Toolchain.Runtimes[name]
 			version := r.Version
@@ -209,7 +158,7 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 			}
 
 			report.Runtimes = append(report.Runtimes, runtimecontroller.Pin{
-				Name: name, Version: version, Params: r.Params,
+				Name: name, Version: version, Params: r.Params, Targets: r.Targets,
 			})
 		}
 
@@ -232,9 +181,6 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 			})
 		}
 
-		// The image resolves like a binary and lands in a generated file,
-		// so a pipeline reads the pin instead of someone typing it. The
-		// write is change-aware: an unchanged pin reports nothing.
 		if img := f.Toolchain.Image; img != nil {
 			version := img.Version
 
@@ -269,11 +215,6 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		return Report{}, err
 	}
 
-	// What this factory generates is recorded beside the other root
-	// contracts: every rendered file plus every declared lockfile,
-	// root-relative. forge-ci reads it to keep factory churn out of the
-	// revision's dirty measurement - the register moves these files by
-	// design, and only a language engine knows their names.
 	if err := c.recordGenerated(root, append(append([]string{}, generated...), lockfiles...), &report); err != nil {
 		return Report{}, err
 	}
@@ -296,14 +237,6 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 	return report, nil
 }
 
-// Lock resolves every member's dependency closure by running the commands
-// its language engine declares. The engines are rendered again to learn the
-// commands and nothing is written: the manifests on disk are whatever the
-// last sync produced, and a lock over drifted manifests would only prove
-// the wrong thing louder.
-//
-// An optional command that fails lands in Unlocked and the caller decides -
-// the driver refuses unless it was told the machine is offline on purpose.
 func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only string) (Report, error) {
 	f = restrictTo(f, only)
 
@@ -328,10 +261,6 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 		return Report{}, err
 	}
 
-	// What resolved is recorded: each lockfile the engines declared, hashed,
-	// into one manifest the build phase can hand to whoever keys state by
-	// revision. The names mean nothing here - only a language engine knows
-	// what a lockfile is, and this side only proves which bytes were locked.
 	if err := c.recordLockfiles(root, lockfiles, &report); err != nil {
 		return Report{}, err
 	}
@@ -339,26 +268,12 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 	return report, nil
 }
 
-// LockManifest is the recorded outcome of a lock: each resolved lockfile,
-// root-relative, with the hash of the exact bytes. The path is a contract
-// with forge-ci, which reads it to store one dependency-lock record per file
-// beside the revision.
 const LockManifestPath = ".forge/dependency-locks.json"
 
-// ToolchainImagePath is where sync persists the resolved toolchain
-// container reference, root-relative. The CI layer reads the pin from here,
-// which is what keeps it out of hand-written pipeline files.
 const ToolchainImagePath = ".forge/toolchain-image"
 
-// GeneratedManifestPath is where sync records every file this factory
-// generates - each rendered manifest and each declared lockfile,
-// root-relative. The path is a contract with forge-ci, which excludes
-// exactly these files from a repo's dirty measurement: the register moves
-// them by design, so their churn is the system working, not drift.
 const GeneratedManifestPath = ".forge/factory-generated.json"
 
-// writeIfChanged writes target only when the bytes differ, and answers
-// whether it did - a sync that converges nothing must report nothing.
 func (c *Controller) writeIfChanged(target string, data []byte) (bool, error) {
 	if existing, err := c.fs.ReadFile(target); err == nil && bytes.Equal(existing, data) {
 		return false, nil
@@ -385,8 +300,6 @@ type generatedManifest struct {
 	Files   []string `json:"files"`
 }
 
-// recordGenerated writes the factory-generated file list, root-relative,
-// sorted and deduplicated, only when the bytes changed.
 func (c *Controller) recordGenerated(root string, paths []string, report *Report) error {
 	seen := map[string]bool{}
 	manifest := generatedManifest{Version: 1, Files: []string{}}
@@ -436,9 +349,6 @@ func (c *Controller) recordLockfiles(root string, lockfiles []string, report *Re
 			return fmt.Errorf("recording lockfile %s: %w", path, err)
 		}
 
-		// An optional command that could not run leaves no lockfile, and an
-		// absent file is reported rather than recorded: a manifest entry
-		// nothing hashed would be a claim about bytes nobody saw.
 		if !exists {
 			report.Notes = append(report.Notes,
 				fmt.Sprintf("no lockfile at %s; it is not recorded", relative(root, path)))
@@ -477,8 +387,6 @@ func (c *Controller) recordLockfiles(root string, lockfiles []string, report *Re
 	return nil
 }
 
-// relative answers path relative to root, falling back to the path itself
-// when it does not resolve - a report line beats an error for a display name.
 func relative(root, path string) string {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
@@ -488,10 +396,6 @@ func relative(root, path string) string {
 	return filepath.ToSlash(rel)
 }
 
-// renderMembers runs every language engine's render and answers the
-// dependency-lock commands it declared. With write set the files land on
-// disk and their gitignore entries accumulate in ignores; without it the
-// render is only the vehicle for learning the commands.
 func (c *Controller) renderMembers(
 	ctx context.Context,
 	f config.Factory,
@@ -531,10 +435,6 @@ func (c *Controller) renderMembers(
 			return nil, nil, nil, fmt.Errorf("resolving %s devDependencies: %w", language, err)
 		}
 
-		// A member module another member imports - a shared spec - is
-		// declared in no dependency list, so its version was left to the
-		// lock that follows, which takes the highest published tag. The
-		// register's internal track is what governs it.
 		members, err := c.resolver.ResolveMembers(ctx, f, root, language)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("resolving %s member modules: %w", language, err)
@@ -543,18 +443,10 @@ func (c *Controller) renderMembers(
 		required := c.internalRequires(resolved, language)
 
 		for name, version := range members {
-			// A declared dependency wins. Naming a module in the factory is
-			// a deliberate act and the internal track must not override it.
 			if _, declared := deps[name]; declared {
 				continue
 			}
 
-			// Only a module some member already requires. Every runnable
-			// member has an internal track too, carrying the pipeline's own
-			// dev label: a real revision, but not a tag any proxy can
-			// fetch. Writing one into a manifest makes the lock that follows
-			// try to resolve it and fail, because a require has to resolve
-			// before it can be pruned as unused.
 			if !required[name] {
 				continue
 			}
@@ -628,9 +520,6 @@ func (c *Controller) renderMembers(
 	return lockCommands, lockfiles, generated, nil
 }
 
-// underMemberOrRoot keeps a write inside the one materialised member or at
-// the context root itself: the workspace files reference only the member,
-// because restrictTo already narrowed the factory.
 func underMemberOrRoot(root, only, path string) bool {
 	if strings.HasPrefix(path, filepath.Join(root, only)+string(filepath.Separator)) {
 		return true
@@ -639,9 +528,6 @@ func underMemberOrRoot(root, only, path string) bool {
 	return filepath.Dir(path) == filepath.Clean(root)
 }
 
-// internalRequires answers the module paths this language's members already
-// require. The generated manifest is rewritten on every sync, so the
-// committed one is where a member records what it actually imports.
 func (c *Controller) internalRequires(repos []repoWire, language string) map[string]bool {
 	out := map[string]bool{}
 
@@ -667,19 +553,6 @@ func (c *Controller) internalRequires(repos []repoWire, language string) map[str
 	return out
 }
 
-// requiredModules reads the module paths a go.mod requires.
-//
-// Only a require line counts, and only inside a require block or behind the
-// require keyword. That sounds obvious and it is the whole fix: the scanner
-// this replaces trimmed an optional "require " prefix and then took any line
-// holding a slash, so every module path in a replace or exclude block read
-// as a require.
-//
-// The blast radius is why it is parsed rather than grepped. The answer is
-// merged into one per-language map that every member's manifest is rendered
-// from, so one replace block in one member writes its right-hand side into
-// every member, and every following tidy fails on a version no proxy can
-// serve. Six manifests broke that way once.
 func requiredModules(gomod string) map[string]bool {
 	out := map[string]bool{}
 	inRequire := false
@@ -708,9 +581,6 @@ func requiredModules(gomod string) map[string]bool {
 			continue
 		}
 
-		// Any other block - replace, exclude, tool - falls through. Its
-		// body lines carry no require keyword, so nothing reads them, and
-		// its closing paren cannot end a require block that never opened.
 		if rest, ok := strings.CutPrefix(line, "require "); ok {
 			addRequired(out, rest)
 		}
@@ -719,9 +589,6 @@ func requiredModules(gomod string) map[string]bool {
 	return out
 }
 
-// addRequired records the module a require line names. The right-hand side
-// is dropped, so an // indirect marker still counts: indirect is how a
-// module is required, not whether.
 func addRequired(out map[string]bool, line string) {
 	module, _, _ := strings.Cut(strings.TrimSpace(line), " ")
 	if strings.Contains(module, "/") {
@@ -729,32 +596,17 @@ func addRequired(out map[string]bool, line string) {
 	}
 }
 
-// The markers that fence off the block this tool owns. Everything between
-// them is rewritten on every sync; everything outside is the machine's own
-// and is never read, moved or removed.
 const (
 	envrcBegin = "# BEGIN forge-factory"
 	envrcEnd   = "# END forge-factory"
 )
 
-// ensureEnvrcs keeps the managed block present in each member's .envrc: the
-// PATH entry for the workspace's .forge/bin, where sync links the pinned
-// tooling. Everything outside the markers is the machine's own and stays
-// untouched.
 func (c *Controller) ensureEnvrcs(f config.Factory, root string, report *Report) error {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return fmt.Errorf("resolving the workspace root: %w", err)
 	}
 
-	// The env file is where runtime provisioning composes each runtime's
-	// environment - JAVA_HOME and its kind. Sourced conditionally: it does
-	// not exist until the first provision, and a workspace with no declared
-	// runtimes never writes it. An if, not `[ -f ] && .`: that form's exit
-	// status is 1 when the file is absent, and when the block is the last
-	// thing in .envrc that status is the file's - forge refused to source
-	// every .envrc a fresh runner had, in a factory with no runtimes
-	// (forge-self run 87).
 	envFile := filepath.Join(absRoot, filepath.FromSlash(runtimecontroller.EnvPath))
 	block := fmt.Sprintf("%s\nexport PATH=\"%s:$PATH\"\nif [ -f %q ]; then . %q; fi\n%s\n",
 		envrcBegin, filepath.Join(absRoot, ".forge", "bin"), envFile, envFile, envrcEnd)
@@ -788,17 +640,6 @@ func (c *Controller) ensureEnvrcs(f config.Factory, root string, report *Report)
 	return nil
 }
 
-// withEnvrcBlock puts the managed block into content, wherever the reader
-// chose to keep it, and leaves every other line alone.
-//
-// This used to append the line once and then skip any file mentioning
-// "/.forge/bin" anywhere - so a workspace that moved kept a stale absolute
-// path forever, and an unrelated mention in a comment suppressed the write
-// entirely. Rewriting between markers is what makes the call site's claim
-// true: one managed line is KEPT present, not written once and abandoned.
-//
-// An unmatched BEGIN is treated as absent and a fresh block is prepended.
-// Nothing this function did not write is ever deleted.
 func withEnvrcBlock(content, block string) string {
 	begin := strings.Index(content, envrcBegin)
 	if begin >= 0 {
@@ -820,14 +661,9 @@ func withEnvrcBlock(content, block string) string {
 		content += "\n"
 	}
 
-	// Prepended, so the workspace tooling wins over whatever a machine puts
-	// on PATH later in its own file.
 	return block + content
 }
 
-// restrictTo narrows the factory to one member. The ephemeral run context
-// holds only that member and the register, so rendering the others would
-// read identities that are not on disk.
 func restrictTo(f config.Factory, only string) config.Factory {
 	if only == "" {
 		return f
@@ -846,19 +682,12 @@ func restrictTo(f config.Factory, only string) config.Factory {
 	return f
 }
 
-// lock runs each engine's dependency-lock commands after its files landed. A
-// generated manifest names only the direct requires, so these are what put
-// the indirect ones and the integrity sums back. An optional command that
-// fails is reported and the sync still succeeds, because resolving a closure
-// needs the network and a sync must work offline.
 func (c *Controller) lock(ctx context.Context, commands []commandWire, report *Report) error {
 	for _, cmd := range commands {
 		what := cmd.Command + " " + strings.Join(cmd.Args, " ") + " in " + cmd.Dir
 
 		result, err := c.runner.RunEnv(ctx, cmd.Dir, cmd.Env, cmd.Command, cmd.Args...)
 
-		// A command that exits non zero comes back with no error and an exit
-		// code. Reading only the error passes every failure.
 		if err == nil && result.ExitCode != 0 {
 			err = fmt.Errorf("%w: exit %d: %s", ErrCommand, result.ExitCode, tail(result.Stderr))
 		}
@@ -879,10 +708,6 @@ func (c *Controller) lock(ctx context.Context, commands []commandWire, report *R
 	return nil
 }
 
-// checkLanguage refuses an engine registered under the wrong alias, because a
-// rust engine behind the go alias would silently render the wrong files. It
-// sends a whole input rather than an empty one: a nil slice or map travels as
-// null and the engine's own schema refuses it.
 func (c *Controller) checkLanguage(
 	ctx context.Context,
 	uri, alias string,
@@ -930,8 +755,6 @@ func (c *Controller) resolve(f config.Factory, root string) ([]repoWire, error) 
 	return out, nil
 }
 
-// ensureIgnored adds each name to a gitignore without disturbing what is
-// already there, and reports whether it changed anything.
 func (c *Controller) ensureIgnored(path string, names []string) (bool, error) {
 	existing := ""
 

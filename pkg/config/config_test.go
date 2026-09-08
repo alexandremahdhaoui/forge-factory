@@ -161,8 +161,6 @@ engines:
 func TestAModulesMapIsRejected(t *testing.T) {
 	t.Parallel()
 
-	// The register subsumed the modules map; the strict parse names the
-	// dead key so every stale factory file fails at once, loudly.
 	_, err := config.Parse([]byte(`version: "1"
 name: golden
 repos:
@@ -180,8 +178,6 @@ modules:
 	assert.Contains(t, err.Error(), "modules")
 }
 
-// The toolchain section is the one governed place standalone tool versions
-// live. Exactly one of track or version pins each entry.
 func TestToolchainValidation(t *testing.T) {
 	t.Parallel()
 
@@ -269,8 +265,6 @@ toolchain:
 	}
 }
 
-// The toolchain image pins the container the pipelines run in, exactly as
-// a binary is pinned: one ref, one of track or version.
 func TestToolchainImageValidation(t *testing.T) {
 	t.Parallel()
 
@@ -357,8 +351,6 @@ toolchain:
 	require.ErrorContains(t, err, "no register: block")
 }
 
-// A track resolves from the register, so declaring one without a register
-// block is a config error.
 func TestAToolchainTrackNeedsARegister(t *testing.T) {
 	t.Parallel()
 
@@ -379,8 +371,6 @@ toolchain:
 	require.ErrorContains(t, err, "no register: block")
 }
 
-// Accepting a risk is a decision somebody makes on purpose, so the file has
-// to make a careless one impossible to write.
 func TestAnAcknowledgementMustBeDeliberate(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -432,7 +422,6 @@ dependencies:
 	}
 }
 
-// The shape that must parse: an id, a reason, and an optional date.
 func TestADeliberateAcknowledgementParses(t *testing.T) {
 	doc := `name: w
 register:
@@ -476,10 +465,6 @@ func indentBlock(s string) string {
 	return out
 }
 
-// A dependency entry is parsed strictly, so a typo is reported rather than
-// dropped. The one that made this matter: "expres: 2027-01-01" parsed as
-// an acknowledgement with no expiry at all - a permanent acceptance of a
-// risk somebody meant to accept for four months, with nothing to read.
 func TestADependencyEntryRefusesAKeyItDoesNotKnow(t *testing.T) {
 	for name, entry := range map[string]string{
 		"a misspelled track":   `{ trak: "1" }`,
@@ -518,6 +503,8 @@ engines:
     engine: forge://example.com/lang-go
   - alias: jre
     engine: forge://example.com/runtime-archive
+  - alias: rust
+    engine: forge://example.com/lang-rust
 register:
   url: git@example.com:owner/register.git
 toolchain:
@@ -581,6 +568,20 @@ toolchain:
     c-compiler: zig`,
 			want: `neither "host" nor a declared runtime`,
 		},
+		"the windows and aarch64 targets parse": {
+			toolchain: `  runtimes:
+    rust: { version: "1.97.0", targets: [x86_64-pc-windows-gnu, aarch64-unknown-linux-gnu] }`,
+		},
+		"a target nobody knows is refused and the known ones are named": {
+			toolchain: `  runtimes:
+    rust: { version: "1.97.0", targets: [wasm32-unknown-unknown] }`,
+			want: `toolchain.runtimes.rust.targets[0]: "wasm32-unknown-unknown" is not a known target triple. known targets are aarch64-unknown-linux-gnu, x86_64-pc-windows-gnu, x86_64-unknown-linux-gnu`,
+		},
+		"a target declared twice is refused": {
+			toolchain: `  runtimes:
+    rust: { version: "1.97.0", targets: [x86_64-pc-windows-gnu, x86_64-pc-windows-gnu] }`,
+			want: `toolchain.runtimes.rust.targets[1]: "x86_64-pc-windows-gnu" is declared twice`,
+		},
 	}
 
 	for name, tc := range cases {
@@ -598,6 +599,26 @@ toolchain:
 			require.ErrorContains(t, err, tc.want)
 		})
 	}
+}
+
+func TestARuntimeKeepsItsTargetsInDeclaredOrder(t *testing.T) {
+	t.Parallel()
+
+	f, err := config.Parse([]byte(`version: "1"
+name: w
+repos:
+  - name: r
+    url: u
+engines:
+  - alias: rust
+    engine: forge://example.com/lang-rust
+toolchain:
+  runtimes:
+    rust: { version: "1.97.0", targets: [x86_64-pc-windows-gnu, aarch64-unknown-linux-gnu] }`))
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"x86_64-pc-windows-gnu", "aarch64-unknown-linux-gnu"},
+		f.Toolchain.Runtimes["rust"].Targets)
 }
 
 func TestARuntimeTrackNeedsARegister(t *testing.T) {

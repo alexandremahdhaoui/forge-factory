@@ -16,9 +16,6 @@ type describer interface {
 	Describe(runtimetypes.Input) (runtimetypes.Description, error)
 }
 
-// Every language describer answers a complete, deterministic description
-// for both linux platforms: https url, a real sha256, an unpack kind the
-// install engine lays out, and at least one exposed executable.
 func TestEveryDescriberAnswersBothLinuxPlatforms(t *testing.T) {
 	t.Parallel()
 
@@ -81,8 +78,6 @@ func TestTheTwoArchitecturesPinDifferentBytes(t *testing.T) {
 	assert.NotEqual(t, amd.Artifacts[0].URL, arm.Artifacts[0].URL)
 }
 
-// An unknown version refuses naming the fix - the table is a reviewed pin,
-// not a lookup that retries.
 func TestAnUnknownVersionRefusesNamingTheFix(t *testing.T) {
 	t.Parallel()
 
@@ -116,8 +111,6 @@ func TestAnUnknownPlatformRefuses(t *testing.T) {
 	}
 }
 
-// The language facts live with the language: go and rust assume a C
-// toolchain and say so; the jar assumes a JVM.
 func TestPrerequisitesAreDeclaredWhereTheFactLives(t *testing.T) {
 	t.Parallel()
 
@@ -136,8 +129,6 @@ func TestPrerequisitesAreDeclaredWhereTheFactLives(t *testing.T) {
 	assert.Equal(t, "java", jar.Prerequisites[0].Verify)
 }
 
-// Rust's combined tarball merges components into one prefix; the picks are
-// that merge as data, and the std pick carries the platform's triple.
 func TestRustPicksCarryTheTriple(t *testing.T) {
 	t.Parallel()
 
@@ -156,8 +147,96 @@ func TestRustPicksCarryTheTriple(t *testing.T) {
 	}, froms)
 }
 
-// The JRE provides the capability the jar assumes, and its env names the
-// prefix - the {prefix} token the expose step replaces.
+func TestRustWithNoTargetsAnswersTheHostToolchainAlone(t *testing.T) {
+	t.Parallel()
+
+	out, err := describecontroller.Rust{}.Describe(
+		runtimetypes.Input{Runtime: "rust", Version: "1.97.0", OS: "linux", Arch: "amd64"})
+	require.NoError(t, err)
+
+	require.Len(t, out.Artifacts, 1)
+	assert.Equal(t,
+		"https://static.rust-lang.org/dist/2026-07-09/rust-1.97.0-x86_64-unknown-linux-gnu.tar.gz",
+		out.Artifacts[0].URL)
+	assert.Equal(t, "eb89b20287153391c49ebcdb7fd91b683a12438d129bfb92eadcc495545af3a7", out.Artifacts[0].SHA256)
+	assert.Len(t, out.Artifacts[0].Picks, 5)
+}
+
+func TestRustWithOneTargetAppendsThatTargetsStdBesideTheHostStd(t *testing.T) {
+	t.Parallel()
+
+	out, err := describecontroller.Rust{}.Describe(runtimetypes.Input{
+		Runtime: "rust", Version: "1.97.0", OS: "linux", Arch: "amd64",
+		Targets: []string{"x86_64-pc-windows-gnu"},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, out.Artifacts, 2)
+
+	std := out.Artifacts[1]
+	assert.Equal(t,
+		"https://static.rust-lang.org/dist/2026-07-09/rust-std-1.97.0-x86_64-pc-windows-gnu.tar.gz",
+		std.URL)
+	assert.Equal(t, "7ef19232b379616509007c7a8db45c4ee7031c22d9614fa2b7f18b2a30ff85fa", std.SHA256)
+	assert.Equal(t, "tar-gz", std.Unpack)
+	assert.Equal(t, 1, std.Strip)
+	assert.Equal(t, []runtimetypes.Pick{{From: "rust-std-x86_64-pc-windows-gnu"}}, std.Picks)
+
+	assert.Len(t, out.Artifacts[0].Picks, 5)
+	assert.Len(t, out.Bins, 7)
+}
+
+func TestRustWithTwoTargetsAppendsOneStdPerTargetInDeclaredOrder(t *testing.T) {
+	t.Parallel()
+
+	out, err := describecontroller.Rust{}.Describe(runtimetypes.Input{
+		Runtime: "rust", Version: "1.97.0", OS: "linux", Arch: "amd64",
+		Targets: []string{"x86_64-pc-windows-gnu", "aarch64-unknown-linux-gnu"},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, out.Artifacts, 3)
+
+	assert.Equal(t,
+		"https://static.rust-lang.org/dist/2026-07-09/rust-std-1.97.0-x86_64-pc-windows-gnu.tar.gz",
+		out.Artifacts[1].URL)
+	assert.Equal(t, []runtimetypes.Pick{{From: "rust-std-x86_64-pc-windows-gnu"}}, out.Artifacts[1].Picks)
+
+	assert.Equal(t,
+		"https://static.rust-lang.org/dist/2026-07-09/rust-std-1.97.0-aarch64-unknown-linux-gnu.tar.gz",
+		out.Artifacts[2].URL)
+	assert.Equal(t, "ae6c76b70be4768ecf2f320f1e6fa28525730b7fd7d6cfc822a3a23e0c07fcc2", out.Artifacts[2].SHA256)
+	assert.Equal(t, []runtimetypes.Pick{{From: "rust-std-aarch64-unknown-linux-gnu"}}, out.Artifacts[2].Picks)
+
+	assert.NotEqual(t, out.Artifacts[1].SHA256, out.Artifacts[2].SHA256)
+}
+
+func TestRustSkipsATargetThatIsTheHostTripleBecauseTheHostTarballCarriesIt(t *testing.T) {
+	t.Parallel()
+
+	out, err := describecontroller.Rust{}.Describe(runtimetypes.Input{
+		Runtime: "rust", Version: "1.97.0", OS: "linux", Arch: "arm64",
+		Targets: []string{"aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, out.Artifacts, 2)
+	assert.Equal(t, []runtimetypes.Pick{{From: "rust-std-x86_64-unknown-linux-gnu"}}, out.Artifacts[1].Picks)
+	assert.Equal(t, "26abd06b9c4221811af1baec86dfb6de9535862fc853b85388dcc314c96cea6d", out.Artifacts[1].SHA256)
+}
+
+func TestRustRefusesATargetWithNoStdInTheTableNamingTheFix(t *testing.T) {
+	t.Parallel()
+
+	_, err := describecontroller.Rust{}.Describe(runtimetypes.Input{
+		Runtime: "rust", Version: "1.97.0", OS: "linux", Arch: "amd64",
+		Targets: []string{"wasm32-unknown-unknown"},
+	})
+	require.ErrorIs(t, err, describecontroller.ErrTarget)
+	require.ErrorContains(t, err, "wasm32-unknown-unknown")
+	require.ErrorContains(t, err, "add the target's published sha256")
+}
+
 func TestTheJreProvidesWhatTheJarNeeds(t *testing.T) {
 	t.Parallel()
 
@@ -168,8 +247,6 @@ func TestTheJreProvidesWhatTheJarNeeds(t *testing.T) {
 	assert.Equal(t, "{prefix}", jre.Env["JAVA_HOME"])
 }
 
-// The jar is architecture-independent: one artifact under the "any" key
-// serves every platform.
 func TestAnArchIndependentArtifactServesAnyPlatform(t *testing.T) {
 	t.Parallel()
 
@@ -184,8 +261,6 @@ func TestAnArchIndependentArtifactServesAnyPlatform(t *testing.T) {
 	assert.Equal(t, a.Artifacts[0].SHA256, b.Artifacts[0].SHA256)
 }
 
-// A file artifact with an at-only pick is renamed at install: the release
-// asset is pnpm-linux-x64, the exposed binary is pnpm.
 func TestPnpmRenamesItsReleaseAsset(t *testing.T) {
 	t.Parallel()
 

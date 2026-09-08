@@ -17,6 +17,12 @@ var (
 	uriPattern   = regexp.MustCompile(`^(forge|alias)://.+`)
 )
 
+var knownRuntimeTargets = []string{
+	"aarch64-unknown-linux-gnu",
+	"x86_64-pc-windows-gnu",
+	"x86_64-unknown-linux-gnu",
+}
+
 type Factory struct {
 	Version      string                               `json:"version"`
 	Name         string                               `json:"name"`
@@ -29,147 +35,66 @@ type Factory struct {
 	Toolchain    *Toolchain                           `json:"toolchain,omitempty"`
 }
 
-// Toolchain declares the standalone binaries a workspace provisions into
-// the store and exposes on .forge/bin: third-party generators and linters,
-// or a user's own engines - the one governed place their versions live,
-// instead of an env var here and a code default there.
 type Toolchain struct {
-	Binaries []ToolchainBinary `json:"binaries,omitempty"`
-
-	// Runtimes are the language runtimes and standalone tools the factory
-	// provisions into the store and exposes on .forge/bin. Each name binds
-	// to the engine declared under the same alias - exactly as a repo's
-	// language does - and that provider engine describes what to fetch.
+	Binaries []ToolchainBinary      `json:"binaries,omitempty"`
 	Runtimes map[string]RuntimeSpec `json:"runtimes,omitempty"`
-
-	// Satisfy overrides how a runtime's declared prerequisite is met: the
-	// name of a declared runtime that provides it, or "host" to verify it
-	// on the machine. Nothing is ever installed into the host either way.
-	Satisfy map[string]string `json:"satisfy,omitempty"`
-
-	// Image is the container the workspace's pipelines run their jobs in.
-	// Declared once here, resolved by sync into a generated file, and read
-	// from there by the CI layer - so the pin is never hand-typed in a
-	// pipeline file.
-	Image *ToolchainImage `json:"image,omitempty"`
+	Satisfy  map[string]string      `json:"satisfy,omitempty"`
+	Image    *ToolchainImage        `json:"image,omitempty"`
 }
 
-// ToolchainImage is the toolchain container. Exactly one of track or
-// version pins it, exactly as a binary is pinned: a track resolves from the
-// register's index, a literal version serves a workspace without a register.
 type ToolchainImage struct {
-	// Ref is the image reference without a tag, e.g. a registry host and
-	// repository path.
-	Ref string `json:"ref"`
-	// Track names a register track as "<ecosystem>:<package>".
-	Track string `json:"track,omitempty"`
-	// Version is the literal pin.
+	Ref     string `json:"ref"`
+	Track   string `json:"track,omitempty"`
 	Version string `json:"version,omitempty"`
 }
 
-// RuntimeSpec pins one declared runtime. Exactly one of track or version
-// pins it, exactly as a binary is pinned; params travel to the provider
-// engine verbatim, for the keys only it understands.
 type RuntimeSpec struct {
-	// Track names a register track as "<ecosystem>:<package>".
-	Track string `json:"track,omitempty"`
-	// Version is the literal pin.
-	Version string `json:"version,omitempty"`
-	// Params carries provider-specific keys - a generic archive provider's
-	// source vendor, for example - passed through without being read here.
-	Params map[string]string `json:"params,omitempty"`
+	Track   string            `json:"track,omitempty"`
+	Version string            `json:"version,omitempty"`
+	Params  map[string]string `json:"params,omitempty"`
+	Targets []string          `json:"targets,omitempty"`
 }
 
-// ToolchainBinary is one provisioned tool. Exactly one of track or version
-// pins it: a track resolves from the register's index (its current
-// version), a literal version serves a workspace without a register.
 type ToolchainBinary struct {
-	// Name is the binary's base name as it appears on PATH.
-	Name string `json:"name"`
-	// Module is the full main-package module path `go install` builds.
-	Module string `json:"module"`
-	// Track names a register track as "<ecosystem>:<package>".
-	Track string `json:"track,omitempty"`
-	// Version is the literal pin.
-	Version string `json:"version,omitempty"`
-
-	// Acknowledge accepts named findings on this binary, exactly as a
-	// dependency does. Without it a finding on a toolchain binary was
-	// unrecoverable: the gate refused, and the error told the operator to
-	// write yaml the schema then rejected.
+	Name        string            `json:"name"`
+	Module      string            `json:"module"`
+	Track       string            `json:"track,omitempty"`
+	Version     string            `json:"version,omitempty"`
 	Acknowledge []Acknowledgement `json:"acknowledge,omitempty"`
 }
 
-// Register names the catalog this workspace resolves versions from. The local
-// checkout wins, like any member; the URL is the remote fallback, cloned at
-// the pinned revision when the checkout is absent.
 type Register struct {
 	URL      string `json:"url"`
 	Path     string `json:"path,omitempty"`
 	Revision string `json:"revision,omitempty"`
 }
 
-// DependencySpec is one dependency entry. A bare string is a version written
-// verbatim, exactly as before the register existed. An object resolves from
-// the register: the track's current version, floored by a soft pin or frozen
-// by a hard one. Every pin carries a reason - a pin without one is a config
-// error, not a warning.
 type DependencySpec struct {
-	// Version is the legacy form: written verbatim, register not consulted.
-	Version string `json:"-"`
-
-	Track   string `json:"track,omitempty"`
-	Pin     string `json:"pin,omitempty"`
-	Mode    string `json:"mode,omitempty"`
-	Reason  string `json:"reason,omitempty"`
-	Expires string `json:"expires,omitempty"`
-	// Wraps renders the resolved version into a larger value, %s replaced -
-	// a rust inline table carrying features, a python specifier prefix.
-	Wraps string `json:"wraps,omitempty"`
-
-	// Acknowledge lists the findings this workspace has decided to live
-	// with. A finding blocks until it is named here, so accepting a risk is
-	// an edit somebody makes on purpose and a reviewer can see.
+	Version     string            `json:"-"`
+	Track       string            `json:"track,omitempty"`
+	Pin         string            `json:"pin,omitempty"`
+	Mode        string            `json:"mode,omitempty"`
+	Reason      string            `json:"reason,omitempty"`
+	Expires     string            `json:"expires,omitempty"`
+	Wraps       string            `json:"wraps,omitempty"`
 	Acknowledge []Acknowledgement `json:"acknowledge,omitempty"`
 }
 
-// Acknowledgement accepts one named finding on one dependency.
-//
-// It is keyed on the advisory id, so accepting the risk you looked at does
-// not accept the next one: a finding nobody has named blocks, however many
-// others are acknowledged beside it.
 type Acknowledgement struct {
-	// ID is the advisory this accepts, exactly as the feed names it.
-	ID string `json:"id"`
-
-	// Reason is why. Mandatory, for the same purpose as a pin's: the person
-	// who reads this in six months is usually not the one who wrote it.
-	Reason string `json:"reason"`
-
-	// Expires re-opens the decision on a date, for a risk accepted only
-	// until something else lands. Optional: most acknowledgements are
-	// instead named dead the moment the register carries a version that
-	// fixes them, which needs no date.
+	ID      string `json:"id"`
+	Reason  string `json:"reason"`
 	Expires string `json:"expires,omitempty"`
 }
 
-// FromRegister reports whether this entry resolves from the register.
 func (d DependencySpec) FromRegister() bool {
 	return d.Version == ""
 }
 
-// UnmarshalJSON keeps the legacy form parsing: a bare string is a version.
 func (d *DependencySpec) UnmarshalJSON(data []byte) error {
 	if len(data) > 0 && data[0] == '"' {
 		return json.Unmarshal(data, &d.Version)
 	}
 
-	// Strict, like the document around it. Parse uses UnmarshalStrict, but a
-	// custom UnmarshalJSON gets raw bytes and a plain Unmarshal here dropped
-	// that strictness for the entry and everything nested in it: `trak:` and
-	// `expres:` were accepted and silently ignored. A typo'd expires meant a
-	// permanent, never-expiring acknowledgement with no diagnostic, so the
-	// feature simply did not exist for anyone who mistyped it.
 	type alias DependencySpec
 
 	var a alias
@@ -186,7 +111,6 @@ func (d *DependencySpec) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON round-trips the legacy form.
 func (d DependencySpec) MarshalJSON() ([]byte, error) {
 	if d.Version != "" {
 		return json.Marshal(d.Version)
@@ -197,9 +121,6 @@ func (d DependencySpec) MarshalJSON() ([]byte, error) {
 	return json.Marshal(alias(d))
 }
 
-// Repo is one member. A repo with no languages is a member that carries no
-// manifest, which is what a spec repo is: it is checked out and versioned and
-// nothing is generated into it.
 type Repo struct {
 	Name      string   `json:"name"`
 	URL       string   `json:"url"`
@@ -207,12 +128,9 @@ type Repo struct {
 }
 
 type Engine struct {
-	Alias  string `json:"alias"`
-	Engine string `json:"engine"`
-	// Spec is the engine's own configuration, passed through verbatim on
-	// every call - the fetch engine's url rewrites live here, so a mirror
-	// or an internal artifact store is one declared block, never a fork.
-	Spec map[string]any `json:"spec,omitempty"`
+	Alias  string         `json:"alias"`
+	Engine string         `json:"engine"`
+	Spec   map[string]any `json:"spec,omitempty"`
 }
 
 type State struct {
@@ -332,8 +250,6 @@ func (f Factory) Validate() error {
 		add("register: needs a url, a path, or both")
 	}
 
-	// One rule for accepting a risk, wherever it is accepted. A toolchain
-	// binary carries findings exactly as a dependency does.
 	validateAcks := func(where string, acks []Acknowledgement) {
 		seen := map[string]bool{}
 
@@ -441,8 +357,6 @@ func (f Factory) Validate() error {
 				add("%s: a runtime name must be lowercase kebab-case", where)
 			}
 
-			// The name is the binding: the engine declared under the same
-			// alias is the provider that describes this runtime.
 			if !aliases[name] {
 				add("%s: no engine is declared under the alias %q, and the name is the binding", where, name)
 			}
@@ -461,6 +375,8 @@ func (f Factory) Validate() error {
 					add("%s: resolves from the register and no register: block is declared", where)
 				}
 			}
+
+			validateTargets(add, where, r.Targets)
 		}
 
 		for _, capability := range sortedKeys(f.Toolchain.Satisfy) {
@@ -507,7 +423,35 @@ func (f Factory) Validate() error {
 	return fmt.Errorf("invalid factory:\n  %s", strings.Join(errs, "\n  "))
 }
 
-// DependenciesFor returns the declared entries for one language, never nil.
+func validateTargets(add func(string, ...any), where string, targets []string) {
+	seen := map[string]bool{}
+
+	for i, target := range targets {
+		at := fmt.Sprintf("%s.targets[%d]", where, i)
+
+		if !isKnownRuntimeTarget(target) {
+			add("%s: %q is not a known target triple. known targets are %s",
+				at, target, strings.Join(knownRuntimeTargets, ", "))
+		}
+
+		if seen[target] {
+			add("%s: %q is declared twice", at, target)
+		}
+
+		seen[target] = true
+	}
+}
+
+func isKnownRuntimeTarget(target string) bool {
+	for _, known := range knownRuntimeTargets {
+		if known == target {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (f Factory) DependenciesFor(language string) map[string]DependencySpec {
 	if deps, ok := f.Dependencies[language]; ok {
 		return deps
@@ -516,8 +460,6 @@ func (f Factory) DependenciesFor(language string) map[string]DependencySpec {
 	return map[string]DependencySpec{}
 }
 
-// DevFor returns what only the tests and the tooling need for one language,
-// never nil.
 func (f Factory) DevFor(language string) map[string]DependencySpec {
 	if deps, ok := f.Dev[language]; ok {
 		return deps
@@ -526,7 +468,6 @@ func (f Factory) DevFor(language string) map[string]DependencySpec {
 	return map[string]DependencySpec{}
 }
 
-// EngineFor returns the engine URI registered for a language.
 func (f Factory) EngineFor(language string) (string, bool) {
 	for _, e := range f.Engines {
 		if e.Alias == language {
@@ -537,9 +478,6 @@ func (f Factory) EngineFor(language string) (string, bool) {
 	return "", false
 }
 
-// SpecFor returns the engine spec declared for an alias, nil when the
-// engine or its spec is absent. It is passed through verbatim on every
-// call, so an engine's own configuration lives in one declared block.
 func (f Factory) SpecFor(alias string) map[string]any {
 	for _, e := range f.Engines {
 		if e.Alias == alias {
@@ -550,8 +488,6 @@ func (f Factory) SpecFor(alias string) map[string]any {
 	return nil
 }
 
-// Languages returns every language any repo declares, sorted, so a sync is
-// deterministic.
 func (f Factory) Languages() []string {
 	seen := map[string]bool{}
 
