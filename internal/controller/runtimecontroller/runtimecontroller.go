@@ -223,11 +223,24 @@ func (c *Controller) describeAll(
 		out = append(out, described{
 			pin:    pin,
 			desc:   desc,
-			prefix: filepath.Join(store, "runtimes", sanitize(pin.Name)+"@"+sanitize(pin.Version)),
+			prefix: filepath.Join(store, "runtimes", storeEntry(pin)),
 		})
 	}
 
 	return out, nil
+}
+
+func storeEntry(pin Pin) string {
+	entry := sanitize(pin.Name) + "@" + sanitize(pin.Version)
+
+	targets := append([]string{}, pin.Targets...)
+	sort.Strings(targets)
+
+	for _, target := range targets {
+		entry += "+" + sanitize(target)
+	}
+
+	return entry
 }
 
 func (c *Controller) checkPrerequisites(f config.Factory, ds []described, report *Report) error {
@@ -312,7 +325,7 @@ func (c *Controller) verifyHost(runtimeName string, p prerequisiteWire, how stri
 func (c *Controller) materialize(
 	ctx context.Context, f config.Factory, store string, d described, report *Report,
 ) error {
-	name := d.pin.Name + "@" + d.pin.Version
+	name := storeEntry(d.pin)
 
 	if ok, _ := c.fs.Exists(d.prefix); ok && c.entryCarriesTheBins(d) {
 		report.Reused = append(report.Reused, name)
@@ -346,8 +359,7 @@ func (c *Controller) materialize(
 	fetchURI, fetchSpec := c.engineOr(f, "fetch", DefaultFetchEngine)
 	installURI, installSpec := c.engineOr(f, "install", DefaultInstallEngine)
 
-	staging := filepath.Join(store, "tmp",
-		fmt.Sprintf("runtime-%s@%s-%d", sanitize(d.pin.Name), sanitize(d.pin.Version), os.Getpid()))
+	staging := filepath.Join(store, "tmp", fmt.Sprintf("runtime-%s-%d", name, os.Getpid()))
 
 	if err := c.fs.Remove(staging); err != nil {
 		return err

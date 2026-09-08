@@ -17,12 +17,6 @@ var (
 	uriPattern   = regexp.MustCompile(`^(forge|alias)://.+`)
 )
 
-var knownRuntimeTargets = []string{
-	"aarch64-unknown-linux-gnu",
-	"x86_64-pc-windows-gnu",
-	"x86_64-unknown-linux-gnu",
-}
-
 type Factory struct {
 	Version      string                               `json:"version"`
 	Name         string                               `json:"name"`
@@ -429,9 +423,8 @@ func validateTargets(add func(string, ...any), where string, targets []string) {
 	for i, target := range targets {
 		at := fmt.Sprintf("%s.targets[%d]", where, i)
 
-		if !isKnownRuntimeTarget(target) {
-			add("%s: %q is not a known target triple. known targets are %s",
-				at, target, strings.Join(knownRuntimeTargets, ", "))
+		if strings.TrimSpace(target) == "" {
+			add("%s: a target names a triple, it cannot be empty", at)
 		}
 
 		if seen[target] {
@@ -440,16 +433,6 @@ func validateTargets(add func(string, ...any), where string, targets []string) {
 
 		seen[target] = true
 	}
-}
-
-func isKnownRuntimeTarget(target string) bool {
-	for _, known := range knownRuntimeTargets {
-		if known == target {
-			return true
-		}
-	}
-
-	return false
 }
 
 func (f Factory) DependenciesFor(language string) map[string]DependencySpec {

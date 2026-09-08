@@ -49,8 +49,6 @@ func parse(t *testing.T, raw string) config.Factory {
 	return f
 }
 
-// passthrough resolves like the pre-register world: legacy versions pass
-// through verbatim.
 type passthrough struct{}
 
 func (passthrough) Resolve(_ context.Context, _ config.Factory, _, _ string, deps map[string]config.DependencySpec) (map[string]string, []string, error) {
@@ -62,14 +60,10 @@ func (passthrough) Resolve(_ context.Context, _ config.Factory, _, _ string, dep
 	return out, nil, nil
 }
 
-// ResolveTool answers a fixed version, so tests can see a track resolve
-// without a register checkout.
 func (passthrough) ResolveTool(context.Context, config.Factory, string, string) (string, []string, error) {
 	return "v9.9.9", []string{"tool note"}, nil
 }
 
-// The pre-register world had no internal tracks, so nothing is pinned and
-// the tidy that follows keeps whatever it had.
 func (passthrough) ResolveMembers(
 	context.Context, config.Factory, string, string,
 ) (map[string]string, error) {
@@ -77,20 +71,16 @@ func (passthrough) ResolveMembers(
 }
 
 type harness struct {
-	caller *engineadaptermock.MockCaller
-	fs     *fsadaptermock.MockFS
-	repos  *repoadaptermock.MockReader
-	runner *execadaptermock.MockRunner
-	c      *synccontroller.Controller
-	wrote  map[string]string
-	// gitignoreExists and gitignoreContent answer the per-member .gitignore
-	// probe; see the gitignore helper.
+	caller           *engineadaptermock.MockCaller
+	fs               *fsadaptermock.MockFS
+	repos            *repoadaptermock.MockReader
+	runner           *execadaptermock.MockRunner
+	c                *synccontroller.Controller
+	wrote            map[string]string
 	gitignoreExists  bool
 	gitignoreContent string
 	gitignoreErr     error
-	// goMods is what each member's committed manifest says. Sync reads it
-	// to learn which internal modules a member already requires.
-	goMods map[string]string
+	goMods           map[string]string
 }
 
 func newHarness(t *testing.T) *harness {
@@ -107,10 +97,6 @@ func newHarness(t *testing.T) *harness {
 
 	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner, passthrough{})
 
-	// Sync reads each member's committed go.mod to learn which internal
-	// modules it already requires. Absent is the common case in these
-	// tests and means "requires nothing", which is what a member with no
-	// manifest yet actually is.
 	h.fs.EXPECT().ReadFile(mock.MatchedBy(func(path string) bool {
 		return strings.HasSuffix(path, "/go.mod")
 	})).RunAndReturn(func(path string) ([]byte, error) {
@@ -121,9 +107,6 @@ func newHarness(t *testing.T) *harness {
 		return nil, errors.New("no manifest yet")
 	}).Maybe()
 
-	// Both verbs record the factory-generated file list through
-	// writeIfChanged, which reads the target first. Absent is the common
-	// case here and means "write it fresh".
 	h.fs.EXPECT().ReadFile(mock.MatchedBy(func(path string) bool {
 		return strings.HasSuffix(path, "/.forge/factory-generated.json")
 	})).Return(nil, errors.New("no manifest yet")).Maybe()
@@ -156,17 +139,11 @@ func newHarness(t *testing.T) *harness {
 	return h
 }
 
-// gitignore answers the probe sync makes on every member now that the .envrc
-// ignore travels with the .envrc itself. Tests that care set the state; the
-// rest inherit "no .gitignore yet", which is what a fresh member has.
 func (h *harness) gitignore(exists bool, content string) {
 	h.gitignoreExists = exists
 	h.gitignoreContent = content
 }
 
-// envrcExists answers the pre-sync existence probe for every member's
-// .envrc; most tests want them present, already carrying the managed
-// tooling PATH line, so no write is recorded.
 func (h *harness) envrcExists(t *testing.T, exists bool) {
 	isEnvrc := func(path string) bool {
 		return strings.HasSuffix(path, "/.envrc")
@@ -175,8 +152,6 @@ func (h *harness) envrcExists(t *testing.T, exists bool) {
 	h.fs.EXPECT().Exists(mock.MatchedBy(isEnvrc)).Return(exists, nil).Maybe()
 
 	if exists {
-		// Already carrying the managed block for this root, so a sync that
-		// converges it writes nothing.
 		h.fs.EXPECT().ReadFile(mock.MatchedBy(isEnvrc)).
 			Return([]byte(managedEnvrc(t)), nil).
 			Maybe()
@@ -434,10 +409,6 @@ func TestTheLanguageProbeNeverSendsNull(t *testing.T) {
 		"a nil slice or map travels as null and the engine's own schema refuses it")
 }
 
-// Sync writes manifests and stops: cloning is not building, so the engine's
-// dependency-lock commands must NOT run here. No RunEnv expectation is
-// registered, so a sync that still executes them fails this test on the
-// unexpected call.
 func TestSyncNeverRunsTheDependencyLockCommands(t *testing.T) {
 	t.Parallel()
 
@@ -460,8 +431,6 @@ func TestSyncNeverRunsTheDependencyLockCommands(t *testing.T) {
 	assert.Empty(t, report.Unlocked)
 }
 
-// Lock is the verb that resolves the closure: it renders to learn the
-// commands, writes no file, and runs them.
 func TestLockRunsWhatAnEngineDeclares(t *testing.T) {
 	t.Parallel()
 
@@ -486,8 +455,6 @@ func TestLockRunsWhatAnEngineDeclares(t *testing.T) {
 	assert.NotContains(t, h.wrote, "/w/golden-go/go.mod",
 		"a lock writes no manifest; those are sync's business")
 
-	// A lock writes the record of what resolved, and the factory-generated
-	// list beside it.
 	assert.Equal(t,
 		[]string{"/w/.forge/factory-generated.json", "/w/.forge/dependency-locks.json"},
 		report.Written)
@@ -495,8 +462,6 @@ func TestLockRunsWhatAnEngineDeclares(t *testing.T) {
 		"no lockfile was declared, so the manifest records none")
 }
 
-// The lock records what resolved: each lockfile the engine declared, hashed,
-// root-relative, in one manifest whoever keys state by revision can read.
 func TestLockRecordsTheLockfilesItResolved(t *testing.T) {
 	t.Parallel()
 
@@ -517,21 +482,15 @@ func TestLockRecordsTheLockfilesItResolved(t *testing.T) {
 	report, err := h.c.Lock(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
 
-	// sha256 of "locked bytes\n", computed independently of the code under test.
 	sum := sha256.Sum256([]byte("locked bytes\n"))
 	assert.JSONEq(t,
 		fmt.Sprintf(`{"version":1,"locks":[{"path":"golden-go/go.sum","sha256":"%x"}]}`, sum),
 		h.wrote["/w/.forge/dependency-locks.json"])
 
-	// A file the optional command never produced is reported, not recorded:
-	// a manifest entry nothing hashed is a claim about bytes nobody saw.
 	require.NotEmpty(t, report.Notes)
 	assert.Contains(t, strings.Join(report.Notes, "\n"), "no lockfile at golden-go/absent.sum")
 }
 
-// A render that cannot happen fails the lock exactly as it fails a sync:
-// the render is the vehicle for learning the commands, and an engine that
-// speaks the wrong language has none to teach.
 func TestALockOverAMistakenEngineFails(t *testing.T) {
 	t.Parallel()
 
@@ -543,8 +502,6 @@ func TestALockOverAMistakenEngineFails(t *testing.T) {
 	require.ErrorIs(t, err, synccontroller.ErrLanguage)
 }
 
-// A lockfile the filesystem refuses to answer for fails the lock loud: a
-// silent skip would record a manifest missing a file that exists.
 func TestAFailingLockfileReadFailsTheLock(t *testing.T) {
 	t.Parallel()
 
@@ -565,8 +522,6 @@ func TestAFailingLockfileReadFailsTheLock(t *testing.T) {
 	assert.Contains(t, err.Error(), "recording lockfile")
 }
 
-// A manifest that cannot be written fails the lock: an unwritten record is a
-// closure nobody can key state on.
 func TestAFailingManifestWriteFailsTheLock(t *testing.T) {
 	t.Parallel()
 
@@ -730,8 +685,6 @@ func TestSyncOnlyRendersTheOneMemberAndTheRoot(t *testing.T) {
 	assert.NotContains(t, h.wrote, "/w/other-go/go.mod")
 }
 
-// A lock scoped to one member runs that member's commands and the root's,
-// and never the absent member's - its checkout is not on disk at all.
 func TestLockOnlyRunsTheOneMemberAndTheRoot(t *testing.T) {
 	t.Parallel()
 
@@ -758,8 +711,6 @@ func TestLockOnlyRunsTheOneMemberAndTheRoot(t *testing.T) {
 	assert.Len(t, report.Locked, 2)
 }
 
-// Toolchain binaries resolve during sync: a literal pin as written, a
-// track through the register like any dependency, with the notes surfaced.
 func TestSyncResolvesTheToolchainBinaries(t *testing.T) {
 	t.Parallel()
 
@@ -785,9 +736,6 @@ func TestSyncResolvesTheToolchainBinaries(t *testing.T) {
 	require.Contains(t, report.Notes, "tool note")
 }
 
-// Runtimes resolve during sync exactly as binaries do - a literal pin as
-// written, a track through the register - sorted by name so the driver
-// provisions deterministically, params carried verbatim.
 func TestSyncResolvesTheDeclaredRuntimes(t *testing.T) {
 	t.Parallel()
 
@@ -815,8 +763,29 @@ func TestSyncResolvesTheDeclaredRuntimes(t *testing.T) {
 	require.Contains(t, report.Notes, "tool note")
 }
 
-// The toolchain image resolves like a binary and lands in a generated file
-// the CI layer reads, so the pin is never hand-typed in a pipeline file.
+func TestTheRuntimeSpecTargetsReachThePin(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.envrcExists(t, true)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
+
+	f := config.Factory{
+		Repos: []config.Repo{{Name: "member-a"}},
+		Toolchain: &config.Toolchain{Runtimes: map[string]config.RuntimeSpec{
+			"rust": {Version: "1.97.0", Targets: []string{"x86_64-pc-windows-gnu", "aarch64-unknown-linux-gnu"}},
+		}},
+	}
+
+	report, err := h.c.Sync(context.Background(), f, "/w", "")
+	require.NoError(t, err)
+
+	require.Equal(t, []runtimecontroller.Pin{{
+		Name: "rust", Version: "1.97.0",
+		Targets: []string{"x86_64-pc-windows-gnu", "aarch64-unknown-linux-gnu"},
+	}}, report.Runtimes)
+}
+
 func TestSyncResolvesAndPersistsTheToolchainImage(t *testing.T) {
 	t.Parallel()
 
@@ -843,8 +812,6 @@ func TestSyncResolvesAndPersistsTheToolchainImage(t *testing.T) {
 	assert.Contains(t, report.Notes, "tool note")
 }
 
-// An unchanged pin reports nothing: a sync that converges nothing must not
-// dirty the report, or every run looks like a change.
 func TestSyncLeavesAConvergedToolchainImageAlone(t *testing.T) {
 	t.Parallel()
 
@@ -869,10 +836,6 @@ func TestSyncLeavesAConvergedToolchainImageAlone(t *testing.T) {
 	assert.NotContains(t, report.Written, ".forge/toolchain-image")
 }
 
-// TestSyncCreatesAMissingEnvrc: forge sources a .envrc in every repo it
-// builds, so a fresh workspace used to need a hand-run touch loop. Sync
-// creates the missing file carrying exactly the managed tooling PATH line;
-// everything else in an existing file is the machine's own.
 func TestSyncCreatesAMissingEnvrc(t *testing.T) {
 	t.Parallel()
 
@@ -891,9 +854,6 @@ func TestSyncCreatesAMissingEnvrc(t *testing.T) {
 	require.Contains(t, report.Written, "/w/member-b/.envrc")
 }
 
-// TestSyncAppendsTheToolingLineToAnExistingEnvrc: an existing .envrc keeps
-// every line the machine put there; sync appends only the managed tooling
-// PATH entry, once.
 func TestSyncAppendsTheToolingLineToAnExistingEnvrc(t *testing.T) {
 	t.Parallel()
 
@@ -917,14 +877,8 @@ func TestSyncAppendsTheToolingLineToAnExistingEnvrc(t *testing.T) {
 	require.Contains(t, report.Written, "/w/member-a/.envrc")
 }
 
-// failingResolver stands in for a register that refuses. Every one of these
-// paths returned the resolver's error unwrapped, so the operator saw a
-// package name with no clue which of the four lists it came from.
 type failingResolver struct {
-	err error
-	// after says how many calls succeed first, so the devDependencies pass
-	// can be reached: both lists go through one method and the first one
-	// would otherwise always be the failure.
+	err   error
 	after int
 	seen  int
 }
@@ -957,8 +911,6 @@ func (f *failingResolver) ResolveMembers(
 	return map[string]string{}, nil
 }
 
-// identityAnswers covers the pre-sync identity probe, which runs before the
-// envrc pass and is not the subject of any of these.
 func (h *harness) identityAnswers() {
 	h.repos.EXPECT().Identity(mock.Anything).
 		Return(map[string]string{"module": "example.com/g"}, nil).Maybe()
@@ -1059,9 +1011,6 @@ func TestSyncStopsWhenAToolchainImageCannotBePersisted(t *testing.T) {
 	h.fs.EXPECT().WriteFile("/w/.forge/toolchain-image", mock.Anything).
 		Return(errors.New("read only")).Once()
 
-	// A pipeline reads this file for the container it runs in; a sync that
-	// resolved a pin and could not persist it would leave the CI layer on
-	// whatever was there before.
 	_, err := h.c.Sync(t.Context(), parse(t, withImage), "/w", "")
 	require.ErrorContains(t, err, "persisting the toolchain image")
 }
@@ -1075,9 +1024,6 @@ func TestSyncStopsWhenAnEnvrcCannotBeWritten(t *testing.T) {
 	h.fs.EXPECT().WriteFile("/w/golden-go/.envrc", mock.Anything).
 		Return(errors.New("read only")).Once()
 
-	// The PATH line is what puts the pinned store ahead of whatever the user
-	// installed. Carrying on without it would sync a workspace that then
-	// builds with the wrong tools, which is worse than not syncing.
 	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorContains(t, err, "writing /w/golden-go/.envrc")
 }
@@ -1109,8 +1055,6 @@ func TestSyncStopsWhenAnEnvrcCannotBeExtended(t *testing.T) {
 	require.ErrorContains(t, err, "writing /w/golden-go/.envrc")
 }
 
-// memberResolver stands in for a register carrying internal tracks: one
-// module a member requires, one it does not, and one the factory declares.
 type memberResolver struct{ passthrough }
 
 func (memberResolver) ResolveMembers(
@@ -1121,12 +1065,9 @@ func (memberResolver) ResolveMembers(
 	}
 
 	return map[string]string{
-		"example.com/shared-spec": "v0.3.0",
-		// A runnable member's own track. Its version is a pipeline dev
-		// label: a real revision, and not a tag any proxy can fetch.
+		"example.com/shared-spec":   "v0.3.0",
 		"example.com/some-runnable": "v0.1.0-dev.r00000021.gabcdef012345",
-		// Declared in the factory too.
-		"sigs.k8s.io/yaml": "v9.9.9",
+		"sigs.k8s.io/yaml":          "v9.9.9",
 	}, nil
 }
 
@@ -1147,8 +1088,6 @@ func TestAMemberModuleIsPinnedByTheRegister(t *testing.T) {
 	h := newHarness(t)
 	h.envrcExists(t, true)
 	h.identityAnswers()
-	// The member requires the declared module too, so only the declared-wins
-	// rule can protect it here - not the requires filter.
 	h.memberRequires("example.com/shared-spec", "sigs.k8s.io/yaml")
 	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner, memberResolver{})
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
@@ -1170,35 +1109,13 @@ func TestAMemberModuleIsPinnedByTheRegister(t *testing.T) {
 	deps, ok := seen["dependencies"].(map[string]any)
 	require.True(t, ok)
 
-	// The shared spec reaches the manifest, so the tidy that follows has a
-	// version to keep rather than a tag to guess at.
 	require.Equal(t, "v0.3.0", deps["example.com/shared-spec"])
-
-	// The runnable's dev label does not. No member requires it, and a
-	// require has to resolve before tidy can prune it as unused - so
-	// writing it would fail the sync rather than govern anything.
 	require.NotContains(t, deps, "example.com/some-runnable")
-
-	// Naming a module in the factory is a deliberate act. The internal
-	// track must not quietly override it.
 	require.Equal(t, "v1.6.0", deps["sigs.k8s.io/yaml"])
-
-	// And the operator is told, because a version they did not write just
-	// appeared in a generated file.
 	require.Contains(t, strings.Join(report.Notes, "\n"),
 		"go:example.com/shared-spec pinned to v0.3.0 by the register's internal track")
 }
 
-// TestAReplaceBlockIsNotARequire drives the discriminator that keeps the
-// requires filter safe.
-//
-// go.mod is not line-oriented. A module path sitting inside a replace or
-// exclude block reads exactly like a require to a scanner that does not
-// follow the open directive, and the answer is merged into one per-language
-// map rendered into every member's manifest. So one replace block in one
-// member would write a pipeline dev label into all of them, and every
-// following tidy would fail on a version no proxy can serve. Six manifests
-// broke that way once.
 func TestAReplaceBlockIsNotARequire(t *testing.T) {
 	t.Parallel()
 
@@ -1243,9 +1160,6 @@ exclude (
 
 	require.NotContains(t, deps, "example.com/some-runnable",
 		"a replace block names a module; it does not require one")
-
-	// The require block still reads, so the fix narrows nothing it should
-	// not: a directive-blind scanner and this one agree on a real require.
 	require.Equal(t, "v0.3.0", deps["example.com/shared-spec"])
 }
 
@@ -1259,9 +1173,6 @@ func TestSyncNamesAMemberModuleThatRefused(t *testing.T) {
 		&refusingMembers{err: errors.New("the register refused")})
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 
-	// Four lists resolve through this controller and they must not be
-	// confusable in the error: a package name with no clue which one it
-	// came from is what this wrapper exists to prevent.
 	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorContains(t, err, "resolving go member modules")
 	require.ErrorContains(t, err, "the register refused")
@@ -1279,8 +1190,6 @@ func (r *refusingMembers) ResolveMembers(
 	return nil, r.err
 }
 
-// A member with no committed manifest yet requires nothing, which is what a
-// repo cloned for the first time actually is.
 func TestAMemberWithNoManifestRequiresNothing(t *testing.T) {
 	t.Parallel()
 
@@ -1309,10 +1218,6 @@ func TestAMemberWithNoManifestRequiresNothing(t *testing.T) {
 	require.NotContains(t, deps, "example.com/shared-spec")
 }
 
-// managedEnvrc is the block a converged .envrc carries for the "/w" root the
-// tests use. It is built the way the code builds it, so a change to the block
-// shape shows up as a failing test rather than a silent rewrite of every
-// member's file.
 func managedEnvrc(t *testing.T) string {
 	t.Helper()
 
@@ -1325,11 +1230,6 @@ func managedEnvrc(t *testing.T) string {
 		filepath.Join(abs, ".forge", "bin"), env, env)
 }
 
-// The block is the whole .envrc on a fresh runner in a factory with no
-// runtimes, so its last line's exit status is the file's, and forge sources
-// every .envrc with the shell's own status as the verdict. `[ -f ] && .`
-// answered 1 with the env file absent and forge refused the file (forge-self
-// run 87). A real shell decides this, not a string comparison.
 func TestTheManagedEnvrcSourcesCleanlyWithNoEnvFile(t *testing.T) {
 	t.Parallel()
 
@@ -1341,10 +1241,6 @@ func TestTheManagedEnvrcSourcesCleanlyWithNoEnvFile(t *testing.T) {
 	require.Contains(t, string(out), "sourced")
 }
 
-// The reason the block exists. Keying on "/.forge/bin" appearing anywhere
-// meant a workspace that moved kept the old absolute path forever: the file
-// mentioned .forge/bin, so sync skipped it, and the PATH pointed at a
-// directory that was no longer there.
 func TestAMovedWorkspaceRewritesTheManagedBlock(t *testing.T) {
 	t.Parallel()
 
@@ -1370,7 +1266,6 @@ func TestAMovedWorkspaceRewritesTheManagedBlock(t *testing.T) {
 		"everything outside the markers is the machine's own")
 }
 
-// A file with no markers keeps every line it had; the block goes in front.
 func TestAnEnvrcWithNoMarkersKeepsWhatItHad(t *testing.T) {
 	t.Parallel()
 
@@ -1390,8 +1285,6 @@ func TestAnEnvrcWithNoMarkersKeepsWhatItHad(t *testing.T) {
 		"prepended, so the workspace tooling wins over what the machine adds later")
 }
 
-// The old substring check skipped any file mentioning /.forge/bin, even in a
-// comment, so a reader who wrote one got no managed block at all.
 func TestAMentionOfForgeBinInACommentDoesNotSuppressTheBlock(t *testing.T) {
 	t.Parallel()
 
@@ -1408,8 +1301,6 @@ func TestAMentionOfForgeBinInACommentDoesNotSuppressTheBlock(t *testing.T) {
 	assert.Contains(t, h.wrote["/w/member-a/.envrc"], "# BEGIN forge-factory")
 }
 
-// A converged block is left exactly as it is, so a sync that changes nothing
-// reports nothing - the rule the whole reconcile-stops-the-run design rests on.
 func TestAConvergedEnvrcIsNotRewritten(t *testing.T) {
 	t.Parallel()
 
@@ -1426,8 +1317,6 @@ func TestAConvergedEnvrcIsNotRewritten(t *testing.T) {
 	assert.NotContains(t, report.Written, "/w/member-a/.envrc")
 }
 
-// sync writes this file into somebody's checkout and it holds their machine's
-// environment, so keeping it out of git travels with it.
 func TestEveryMemberIgnoresTheEnvrcSyncWrites(t *testing.T) {
 	t.Parallel()
 
@@ -1445,7 +1334,6 @@ func TestEveryMemberIgnoresTheEnvrcSyncWrites(t *testing.T) {
 	assert.Contains(t, h.wrote["/w/member-b/.gitignore"], "/.envrc")
 }
 
-// envrcContent answers every member's .envrc probe with one body.
 func (h *harness) envrcContent(t *testing.T, body string) {
 	t.Helper()
 
@@ -1455,9 +1343,6 @@ func (h *harness) envrcContent(t *testing.T, body string) {
 	h.fs.EXPECT().ReadFile(mock.MatchedBy(isEnvrc)).Return([]byte(body), nil).Maybe()
 }
 
-// A path can reach the generated record twice - rendered by an engine and
-// declared a lockfile, or rendered for two members that share a file. The
-// record holds it once.
 func TestARepeatedGeneratedPathIsRecordedOnce(t *testing.T) {
 	t.Parallel()
 
@@ -1479,9 +1364,6 @@ func TestARepeatedGeneratedPathIsRecordedOnce(t *testing.T) {
 		h.wrote["/w/.forge/factory-generated.json"])
 }
 
-// answersOnce is the harness's answers helper for the two tests below that
-// build their mocks by hand: the harness's constructor-level expectations
-// would shadow the failing ones these tests need.
 func answersOnce(t *testing.T, caller *engineadaptermock.MockCaller, payload any) {
 	t.Helper()
 

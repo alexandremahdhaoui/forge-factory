@@ -572,10 +572,14 @@ toolchain:
 			toolchain: `  runtimes:
     rust: { version: "1.97.0", targets: [x86_64-pc-windows-gnu, aarch64-unknown-linux-gnu] }`,
 		},
-		"a target nobody knows is refused and the known ones are named": {
+		"a target the describer does not know still parses because only the describer refuses it": {
 			toolchain: `  runtimes:
     rust: { version: "1.97.0", targets: [wasm32-unknown-unknown] }`,
-			want: `toolchain.runtimes.rust.targets[0]: "wasm32-unknown-unknown" is not a known target triple. known targets are aarch64-unknown-linux-gnu, x86_64-pc-windows-gnu, x86_64-unknown-linux-gnu`,
+		},
+		"an empty target is refused": {
+			toolchain: `  runtimes:
+    rust: { version: "1.97.0", targets: [""] }`,
+			want: `toolchain.runtimes.rust.targets[0]: a target names a triple, it cannot be empty`,
 		},
 		"a target declared twice is refused": {
 			toolchain: `  runtimes:

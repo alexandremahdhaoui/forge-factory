@@ -18,9 +18,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// answer writes a wire-shaped value into an engine call's out parameter, the
-// way the real MCP caller does: through json. The controller's wire structs
-// stay unexported, exactly as they should.
 func answer(t *testing.T, out, value any) {
 	t.Helper()
 
@@ -36,8 +33,6 @@ type harness struct {
 	store  string
 }
 
-// newHarness pins PATH and the process env: expose applies both to the
-// running process on purpose, and the test must give them back.
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 
@@ -61,7 +56,6 @@ func toyEngine() config.Engine {
 	return config.Engine{Alias: "toygo", Engine: "forge://example.com/toy-provider"}
 }
 
-// description is the map form of the provider's answer, shaped as the wire.
 func description(overrides map[string]any) map[string]any {
 	d := map[string]any{
 		"runtime": "toygo",
@@ -79,9 +73,6 @@ func description(overrides map[string]any) map[string]any {
 	return d
 }
 
-// preinstall lays a store entry carrying the bins its description names -
-// the shape a real installed entry has. Reuse verifies the bins now, so a
-// bare directory no longer passes for an installed runtime.
 func preinstall(t *testing.T, store, entry string, bins ...string) {
 	t.Helper()
 
@@ -106,8 +97,6 @@ func (h *harness) expectDescribe(t *testing.T, desc map[string]any) {
 		}).Once()
 }
 
-// expectFetchAndInstall plays the default engines: the fetch answers a path,
-// the install lays the runtime out into the staged prefix.
 func (h *harness) expectFetchAndInstall(t *testing.T) {
 	t.Helper()
 
@@ -134,8 +123,6 @@ func (h *harness) expectFetchAndInstall(t *testing.T) {
 		}).Once()
 }
 
-// field reads one string key out of a wire input, through json, so the test
-// never needs the unexported struct.
 func field(t *testing.T, in any, key string) string {
 	t.Helper()
 
@@ -167,24 +154,19 @@ func TestProvisionWalksTheWholeLifecycle(t *testing.T) {
 	assert.Empty(t, report.Reused)
 	assert.Equal(t, []string{"toygo"}, report.Exposed)
 
-	// The store landed atomically under runtimes/<name>@<version>.
 	prefix := filepath.Join(h.store, "runtimes", "toygo@1.0.0")
 	_, err = os.Stat(filepath.Join(prefix, "bin", "toygo"))
 	require.NoError(t, err)
 
-	// The workspace's .forge/bin links to it.
 	target, err := os.Readlink(filepath.Join(h.root, ".forge", "bin", "toygo"))
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(prefix, "bin", "toygo"), target)
 
-	// The env file composes the runtime's environment, {prefix} replaced.
 	raw, err := os.ReadFile(filepath.Join(h.root, ".forge", "env"))
 	require.NoError(t, err)
 	assert.Contains(t, string(raw), "export TOY_HOME=\""+prefix+"\"\n")
 	assert.Contains(t, string(raw), "export TOY_LIB=\""+filepath.Join(prefix, "lib")+"\"\n")
 
-	// And this very process sees both, so the commands that follow
-	// provisioning in the same run already resolve the runtime.
 	assert.Equal(t, prefix, os.Getenv("TOY_HOME"))
 	assert.True(t, strings.HasPrefix(os.Getenv("PATH"),
 		filepath.Join(h.root, ".forge", "bin")+string(os.PathListSeparator)))
@@ -197,9 +179,6 @@ func TestAnInstalledRuntimeIsReusedUntouched(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(prefix, "bin"), 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(prefix, "bin", "toygo"), []byte("#!/bin/sh\n"), 0o755)) //nolint:gosec // the fixture is an executable
 
-	// Only describe is called: the store already holds the runtime, so no
-	// fetch and no install - the store is immutable and the reuse is the
-	// converged state.
 	h.expectDescribe(t, description(nil))
 
 	report, err := h.c.Provision(context.Background(), factoryWith(toyEngine()), h.root, h.store,
@@ -209,6 +188,53 @@ func TestAnInstalledRuntimeIsReusedUntouched(t *testing.T) {
 	assert.Empty(t, report.Installed)
 	assert.Equal(t, []string{"toygo@1.0.0"}, report.Reused)
 	assert.Equal(t, []string{"toygo"}, report.Exposed)
+}
+
+func TestARuntimeWithTargetsLandsInItsOwnStoreEntrySoAnEntryProvisionedWithoutThemIsNeverReused(t *testing.T) {
+	h := newHarness(t)
+
+	preinstall(t, h.store, "toygo@1.0.0", "bin/toygo")
+	h.expectDescribe(t, description(nil))
+	h.expectFetchAndInstall(t)
+
+	report, err := h.c.Provision(context.Background(), factoryWith(toyEngine()), h.root, h.store,
+		[]runtimecontroller.Pin{{Name: "toygo", Version: "1.0.0", Targets: []string{"b-target", "a-target"}}})
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"toygo@1.0.0+a-target+b-target"}, report.Installed)
+	assert.Empty(t, report.Reused)
+
+	_, statErr := os.Stat(filepath.Join(h.store, "runtimes", "toygo@1.0.0+a-target+b-target", "bin", "toygo"))
+	require.NoError(t, statErr)
+
+	link, err := os.Readlink(filepath.Join(h.root, ".forge", "bin", "toygo"))
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(h.store, "runtimes", "toygo@1.0.0+a-target+b-target", "bin", "toygo"), link)
+}
+
+func TestThePinTargetsReachTheDescribeInput(t *testing.T) {
+	h := newHarness(t)
+
+	preinstall(t, h.store, "toygo@1.0.0+x86_64-pc-windows-gnu", "bin/toygo")
+
+	var seen map[string]any
+
+	h.caller.EXPECT().
+		Call(mock.Anything, "forge://example.com/toy-provider", "describe", mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, _, _ string, in, out any) error {
+			raw, err := json.Marshal(in)
+			require.NoError(t, err)
+			require.NoError(t, json.Unmarshal(raw, &seen))
+			answer(t, out, description(nil))
+
+			return nil
+		}).Once()
+
+	_, err := h.c.Provision(context.Background(), factoryWith(toyEngine()), h.root, h.store,
+		[]runtimecontroller.Pin{{Name: "toygo", Version: "1.0.0", Targets: []string{"x86_64-pc-windows-gnu"}}})
+	require.NoError(t, err)
+
+	assert.Equal(t, []any{"x86_64-pc-windows-gnu"}, seen["targets"])
 }
 
 func TestNothingPinsAVersion(t *testing.T) {
@@ -236,8 +262,6 @@ func TestAProviderAnsweringNoArtifactsIsRefused(t *testing.T) {
 	require.ErrorContains(t, err, "answered no artifacts")
 }
 
-// A prerequisite is satisfied by another declared runtime that provides the
-// capability - zig provides c-compiler for go - and nothing touches the host.
 func TestAPrerequisiteProvidedByADeclaredRuntime(t *testing.T) {
 	h := newHarness(t)
 
@@ -263,8 +287,6 @@ func TestAPrerequisiteProvidedByADeclaredRuntime(t *testing.T) {
 			return nil
 		}).Once()
 
-	// Both prefixes pre-exist so nothing fetches; the point is the
-	// prerequisite resolution.
 	preinstall(t, h.store, "toycc@2.0.0")
 	preinstall(t, h.store, "toygo@1.0.0", "bin/toygo")
 
@@ -283,7 +305,6 @@ func TestAPrerequisiteVerifiedOnTheHost(t *testing.T) {
 	h := newHarness(t)
 	h.expectDescribe(t, description(map[string]any{
 		"prerequisites": []map[string]any{
-			// sh is on every machine this suite runs on.
 			{"name": "posix-shell", "reason": "the tests need one", "verify": "sh"},
 		},
 	}))
@@ -297,8 +318,6 @@ func TestAPrerequisiteVerifiedOnTheHost(t *testing.T) {
 	assert.Contains(t, report.Satisfied[0], "found on the host")
 }
 
-// The refusal names the prerequisite, the reason, and every avenue - and it
-// happens before anything is fetched, so a doomed provision downloads nothing.
 func TestAMissingPrerequisiteFailsLoudBeforeFetching(t *testing.T) {
 	h := newHarness(t)
 	h.expectDescribe(t, description(map[string]any{
@@ -313,7 +332,6 @@ func TestAMissingPrerequisiteFailsLoudBeforeFetching(t *testing.T) {
 	require.ErrorContains(t, err, "cgo (go test -race)")
 	require.ErrorContains(t, err, "declare a runtime whose provides lists")
 
-	// The store stayed empty: no fetch call was expected and none happened.
 	_, statErr := os.Stat(filepath.Join(h.store, "runtimes"))
 	assert.True(t, os.IsNotExist(statErr))
 }
@@ -367,8 +385,6 @@ func TestSatisfyNamingANonProviderIsRefused(t *testing.T) {
 	require.ErrorContains(t, err, "not a declared runtime providing it")
 }
 
-// A declared fetch engine wins over the default, and its spec - the mirror
-// rewrites, an internal store's credentials - travels with the call.
 func TestADeclaredFetchEngineAndItsSpecAreUsed(t *testing.T) {
 	h := newHarness(t)
 	h.expectDescribe(t, description(nil))
@@ -406,8 +422,6 @@ func TestADeclaredFetchEngineAndItsSpecAreUsed(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// A failing install leaves nothing behind: the staged prefix never lands, so
-// a later provision starts clean instead of reusing a half-written runtime.
 func TestAFailedInstallLandsNothing(t *testing.T) {
 	h := newHarness(t)
 	h.expectDescribe(t, description(nil))
@@ -450,8 +464,6 @@ func TestTheStoreResolvesFromTheEnvironment(t *testing.T) {
 	preinstall(t, h.store, "toygo@1.0.0", "bin/toygo")
 	h.expectDescribe(t, description(nil))
 
-	// StoreDir empty: FORGE_STORE_DIR decides, which is how CI points every
-	// job at a cached store without a flag.
 	report, err := h.c.Provision(context.Background(), factoryWith(toyEngine()), h.root, "",
 		[]runtimecontroller.Pin{{Name: "toygo", Version: "1.0.0"}})
 	require.NoError(t, err)
@@ -521,8 +533,6 @@ func TestSatisfyNamingTheProviderIsHonored(t *testing.T) {
 	assert.Contains(t, report.Satisfied[0], "(satisfy:)")
 }
 
-// satisfy: host on a prerequisite with no verify command has nothing to
-// check, and saying so beats pretending.
 func TestSatisfyHostWithNoVerifyIsRefused(t *testing.T) {
 	h := newHarness(t)
 	h.expectDescribe(t, description(map[string]any{
@@ -537,9 +547,6 @@ func TestSatisfyHostWithNoVerifyIsRefused(t *testing.T) {
 	require.ErrorContains(t, err, "only a providing runtime can satisfy it")
 }
 
-// A second provision over a converged workspace reuses the store, re-links
-// the same bins, and leaves PATH with one entry rather than stacking a
-// second one.
 func TestASecondProvisionConverges(t *testing.T) {
 	h := newHarness(t)
 	h.expectDescribe(t, description(nil))
@@ -560,8 +567,6 @@ func TestASecondProvisionConverges(t *testing.T) {
 	assert.Equal(t, pathAfterFirst, os.Getenv("PATH"), "the bin dir is prepended once, not stacked")
 }
 
-// With no override and no FORGE_STORE_DIR the store lives under the user
-// cache - pointed at a tempdir here so the test touches nothing real.
 func TestTheStoreDefaultsToTheUserCache(t *testing.T) {
 	h := newHarness(t)
 
@@ -578,8 +583,6 @@ func TestTheStoreDefaultsToTheUserCache(t *testing.T) {
 	assert.Equal(t, []string{"toygo@1.0.0"}, report.Reused)
 }
 
-// A url with no usable base name still stages somewhere sane - the url is
-// engine-answered data, not a path.
 func TestAnAwkwardURLStillStages(t *testing.T) {
 	h := newHarness(t)
 	h.expectDescribe(t, description(map[string]any{
@@ -612,8 +615,6 @@ func TestAnAwkwardURLStillStages(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// raceLock simulates the losing side of two concurrent provisions: by the
-// time the lock is held, the winner has already landed the prefix.
 type raceLock struct{ prefix string }
 
 func (r raceLock) Lock(string) (func(), error) {
@@ -621,7 +622,6 @@ func (r raceLock) Lock(string) (func(), error) {
 		return nil, err
 	}
 
-	// The winner's install carries the described bin.
 	if err := os.WriteFile(filepath.Join(r.prefix, "bin", "toygo"), []byte("#!/bin/sh\n"), 0o755); err != nil { //nolint:gosec // the fixture is an executable
 		return nil, err
 	}
@@ -648,7 +648,6 @@ func TestAnUnwritableBinDirFailsTheExpose(t *testing.T) {
 
 	preinstall(t, h.store, "toygo@1.0.0", "bin/toygo")
 	require.NoError(t, os.MkdirAll(filepath.Join(h.root, ".forge"), 0o750))
-	// .forge/bin exists as a FILE, so the expose cannot create the dir.
 	require.NoError(t, os.WriteFile(filepath.Join(h.root, ".forge", "bin"), []byte("x"), 0o600))
 
 	h.expectDescribe(t, description(nil))
@@ -658,26 +657,22 @@ func TestAnUnwritableBinDirFailsTheExpose(t *testing.T) {
 	require.ErrorContains(t, err, "exposing")
 }
 
-func TestAVersionWithHostileCharactersStoresSafely(t *testing.T) {
+func TestAVersionWithHostileCharactersStoresSafelyAndTheReportNamesTheStoreEntry(t *testing.T) {
 	h := newHarness(t)
 
-	// The version string comes from config and lands in a directory name;
-	// path-meaningful characters are flattened.
 	preinstall(t, h.store, "toygo@1.0-rc-2", "bin/toygo")
 	h.expectDescribe(t, description(map[string]any{"version": "1.0@rc:2"}))
 
 	report, err := h.c.Provision(context.Background(), factoryWith(toyEngine()), h.root, h.store,
 		[]runtimecontroller.Pin{{Name: "toygo", Version: "1.0@rc:2"}})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"toygo@1.0@rc:2"}, report.Reused)
+	assert.Equal(t, []string{"toygo@1.0-rc-2"}, report.Reused)
 }
 
 func TestABlockedBinLinkFailsTheExpose(t *testing.T) {
 	h := newHarness(t)
 
 	preinstall(t, h.store, "toygo@1.0.0", "bin/toygo")
-	// A non-empty DIRECTORY sits where the link must go, which nothing may
-	// silently delete.
 	require.NoError(t, os.MkdirAll(filepath.Join(h.root, ".forge", "bin", "toygo"), 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(h.root, ".forge", "bin", "toygo", "keep"), []byte("x"), 0o600))
 
@@ -714,14 +709,9 @@ func TestAnUnlockableStoreIsAnError(t *testing.T) {
 	require.ErrorContains(t, err, "locking the store for toygo@1.0.0")
 }
 
-// A store entry from before the description grew lacks the new bin - the
-// shape a restored CI cache or an old machine store has. Reusing it would
-// expose a dangling symlink that fails only when the missing tool is
-// called, so the entry is rebuilt in place and the report says so.
 func TestAStaleStoreEntryMissingADescribedBinIsRebuilt(t *testing.T) {
 	h := newHarness(t)
 
-	// The entry predates the description: no bin/toygo inside.
 	require.NoError(t, os.MkdirAll(filepath.Join(h.store, "runtimes", "toygo@1.0.0"), 0o750))
 	h.expectDescribe(t, description(nil))
 	h.expectFetchAndInstall(t)
@@ -733,7 +723,6 @@ func TestAStaleStoreEntryMissingADescribedBinIsRebuilt(t *testing.T) {
 	assert.Equal(t, []string{"toygo@1.0.0"}, report.Rebuilt)
 	assert.Empty(t, report.Reused)
 
-	// The rebuilt entry carries the described bin now.
 	_, statErr := os.Stat(filepath.Join(h.store, "runtimes", "toygo@1.0.0", "bin", "toygo"))
 	require.NoError(t, statErr)
 }
