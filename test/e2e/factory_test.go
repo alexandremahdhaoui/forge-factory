@@ -214,12 +214,21 @@ func TestEverythingGeneratedIsGitignored(t *testing.T) {
 func TestSyncIsIdempotent(t *testing.T) {
 	root := workspace(t)
 
-	mustRun(t, root, "sync")
+	out := mustRun(t, root, "sync")
 	before := read(t, filepath.Join(root, "sample-go", ".gitignore"))
 
-	mustRun(t, root, "sync")
+	// The factory's engines land by alias at the root, the outer ring of
+	// every member's engine registry, and a converged file is not rewritten.
+	registry := read(t, filepath.Join(root, ".forge", "engines.yaml"))
+	assert.Contains(t, registry, "engines:")
+	assert.Contains(t, registry, "  - alias: go\n")
+	assert.Contains(t, out, ".forge/engines.yaml")
+
+	again := mustRun(t, root, "sync")
 	assert.Equal(t, before, read(t, filepath.Join(root, "sample-go", ".gitignore")),
 		"a second sync must not append the same line twice")
+	assert.Equal(t, registry, read(t, filepath.Join(root, ".forge", "engines.yaml")))
+	assert.NotContains(t, again, ".forge/engines.yaml", "a converged registry is not reported as written")
 }
 
 func TestOneBumpMovesEveryGoMemberWithNoCommitInAny(t *testing.T) {
