@@ -356,7 +356,7 @@ func TestEveryLanguageDeclaresItsDependencyLock(t *testing.T) {
 
 	for _, cmd := range out.DependencyLock {
 		assert.Equal(t, "uv", cmd.Command)
-		assert.Equal(t, []string{"lock"}, cmd.Args, "one uv.lock per member, beside its pyproject.toml")
+		assert.Equal(t, []string{"sync"}, cmd.Args, "one uv.lock per member, beside its pyproject.toml, and the environment it resolves")
 		assert.True(t, cmd.Optional)
 	}
 
@@ -364,7 +364,7 @@ func TestEveryLanguageDeclaresItsDependencyLock(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.DependencyLock, 1)
 	assert.Equal(t, "/w", out.DependencyLock[0].Dir, "pnpm keeps one lockfile at the workspace root")
-	assert.Equal(t, []string{"install", "--lockfile-only"}, out.DependencyLock[0].Args)
+	assert.Equal(t, []string{"install"}, out.DependencyLock[0].Args, "the lock writes pnpm-lock.yaml and node_modules")
 	assert.True(t, out.DependencyLock[0].Optional)
 }
 

@@ -436,8 +436,10 @@ func (p Python) Render(in rendertypes.Input) (rendertypes.Output, error) {
 
 	// Each member's uv.lock is regenerated from its rendered pyproject.toml,
 	// which is how a register bump reaches the resolved graph - nothing
-	// refreshed it before. Optional: it needs the network, and a sync must
-	// work offline.
+	// refreshed it before. `uv sync` writes the lock AND the environment:
+	// a lock leaves the member ready to build and run, so a runner that
+	// synced needs no per-repo install entry. Optional: it needs the
+	// network, and a sync must work offline.
 	locks := make([]rendertypes.Command, 0, len(repos))
 	lockfiles := make([]string, 0, len(repos))
 
@@ -449,7 +451,7 @@ func (p Python) Render(in rendertypes.Input) (rendertypes.Output, error) {
 		locks = append(locks, rendertypes.Command{
 			Dir:      r.Path,
 			Command:  "uv",
-			Args:     []string{"lock"},
+			Args:     []string{"sync"},
 			Optional: true,
 		})
 		lockfiles = append(lockfiles, filepath.Join(r.Path, "uv.lock"))
@@ -540,12 +542,14 @@ func (t TypeScript) Render(in rendertypes.Input) (rendertypes.Output, error) {
 		// pnpm keeps one lockfile at the workspace root, and regenerating it
 		// is how a register bump reaches the resolved graph - nothing
 		// refreshed it before, and an install pinned to the stale lock
-		// refused every bumped version. Optional: it needs the network, and
-		// a sync must work offline.
+		// refused every bumped version. A plain install writes the lock AND
+		// node_modules: a lock leaves the members ready to build and run, so
+		// a runner that synced needs no per-repo install entry. Optional: it
+		// needs the network, and a sync must work offline.
 		DependencyLock: []rendertypes.Command{{
 			Dir:      in.Root,
 			Command:  "pnpm",
-			Args:     []string{"install", "--lockfile-only"},
+			Args:     []string{"install"},
 			Optional: true,
 		}},
 		Lockfiles: []string{filepath.Join(in.Root, "pnpm-lock.yaml")},
