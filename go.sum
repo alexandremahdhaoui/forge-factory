@@ -1,9 +1,9 @@
-github.com/alexandremahdhaoui/forge v1.0.0 h1:nF8AAS+fIp31xO2znU8eeVGs3+AVgmlNH0+RghFPfm8=
-github.com/alexandremahdhaoui/forge v1.0.0/go.mod h1:ocFJEGSm8Xp4CQC4n5IURCYPJZnOyWeboUrJDEbn8E8=
-github.com/alexandremahdhaoui/forge-register-spec v1.0.0 h1:Rz+4gC2J1FrlNc8QtgeOk/+MXM58xf+BSTcPKmXPpZ0=
-github.com/alexandremahdhaoui/forge-register-spec v1.0.0/go.mod h1:OJX28+T1+aUnj2WqJmIjEp1Fz7k4DlorScEogUPxawU=
-github.com/alexandremahdhaoui/forge-revision-spec v1.0.0 h1:HEKuH10PeO6YA2IpdU4aTAieItpf1TKgfnZ5UVB8mOI=
-github.com/alexandremahdhaoui/forge-revision-spec v1.0.0/go.mod h1:C8BKLmitpU8UEd0EvQGFIkbiHEiGFvvox1RyfzuwjXc=
+github.com/alexandremahdhaoui/forge v0.46.0 h1:etZA9Wiy9U73O9TYgiauwv6wVXJ5e99jAQlK2I/+PLo=
+github.com/alexandremahdhaoui/forge v0.46.0/go.mod h1:ocFJEGSm8Xp4CQC4n5IURCYPJZnOyWeboUrJDEbn8E8=
+github.com/alexandremahdhaoui/forge-register-spec v0.46.0 h1:5UBGDe+IdY1fvRh7ZChjIyFNZGFFBVkK7z3Di71jlAQ=
+github.com/alexandremahdhaoui/forge-register-spec v0.46.0/go.mod h1:Tbe1av9fmaOf+t5j+ptdMXFdF5tdxkIxuGvPkfNnmWI=
+github.com/alexandremahdhaoui/forge-revision-spec v0.46.0 h1:5ouV8ooJckrd0iaM2eGTD7JL0Se5n/RYKxwSv8ppATc=
+github.com/alexandremahdhaoui/forge-revision-spec v0.46.0/go.mod h1:C8BKLmitpU8UEd0EvQGFIkbiHEiGFvvox1RyfzuwjXc=
 github.com/golang-jwt/jwt/v5 v5.3.1 h1:kYf81DTWFe7t+1VvL7eS+jKFVWaUnK9cB1qbwn63YCY=
 github.com/golang-jwt/jwt/v5 v5.3.1/go.mod h1:fxCRLWMO43lRc8nhHWY6LGqRcf+1gQWArsqaEUEa5bE=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
