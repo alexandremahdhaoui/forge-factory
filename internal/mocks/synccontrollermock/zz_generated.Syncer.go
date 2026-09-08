@@ -194,3 +194,69 @@ func (_c *MockSyncer_Sync_Call) RunAndReturn(run func(ctx context.Context, f con
 	_c.Call.Return(run)
 	return _c
 }
+
+// Take provides a mock function for the type MockSyncer
+func (_mock *MockSyncer) Take(root string, file string) (synccontroller.TakeReport, error) {
+	ret := _mock.Called(root, file)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Take")
+	}
+
+	var r0 synccontroller.TakeReport
+	var r1 error
+	if returnFunc, ok := ret.Get(0).(func(string, string) (synccontroller.TakeReport, error)); ok {
+		return returnFunc(root, file)
+	}
+	if returnFunc, ok := ret.Get(0).(func(string, string) synccontroller.TakeReport); ok {
+		r0 = returnFunc(root, file)
+	} else {
+		r0 = ret.Get(0).(synccontroller.TakeReport)
+	}
+	if returnFunc, ok := ret.Get(1).(func(string, string) error); ok {
+		r1 = returnFunc(root, file)
+	} else {
+		r1 = ret.Error(1)
+	}
+	return r0, r1
+}
+
+// MockSyncer_Take_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'Take'
+type MockSyncer_Take_Call struct {
+	*mock.Call
+}
+
+// Take is a helper method to define mock.On call
+//   - root string
+//   - file string
+func (_e *MockSyncer_Expecter) Take(root any, file any) *MockSyncer_Take_Call {
+	return &MockSyncer_Take_Call{Call: _e.mock.On("Take", root, file)}
+}
+
+func (_c *MockSyncer_Take_Call) Run(run func(root string, file string)) *MockSyncer_Take_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 string
+		if args[0] != nil {
+			arg0 = args[0].(string)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockSyncer_Take_Call) Return(takeReport synccontroller.TakeReport, err error) *MockSyncer_Take_Call {
+	_c.Call.Return(takeReport, err)
+	return _c
+}
+
+func (_c *MockSyncer_Take_Call) RunAndReturn(run func(root string, file string) (synccontroller.TakeReport, error)) *MockSyncer_Take_Call {
+	_c.Call.Return(run)
+	return _c
+}

@@ -33,6 +33,10 @@ const (
 var (
 	ErrLanguage = errors.New("an engine speaks a different language than its alias claims")
 	ErrCommand  = errors.New("a command an engine asked for failed")
+
+	ErrHandEdited    = errors.New("a rendered file differs from the last render")
+	ErrNotRendered   = errors.New("forge-factory renders no such file")
+	ErrNothingToTake = errors.New("the file is not on disk")
 )
 
 func tail(s string) string {
@@ -98,6 +102,12 @@ type languageOutput struct {
 type Syncer interface {
 	Sync(ctx context.Context, f config.Factory, root, only string) (Report, error)
 	Lock(ctx context.Context, f config.Factory, root, only string) (Report, error)
+	Take(root, file string) (TakeReport, error)
+}
+
+type TakeReport struct {
+	Path   string `json:"path"`
+	Backup string `json:"backup"`
 }
 
 type Controller struct {
@@ -210,12 +220,12 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		}
 	}
 
-	_, lockfiles, generated, err := c.renderMembers(ctx, f, root, only, &report, true, ignores)
+	_, lockfiles, generated, digests, err := c.renderMembers(ctx, f, root, only, &report, true, ignores)
 	if err != nil {
 		return Report{}, err
 	}
 
-	if err := c.recordGenerated(root, append(append([]string{}, generated...), lockfiles...), &report); err != nil {
+	if err := c.recordGenerated(root, append(append([]string{}, generated...), lockfiles...), digests, &report); err != nil {
 		return Report{}, err
 	}
 
@@ -265,12 +275,12 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 		Unlocked: []string{},
 	}
 
-	commands, lockfiles, generated, err := c.renderMembers(ctx, f, root, only, &report, false, nil)
+	commands, lockfiles, generated, digests, err := c.renderMembers(ctx, f, root, only, &report, false, nil)
 	if err != nil {
 		return Report{}, err
 	}
 
-	if err := c.recordGenerated(root, append(append([]string{}, generated...), lockfiles...), &report); err != nil {
+	if err := c.recordGenerated(root, append(append([]string{}, generated...), lockfiles...), digests, &report); err != nil {
 		return Report{}, err
 	}
 
@@ -335,13 +345,133 @@ type lockManifest struct {
 }
 
 type generatedManifest struct {
-	Version int      `json:"version"`
-	Files   []string `json:"files"`
+	Version int            `json:"version"`
+	Files   []RenderedFile `json:"files"`
 }
 
-func (c *Controller) recordGenerated(root string, paths []string, report *Report) error {
+type RenderedFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256,omitempty"`
+}
+
+func (f *RenderedFile) UnmarshalJSON(raw []byte) error {
+	var path string
+	if err := json.Unmarshal(raw, &path); err == nil {
+		f.Path = path
+
+		return nil
+	}
+
+	type plain RenderedFile
+
+	var entry plain
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		return fmt.Errorf("reading a rendered file entry: %w", err)
+	}
+
+	*f = RenderedFile(entry)
+
+	return nil
+}
+
+type Record map[string]string
+
+func Digest(data []byte) string {
+	sum := sha256.Sum256(data)
+
+	return hex.EncodeToString(sum[:])
+}
+
+func ReadRecord(fs fsadapter.FS, root string) (Record, error) {
+	target := filepath.Join(root, filepath.FromSlash(GeneratedManifestPath))
+
+	exists, err := fs.Exists(target)
+	if err != nil {
+		return nil, fmt.Errorf("reading the render record at %s: %w", target, err)
+	}
+
+	if !exists {
+		return Record{}, nil
+	}
+
+	raw, err := fs.ReadFile(target)
+	if err != nil {
+		return nil, fmt.Errorf("reading the render record at %s: %w", target, err)
+	}
+
+	var manifest generatedManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return nil, fmt.Errorf("reading the render record at %s: %w", target, err)
+	}
+
+	out := make(Record, len(manifest.Files))
+	for _, entry := range manifest.Files {
+		out[entry.Path] = entry.SHA256
+	}
+
+	return out, nil
+}
+
+func WriteRendered(fs fsadapter.FS, root, path string, data []byte, record Record) (string, error) {
+	if err := guard(fs, root, path, record); err != nil {
+		return "", err
+	}
+
+	if err := fs.WriteFile(path, data); err != nil {
+		return "", fmt.Errorf("writing %s: %w", path, err)
+	}
+
+	return Digest(data), nil
+}
+
+func guard(fs fsadapter.FS, root, path string, record Record) error {
+	recorded, known := record[relative(root, path)]
+	if !known || recorded == "" {
+		return nil
+	}
+
+	exists, err := fs.Exists(path)
+	if err != nil {
+		return fmt.Errorf("inspecting %s before rendering over it: %w", path, err)
+	}
+
+	if !exists {
+		return nil
+	}
+
+	existing, err := fs.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading %s before rendering over it: %w", path, err)
+	}
+
+	if Digest(existing) == recorded {
+		return nil
+	}
+
+	return handEditedError(root, path)
+}
+
+func handEditedError(root, path string) error {
+	rel := relative(root, path)
+
+	return fmt.Errorf(
+		"%w: %s\n"+
+			"forge-factory renders this file, and the copy on disk is not the one it last wrote.\n"+
+			"Somebody edited it by hand. Writing the render would lose that edit, so nothing was written.\n"+
+			"Two ways forward.\n"+
+			"  Keep the edit. Move it into the factory repo, under workspace/, then sync again.\n"+
+			"  Take the render, and keep the file on disk as %s.bak. Run: forge-factory take %s",
+		ErrHandEdited, rel, rel, rel)
+}
+
+func WriteRecord(fs fsadapter.FS, root string, paths []string, digests Record) (string, bool, error) {
+	previous, err := ReadRecord(fs, root)
+	if err != nil {
+		return "", false, err
+	}
+
 	seen := map[string]bool{}
-	manifest := generatedManifest{Version: 1, Files: []string{}}
+	manifest := generatedManifest{Version: 1, Files: []RenderedFile{}}
 
 	for _, path := range paths {
 		rel := relative(root, path)
@@ -350,21 +480,42 @@ func (c *Controller) recordGenerated(root string, paths []string, report *Report
 		}
 
 		seen[rel] = true
-		manifest.Files = append(manifest.Files, rel)
+
+		sha := digests[rel]
+		if sha == "" {
+			sha = previous[rel]
+		}
+
+		manifest.Files = append(manifest.Files, RenderedFile{Path: rel, SHA256: sha})
 	}
 
-	sort.Strings(manifest.Files)
+	sort.Slice(manifest.Files, func(i, j int) bool {
+		return manifest.Files[i].Path < manifest.Files[j].Path
+	})
 
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		return fmt.Errorf("recording generated files: %w", err)
+		return "", false, fmt.Errorf("recording the render of %s: %w", root, err)
 	}
 
 	target := filepath.Join(root, filepath.FromSlash(GeneratedManifestPath))
+	data := append(raw, '\n')
 
-	changed, err := c.writeIfChanged(target, append(raw, '\n'))
+	if existing, err := fs.ReadFile(target); err == nil && bytes.Equal(existing, data) {
+		return target, false, nil
+	}
+
+	if err := fs.WriteFile(target, data); err != nil {
+		return "", false, fmt.Errorf("recording the render of %s: %w", root, err)
+	}
+
+	return target, true, nil
+}
+
+func (c *Controller) recordGenerated(root string, paths []string, digests Record, report *Report) error {
+	target, changed, err := WriteRecord(c.fs, root, paths, digests)
 	if err != nil {
-		return fmt.Errorf("recording generated files: %w", err)
+		return err
 	}
 
 	if changed {
@@ -426,6 +577,85 @@ func (c *Controller) recordLockfiles(root string, lockfiles []string, report *Re
 	return nil
 }
 
+func (c *Controller) Take(root, file string) (TakeReport, error) {
+	path := file
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, filepath.FromSlash(file))
+	}
+
+	rel := relative(root, path)
+
+	record, err := ReadRecord(c.fs, root)
+	if err != nil {
+		return TakeReport{}, err
+	}
+
+	if _, known := record[rel]; !known {
+		return TakeReport{}, fmt.Errorf(
+			"%w: %s\n"+
+				"take gives a rendered file back to forge-factory, and %s is not one it rendered.\n"+
+				"Every file it rendered is listed in %s",
+			ErrNotRendered, rel, rel, GeneratedManifestPath)
+	}
+
+	exists, err := c.fs.Exists(path)
+	if err != nil {
+		return TakeReport{}, fmt.Errorf("inspecting %s before taking it: %w", rel, err)
+	}
+
+	if !exists {
+		return TakeReport{}, fmt.Errorf(
+			"%w: %s\n"+
+				"take backs a file up before the render replaces it, and there is nothing there to back up.\n"+
+				"Run: forge-factory sync",
+			ErrNothingToTake, rel)
+	}
+
+	existing, err := c.fs.ReadFile(path)
+	if err != nil {
+		return TakeReport{}, fmt.Errorf("reading %s before taking it: %w", rel, err)
+	}
+
+	backup, err := c.freeBackup(path)
+	if err != nil {
+		return TakeReport{}, err
+	}
+
+	if err := c.fs.WriteFile(backup, existing); err != nil {
+		return TakeReport{}, fmt.Errorf("backing %s up to %s: %w", rel, relative(root, backup), err)
+	}
+
+	delete(record, rel)
+
+	paths := make([]string, 0, len(record))
+	for name := range record {
+		paths = append(paths, name)
+	}
+
+	if _, _, err := WriteRecord(c.fs, root, paths, record); err != nil {
+		return TakeReport{}, err
+	}
+
+	return TakeReport{Path: rel, Backup: relative(root, backup)}, nil
+}
+
+func (c *Controller) freeBackup(path string) (string, error) {
+	candidate := path + ".bak"
+
+	for n := 2; ; n++ {
+		taken, err := c.fs.Exists(candidate)
+		if err != nil {
+			return "", fmt.Errorf("looking for a free backup name beside %s: %w", path, err)
+		}
+
+		if !taken {
+			return candidate, nil
+		}
+
+		candidate = fmt.Sprintf("%s.bak.%d", path, n)
+	}
+}
+
 func relative(root, path string) string {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
@@ -442,10 +672,15 @@ func (c *Controller) renderMembers(
 	report *Report,
 	write bool,
 	ignores map[string][]string,
-) ([]commandWire, []string, []string, error) {
+) ([]commandWire, []string, []string, Record, error) {
 	resolved, err := c.resolve(f, root)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
+	}
+
+	record, err := ReadRecord(c.fs, root)
+	if err != nil {
+		return nil, nil, nil, nil, err
 	}
 
 	var (
@@ -454,29 +689,31 @@ func (c *Controller) renderMembers(
 		generated    []string
 	)
 
+	digests := Record{}
+
 	for _, language := range f.Languages() {
 		uri, ok := f.EngineFor(language)
 		if !ok {
-			return nil, nil, nil, fmt.Errorf("no engine is registered for %q", language)
+			return nil, nil, nil, nil, fmt.Errorf("no engine is registered for %q", language)
 		}
 
 		if err := c.checkLanguage(ctx, uri, language, resolved); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 
 		deps, depNotes, err := c.resolver.Resolve(ctx, f, root, language, f.DependenciesFor(language))
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("resolving %s dependencies: %w", language, err)
+			return nil, nil, nil, nil, fmt.Errorf("resolving %s dependencies: %w", language, err)
 		}
 
 		dev, devNotes, err := c.resolver.Resolve(ctx, f, root, language, f.DevFor(language))
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("resolving %s devDependencies: %w", language, err)
+			return nil, nil, nil, nil, fmt.Errorf("resolving %s devDependencies: %w", language, err)
 		}
 
 		members, err := c.resolver.ResolveMembers(ctx, f, root, language)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("resolving %s member modules: %w", language, err)
+			return nil, nil, nil, nil, fmt.Errorf("resolving %s member modules: %w", language, err)
 		}
 
 		required := c.internalRequires(resolved, language)
@@ -508,7 +745,7 @@ func (c *Controller) renderMembers(
 		var out renderOutput
 
 		if err := c.caller.Call(ctx, uri, ToolRender, in, &out); err != nil {
-			return nil, nil, nil, fmt.Errorf("rendering %s: %w", language, err)
+			return nil, nil, nil, nil, fmt.Errorf("rendering %s: %w", language, err)
 		}
 
 		for _, file := range out.Files {
@@ -525,10 +762,12 @@ func (c *Controller) renderMembers(
 					continue
 				}
 
-				if err := c.fs.WriteFile(file.Path, []byte(file.Content)); err != nil {
-					return nil, nil, nil, fmt.Errorf("writing %s: %w", file.Path, err)
+				digest, err := WriteRendered(c.fs, root, file.Path, []byte(file.Content), record)
+				if err != nil {
+					return nil, nil, nil, nil, err
 				}
 
+				digests[relative(root, file.Path)] = digest
 				report.Written = append(report.Written, file.Path)
 
 				if file.Gitignore != "" {
@@ -556,7 +795,7 @@ func (c *Controller) renderMembers(
 		}
 	}
 
-	return lockCommands, lockfiles, generated, nil
+	return lockCommands, lockfiles, generated, digests, nil
 }
 
 func underMemberOrRoot(root, only, path string) bool {

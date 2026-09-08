@@ -3,6 +3,7 @@ package runcontroller
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -810,14 +811,17 @@ func TestBootstrapErrorShapes(t *testing.T) {
 	t.Run("an unplaceable factory file fails", func(t *testing.T) {
 		r := newRig(t)
 		factoryFlow(r)
+		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaA, mock.Anything).
+			Return("", false, nil).Maybe()
 
 		dir := t.TempDir()
-		r.fs.writeErr[filepath.Join(dir, "forge-factory.yaml")] = errors.New("read only")
+		dest := filepath.Join(dir, "forge-factory.yaml")
+		r.fs.writeErr[dest] = errors.New("read only")
 
 		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
 			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
 		})
-		require.ErrorContains(t, err, "placing forge-factory.yaml")
+		require.ErrorContains(t, err, "writing "+dest)
 	})
 
 	t.Run("an unplaceable extra fails", func(t *testing.T) {
@@ -829,12 +833,13 @@ func TestBootstrapErrorShapes(t *testing.T) {
 			Return("", false, nil).Maybe()
 
 		dir := t.TempDir()
-		r.fs.writeErr[filepath.Join(dir, "forge-ci.yaml")] = errors.New("read only")
+		dest := filepath.Join(dir, "forge-ci.yaml")
+		r.fs.writeErr[dest] = errors.New("read only")
 
 		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
 			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
 		})
-		require.ErrorContains(t, err, "placing forge-ci.yaml")
+		require.ErrorContains(t, err, "writing "+dest)
 	})
 }
 
@@ -842,9 +847,7 @@ func TestBootstrapProtectsThePlacedWorkspaceFiles(t *testing.T) {
 	ctx := context.Background()
 	factoryURL := "git@example.com:org/factory.git"
 
-	const oldCommittedYaml = "version: v1\nname: fixture\nrepos: []\n"
-
-	const handEditedYaml = "version: v1\nname: fixture\n# a person changed this by hand\nrepos: []\n"
+	const handEditedYaml = "version: v1\nname: fixture\nrepos: []\n"
 
 	factoryFlow := func(r *rig) {
 		r.git.EXPECT().Clone(mock.Anything, factoryURL, mock.Anything).Return(nil)
@@ -855,13 +858,30 @@ func TestBootstrapProtectsThePlacedWorkspaceFiles(t *testing.T) {
 			Return("", false, nil).Maybe()
 	}
 
-	t.Run("an unchanged file is rewritten silently", func(t *testing.T) {
+	recordOf := func(entries ...synccontroller.RenderedFile) string {
+		raw, err := json.MarshalIndent(struct {
+			Version int                           `json:"version"`
+			Files   []synccontroller.RenderedFile `json:"files"`
+		}{Version: 1, Files: entries}, "", "  ")
+		require.NoError(t, err)
+
+		return string(raw) + "\n"
+	}
+
+	recordPath := func(dir string) string {
+		return filepath.Join(dir, filepath.FromSlash(synccontroller.GeneratedManifestPath))
+	}
+
+	t.Run("a file that matches its last render is overwritten silently", func(t *testing.T) {
 		r := newRig(t)
 		factoryFlow(r)
 
 		dir := t.TempDir()
 		dest := filepath.Join(dir, "forge-factory.yaml")
-		r.fs.files[dest] = claimingFactoryYaml
+		r.fs.files[dest] = handEditedYaml
+		r.fs.files[recordPath(dir)] = recordOf(synccontroller.RenderedFile{
+			Path: "forge-factory.yaml", SHA256: synccontroller.Digest([]byte(handEditedYaml)),
+		})
 
 		_, root, err := r.c.Bootstrap(ctx, BootstrapRequest{
 			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
@@ -871,99 +891,55 @@ func TestBootstrapProtectsThePlacedWorkspaceFiles(t *testing.T) {
 		require.Equal(t, claimingFactoryYaml, r.fs.writes[dest])
 	})
 
-	t.Run("a file matching an older committed version is rewritten silently", func(t *testing.T) {
+	t.Run("a file that was never rendered before is written and recorded", func(t *testing.T) {
 		r := newRig(t)
 		factoryFlow(r)
-		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
-			Return([]string{shaB}, nil)
-		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaB, "workspace/forge-factory.yaml").
-			Return(oldCommittedYaml, true, nil)
 
 		dir := t.TempDir()
 		dest := filepath.Join(dir, "forge-factory.yaml")
-		r.fs.files[dest] = oldCommittedYaml
 
 		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
 			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
 		})
 		require.NoError(t, err)
 		require.Equal(t, claimingFactoryYaml, r.fs.writes[dest])
+		require.Contains(t, r.fs.writes[recordPath(dir)],
+			synccontroller.Digest([]byte(claimingFactoryYaml)))
 	})
 
-	t.Run("a hand edited file is refused with neither flag", func(t *testing.T) {
+	t.Run("a file that differs from its last render is refused by name", func(t *testing.T) {
 		r := newRig(t)
 		factoryFlow(r)
-		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
-			Return([]string{shaB}, nil)
-		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaB, "workspace/forge-factory.yaml").
-			Return(oldCommittedYaml, true, nil)
 
 		dir := t.TempDir()
 		dest := filepath.Join(dir, "forge-factory.yaml")
 		r.fs.files[dest] = handEditedYaml
+		r.fs.files[recordPath(dir)] = recordOf(synccontroller.RenderedFile{
+			Path: "forge-factory.yaml", SHA256: synccontroller.Digest([]byte("an older render\n")),
+		})
 
 		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
 			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
 		})
-		require.ErrorIs(t, err, ErrProtectedFile)
-		require.ErrorContains(t, err, "--backup")
-		require.ErrorContains(t, err, "--force")
+		require.ErrorIs(t, err, synccontroller.ErrHandEdited)
+		require.ErrorContains(t, err, "forge-factory.yaml")
+		require.ErrorContains(t, err, "forge-factory take forge-factory.yaml")
 
 		_, written := r.fs.writes[dest]
 		require.False(t, written, "a refused write touches nothing")
 	})
 
-	t.Run("--backup keeps the hand edited file as .bak and writes the new one", func(t *testing.T) {
-		r := newRig(t)
-		factoryFlow(r)
-		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
-			Return([]string{shaB}, nil)
-		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaB, "workspace/forge-factory.yaml").
-			Return(oldCommittedYaml, true, nil)
-
-		dir := t.TempDir()
-		dest := filepath.Join(dir, "forge-factory.yaml")
-		r.fs.files[dest] = handEditedYaml
-		r.fs.writes[dest] = handEditedYaml
-
-		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
-			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true, Backup: true,
-		})
-		require.NoError(t, err)
-		require.Equal(t, handEditedYaml, r.fs.writes[dest+".bak"])
-		require.Equal(t, claimingFactoryYaml, r.fs.writes[dest])
-	})
-
-	t.Run("--force overwrites the hand edited file with no backup", func(t *testing.T) {
+	t.Run("an unreadable render record fails by name", func(t *testing.T) {
 		r := newRig(t)
 		factoryFlow(r)
 
 		dir := t.TempDir()
-		dest := filepath.Join(dir, "forge-factory.yaml")
-		r.fs.files[dest] = handEditedYaml
-
-		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
-			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true, Force: true,
-		})
-		require.NoError(t, err)
-		require.Equal(t, claimingFactoryYaml, r.fs.writes[dest])
-
-		_, hasBackup := r.fs.writes[dest+".bak"]
-		require.False(t, hasBackup, "--force keeps no backup")
-	})
-
-	t.Run("an unreadable placed file's existence check fails", func(t *testing.T) {
-		r := newRig(t)
-		factoryFlow(r)
-
-		dir := t.TempDir()
-		dest := filepath.Join(dir, "forge-factory.yaml")
-		r.fs.existsErr[dest] = errors.New("stat refused")
+		r.fs.files[recordPath(dir)] = "{"
 
 		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
 			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
 		})
-		require.ErrorContains(t, err, "stat refused")
+		require.ErrorContains(t, err, "reading the render record at")
 	})
 
 	t.Run("an unreadable placed file fails the comparison", func(t *testing.T) {
@@ -974,6 +950,9 @@ func TestBootstrapProtectsThePlacedWorkspaceFiles(t *testing.T) {
 		dest := filepath.Join(dir, "forge-factory.yaml")
 		r.fs.files[dest] = handEditedYaml
 		r.fs.readErr[dest] = errors.New("read refused")
+		r.fs.files[recordPath(dir)] = recordOf(synccontroller.RenderedFile{
+			Path: "forge-factory.yaml", SHA256: synccontroller.Digest([]byte("an older render\n")),
+		})
 
 		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
 			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
@@ -981,101 +960,65 @@ func TestBootstrapProtectsThePlacedWorkspaceFiles(t *testing.T) {
 		require.ErrorContains(t, err, "read refused")
 	})
 
-	t.Run("a history lookup that cannot resolve fails", func(t *testing.T) {
+	t.Run("a placed file that cannot be stat'd fails by name", func(t *testing.T) {
 		r := newRig(t)
 		factoryFlow(r)
-		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
-			Return(nil, errors.New("git log refused"))
 
 		dir := t.TempDir()
 		dest := filepath.Join(dir, "forge-factory.yaml")
-		r.fs.files[dest] = handEditedYaml
+		r.fs.existsErr[dest] = errors.New("stat refused")
+		r.fs.files[recordPath(dir)] = recordOf(synccontroller.RenderedFile{
+			Path: "forge-factory.yaml", SHA256: synccontroller.Digest([]byte("an older render\n")),
+		})
 
 		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
 			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
-		})
-		require.ErrorContains(t, err, "reading the history of workspace/forge-factory.yaml")
-		require.ErrorContains(t, err, "git log refused")
-	})
-
-	t.Run("a committed version that cannot be shown fails", func(t *testing.T) {
-		r := newRig(t)
-		factoryFlow(r)
-		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
-			Return([]string{shaB}, nil)
-		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaB, "workspace/forge-factory.yaml").
-			Return("", false, errors.New("git show refused"))
-
-		dir := t.TempDir()
-		dest := filepath.Join(dir, "forge-factory.yaml")
-		r.fs.files[dest] = handEditedYaml
-
-		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
-			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
-		})
-		require.ErrorContains(t, err, "git show refused")
-	})
-
-	t.Run("--backup fails when the old file cannot be moved aside", func(t *testing.T) {
-		r := newRig(t)
-		factoryFlow(r)
-		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
-			Return([]string{shaB}, nil)
-		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaB, "workspace/forge-factory.yaml").
-			Return(oldCommittedYaml, true, nil)
-
-		dir := t.TempDir()
-		dest := filepath.Join(dir, "forge-factory.yaml")
-		r.fs.files[dest] = handEditedYaml
-		r.fs.renameErr[dest] = errors.New("rename refused")
-
-		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
-			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true, Backup: true,
-		})
-		require.ErrorContains(t, err, "backing up "+dest)
-		require.ErrorContains(t, err, "rename refused")
-	})
-
-	t.Run("--backup refuses to clobber a prior backup", func(t *testing.T) {
-		r := newRig(t)
-		factoryFlow(r)
-		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
-			Return([]string{shaB}, nil)
-		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaB, "workspace/forge-factory.yaml").
-			Return(oldCommittedYaml, true, nil)
-
-		dir := t.TempDir()
-		dest := filepath.Join(dir, "forge-factory.yaml")
-		r.fs.files[dest] = handEditedYaml
-		r.fs.files[dest+".bak"] = "an earlier backup, from an earlier refused bootstrap\n"
-
-		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
-			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true, Backup: true,
-		})
-		require.ErrorIs(t, err, ErrProtectedFile)
-		require.ErrorContains(t, err, dest+".bak already exists, move it away first")
-
-		_, written := r.fs.writes[dest]
-		require.False(t, written, "a refused backup touches nothing")
-	})
-
-	t.Run("--backup fails when checking for a prior backup fails", func(t *testing.T) {
-		r := newRig(t)
-		factoryFlow(r)
-		r.git.EXPECT().LogAll(mock.Anything, mock.Anything, "workspace/forge-factory.yaml").
-			Return([]string{shaB}, nil)
-		r.git.EXPECT().Show(mock.Anything, mock.Anything, shaB, "workspace/forge-factory.yaml").
-			Return(oldCommittedYaml, true, nil)
-
-		dir := t.TempDir()
-		dest := filepath.Join(dir, "forge-factory.yaml")
-		r.fs.files[dest] = handEditedYaml
-		r.fs.existsErr[dest+".bak"] = errors.New("stat refused")
-
-		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
-			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true, Backup: true,
 		})
 		require.ErrorContains(t, err, "stat refused")
+	})
+
+	t.Run("a record that cannot be written fails by name", func(t *testing.T) {
+		r := newRig(t)
+		factoryFlow(r)
+
+		dir := t.TempDir()
+		r.fs.writeErr[recordPath(dir)] = errors.New("write refused")
+
+		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
+			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
+		})
+		require.ErrorContains(t, err, "recording the render of "+dir)
+	})
+
+	t.Run("a placed file that cannot be written fails by name", func(t *testing.T) {
+		r := newRig(t)
+		factoryFlow(r)
+
+		dir := t.TempDir()
+		dest := filepath.Join(dir, "forge-factory.yaml")
+		r.fs.writeErr[dest] = errors.New("write refused")
+
+		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
+			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
+		})
+		require.ErrorContains(t, err, "writing "+dest)
+	})
+
+	t.Run("a path the workspace already recorded stays in the record", func(t *testing.T) {
+		r := newRig(t)
+		factoryFlow(r)
+
+		dir := t.TempDir()
+		r.fs.files[recordPath(dir)] = recordOf(synccontroller.RenderedFile{
+			Path: "Cargo.toml", SHA256: "deadbeef",
+		})
+
+		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
+			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
+		})
+		require.NoError(t, err)
+		require.Contains(t, r.fs.writes[recordPath(dir)], "Cargo.toml")
+		require.Contains(t, r.fs.writes[recordPath(dir)], "deadbeef")
 	})
 }
 

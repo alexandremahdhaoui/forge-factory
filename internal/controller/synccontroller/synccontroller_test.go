@@ -82,6 +82,8 @@ type harness struct {
 	gitignoreErr     error
 	goMods           map[string]string
 	registry         []byte
+	record           []byte
+	recordWriteErr   error
 }
 
 func newHarness(t *testing.T) *harness {
@@ -108,9 +110,19 @@ func newHarness(t *testing.T) *harness {
 		return nil, errors.New("no manifest yet")
 	}).Maybe()
 
-	h.fs.EXPECT().ReadFile(mock.MatchedBy(func(path string) bool {
+	isRecord := func(path string) bool {
 		return strings.HasSuffix(path, "/.forge/factory-generated.json")
-	})).Return(nil, errors.New("no manifest yet")).Maybe()
+	}
+
+	h.fs.EXPECT().Exists(mock.MatchedBy(isRecord)).
+		RunAndReturn(func(string) (bool, error) { return h.record != nil, nil }).Maybe()
+	h.fs.EXPECT().ReadFile(mock.MatchedBy(isRecord)).RunAndReturn(func(string) ([]byte, error) {
+		if h.record != nil {
+			return h.record, nil
+		}
+
+		return nil, errors.New("no manifest yet")
+	}).Maybe()
 	h.fs.EXPECT().ReadFile(mock.MatchedBy(func(path string) bool {
 		return strings.HasSuffix(path, "/.forge/engines.yaml")
 	})).RunAndReturn(func(string) ([]byte, error) {
@@ -133,6 +145,10 @@ func newHarness(t *testing.T) *harness {
 	h.fs.EXPECT().WriteFile(mock.MatchedBy(func(path string) bool {
 		return strings.HasSuffix(path, "/.forge/factory-generated.json")
 	}), mock.Anything).RunAndReturn(func(path string, data []byte) error {
+		if h.recordWriteErr != nil {
+			return h.recordWriteErr
+		}
+
 		h.wrote[path] = string(data)
 
 		return nil
@@ -1428,7 +1444,8 @@ func TestARepeatedGeneratedPathIsRecordedOnce(t *testing.T) {
 	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
 
-	assert.JSONEq(t, `{"version":1,"files":["golden-go/go.mod"]}`,
+	assert.JSONEq(t, `{"version":1,"files":[{"path":"golden-go/go.mod","sha256":"`+
+		synccontroller.Digest([]byte("module example.com/g\n"))+`"}]}`,
 		h.wrote["/w/.forge/factory-generated.json"])
 }
 
@@ -1459,11 +1476,12 @@ func TestAFailedGeneratedRecordFailsTheLock(t *testing.T) {
 	answersOnce(t, caller, map[string]any{"language": "go"})
 	answersOnce(t, caller, map[string]any{"files": []any{}})
 	fs.EXPECT().ReadFile(mock.Anything).Return(nil, errors.New("absent")).Maybe()
-	fs.EXPECT().MkdirAll(mock.Anything).Return(assert.AnError).Once()
+	fs.EXPECT().Exists(mock.Anything).Return(false, nil).Maybe()
+	fs.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(assert.AnError).Once()
 
 	_, err := c.Lock(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorIs(t, err, assert.AnError)
-	assert.Contains(t, err.Error(), "recording generated files")
+	assert.Contains(t, err.Error(), "recording the render of /w")
 }
 
 func TestAFailedGeneratedRecordFailsTheSync(t *testing.T) {
@@ -1480,10 +1498,14 @@ func TestAFailedGeneratedRecordFailsTheSync(t *testing.T) {
 	answersOnce(t, caller, map[string]any{"files": []any{}})
 	fs.EXPECT().ReadFile(mock.Anything).Return(nil, errors.New("absent")).Maybe()
 	fs.EXPECT().Exists(mock.Anything).Return(false, nil).Maybe()
-	fs.EXPECT().WriteFile(mock.Anything, mock.Anything).Return(nil).Maybe()
-	fs.EXPECT().MkdirAll(mock.Anything).Return(assert.AnError).Once()
+	fs.EXPECT().WriteFile(mock.MatchedBy(func(path string) bool {
+		return !strings.HasSuffix(path, "/.forge/factory-generated.json")
+	}), mock.Anything).Return(nil).Maybe()
+	fs.EXPECT().WriteFile(mock.MatchedBy(func(path string) bool {
+		return strings.HasSuffix(path, "/.forge/factory-generated.json")
+	}), mock.Anything).Return(assert.AnError).Once()
 
 	_, err := c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorIs(t, err, assert.AnError)
-	assert.Contains(t, err.Error(), "recording generated files")
+	assert.Contains(t, err.Error(), "recording the render of /w")
 }

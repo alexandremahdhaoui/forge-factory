@@ -29,7 +29,7 @@ const DefaultPath = "forge-factory.yaml"
 
 var (
 	ErrUsage = errors.New(
-		"usage: forge-factory <clone|sync|lock|add|bump|checkout|status|validate|run|bootstrap|cache> [args] " +
+		"usage: forge-factory <clone|sync|lock|take|add|bump|checkout|status|validate|run|bootstrap|cache> [args] " +
 			"[--config path] [--root dir] [--offline] [--register-head]")
 	ErrDrift = errors.New("the workspace disagrees with the factory")
 
@@ -104,6 +104,8 @@ func (d *Driver) Run(ctx context.Context, args []string) error {
 		return d.runSync(ctx, f, path, root)
 	case "lock":
 		return d.runLock(ctx, f, root)
+	case "take":
+		return d.runTake(ctx, f, path, root, rest)
 	case "status":
 		return d.runStatus(ctx, f, root)
 	case "add":
@@ -172,6 +174,32 @@ func (d *Driver) runSync(ctx context.Context, f config.Factory, path, root strin
 	}
 
 	return d.applyTooling(ctx, f, root, report)
+}
+
+func (d *Driver) runTake(ctx context.Context, f config.Factory, path, root string, rest []string) error {
+	if len(rest) != 1 {
+		return fmt.Errorf("take names one rendered file: %w", ErrUsage)
+	}
+
+	report, err := d.sync.Take(root, rest[0])
+	if err != nil {
+		return err
+	}
+
+	if err := d.write(renderTake(report)); err != nil {
+		return err
+	}
+
+	return d.runSync(ctx, f, path, root)
+}
+
+func renderTake(report synccontroller.TakeReport) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "took %s\n", report.Path)
+	fmt.Fprintf(&b, "  the file on disk is kept at %s\n", report.Backup)
+
+	return b.String()
 }
 
 // runLock resolves the dependency closure the manifests name. It is its own
@@ -470,9 +498,6 @@ func (d *Driver) runBootstrap(ctx context.Context, args []string) error {
 	fs.SetOutput(d.out)
 	quiet := fs.Bool("quiet", false, "silence the progress lines")
 	cache := fs.String("cache", "", "cache directory, defaults to the user cache")
-	backup := fs.Bool("backup", false,
-		"keep a hand edited placed file as <name>.bak, then write the factory's version")
-	force := fs.Bool("force", false, "overwrite a hand edited placed file with no backup")
 
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parsing flags: %w", err)
@@ -490,7 +515,6 @@ func (d *Driver) runBootstrap(ctx context.Context, args []string) error {
 
 	f, root, err := d.run.Bootstrap(ctx, runcontroller.BootstrapRequest{
 		Factory: rest[0], Dir: dir, Quiet: *quiet, CacheDir: *cache,
-		Backup: *backup, Force: *force,
 	})
 	if err != nil {
 		return err
@@ -837,6 +861,8 @@ Workspace:
   clone                        Fetch every member the factory names, then sync
   sync [--only <member>]       Regenerate every workspace file and manifest;
                                resolve versions; provision the toolchain
+  take <file>                  Give a hand edited rendered file back to the
+                               factory: copy it to <file>.bak, then sync
   status                       Members, versions, pins and freshness at a glance
   validate                     Describe what the factory file declares
 

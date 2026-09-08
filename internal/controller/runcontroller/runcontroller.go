@@ -6,7 +6,6 @@
 package runcontroller
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,8 +43,7 @@ var (
 	ErrUnpublished = errors.New("not published in the register's internal track")
 	// ErrMissingInput means the runnable's generated inputs name something
 	// the environment does not provide.
-	ErrMissingInput  = errors.New("missing runnable input")
-	ErrProtectedFile = errors.New("placed file was hand edited, differs from every committed version")
+	ErrMissingInput = errors.New("missing runnable input")
 )
 
 // Runner materialises and delegates one run, and stands workspaces up. It is
@@ -1224,8 +1222,6 @@ type BootstrapRequest struct {
 	Dir      string
 	CacheDir string
 	Quiet    bool
-	Backup   bool
-	Force    bool
 }
 
 // Bootstrap places a factory's workspace files into a directory, so the
@@ -1261,9 +1257,12 @@ func (c *Controller) Bootstrap(ctx context.Context, req BootstrapRequest) (confi
 
 	clone := filepath.Join(req.CacheDir, "git", sanitize(url))
 
-	if err := c.placeProtected(ctx, clone, root, "forge-factory.yaml", factory.raw, req.Force, req.Backup); err != nil {
+	record, err := synccontroller.ReadRecord(c.fs, root)
+	if err != nil {
 		return config.Factory{}, "", err
 	}
+
+	placed := map[string][]byte{"forge-factory.yaml": factory.raw}
 
 	for _, extra := range []string{"forge-ci.yaml", "CLAUDE.md", "FOLLOWUP.md"} {
 		content, found, err := c.git.Show(ctx, clone, sha, "workspace/"+extra)
@@ -1271,117 +1270,43 @@ func (c *Controller) Bootstrap(ctx context.Context, req BootstrapRequest) (confi
 			continue
 		}
 
-		if err := c.placeProtected(ctx, clone, root, extra, []byte(content), req.Force, req.Backup); err != nil {
+		placed[extra] = []byte(content)
+	}
+
+	digests := synccontroller.Record{}
+	paths := make([]string, 0, len(placed))
+
+	for _, name := range sortedKeys(placed) {
+		digest, err := synccontroller.WriteRendered(
+			c.fs, root, filepath.Join(root, name), placed[name], record)
+		if err != nil {
 			return config.Factory{}, "", err
 		}
+
+		digests[name] = digest
+		paths = append(paths, name)
+	}
+
+	for name := range record {
+		if _, replaced := digests[name]; !replaced {
+			paths = append(paths, name)
+		}
+	}
+
+	if _, _, err := synccontroller.WriteRecord(c.fs, root, paths, digests); err != nil {
+		return config.Factory{}, "", err
 	}
 
 	return factory.Factory, root, nil
 }
 
-func (c *Controller) placeProtected(
-	ctx context.Context,
-	clone, root, name string,
-	content []byte,
-	force, backup bool,
-) error {
-	dest := filepath.Join(root, name)
-
-	exists, err := c.fs.Exists(dest)
-	if err != nil {
-		return err
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
 	}
 
-	if exists && !force {
-		existing, err := c.fs.ReadFile(dest)
-		if err != nil {
-			return err
-		}
+	sort.Strings(out)
 
-		if !bytes.Equal(existing, content) {
-			edited, err := c.handEdited(ctx, clone, name, existing)
-			if err != nil {
-				return err
-			}
-
-			if edited {
-				if !backup {
-					return fmt.Errorf(
-						"%w: %s\n%s\nrun again with --backup to keep the old file as %s.bak, or --force to overwrite it",
-						ErrProtectedFile, dest, diffSummary(existing, content), dest)
-				}
-
-				bakExists, err := c.fs.Exists(dest + ".bak")
-				if err != nil {
-					return err
-				}
-
-				if bakExists {
-					return fmt.Errorf("%w: %s.bak already exists, move it away first", ErrProtectedFile, dest)
-				}
-
-				if err := c.fs.Rename(dest, dest+".bak"); err != nil {
-					return fmt.Errorf("backing up %s: %w", dest, err)
-				}
-			}
-		}
-	}
-
-	if err := c.fs.WriteFile(dest, content); err != nil {
-		return fmt.Errorf("placing %s: %w", name, err)
-	}
-
-	return nil
-}
-
-func (c *Controller) handEdited(ctx context.Context, clone, name string, existing []byte) (bool, error) {
-	path := "workspace/" + name
-
-	shas, err := c.git.LogAll(ctx, clone, path)
-	if err != nil {
-		return false, fmt.Errorf("reading the history of %s: %w", path, err)
-	}
-
-	for _, sha := range shas {
-		historic, found, err := c.git.Show(ctx, clone, sha, path)
-		if err != nil {
-			return false, err
-		}
-
-		if found && bytes.Equal([]byte(historic), existing) {
-			return false, nil
-		}
-	}
-
-	return true, nil
-}
-
-func diffSummary(existing, next []byte) string {
-	oldLines := strings.Split(string(existing), "\n")
-	newLines := strings.Split(string(next), "\n")
-
-	n := len(oldLines)
-	if len(newLines) > n {
-		n = len(newLines)
-	}
-
-	differing := 0
-
-	for i := 0; i < n; i++ {
-		var o, w string
-		if i < len(oldLines) {
-			o = oldLines[i]
-		}
-
-		if i < len(newLines) {
-			w = newLines[i]
-		}
-
-		if o != w {
-			differing++
-		}
-	}
-
-	return fmt.Sprintf("%d of %d line(s) in the existing file differ from the %d line(s) forge-factory would write",
-		differing, len(oldLines), len(newLines))
+	return out
 }
