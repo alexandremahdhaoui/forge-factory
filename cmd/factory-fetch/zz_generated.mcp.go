@@ -76,6 +76,7 @@ func handleConfigValidate(
 	input mcptypes.ConfigValidateInput,
 ) (*mcp.CallToolResult, any, error) {
 	output := ValidateMap(input.Spec)
+	output.Kind = "mcp-server"
 
 	if output.Valid {
 		result, artifact := mcputil.SuccessResultWithArtifact("Configuration is valid", output)
