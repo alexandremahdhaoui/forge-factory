@@ -157,12 +157,12 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		return Report{}, err
 	}
 
-	_, lockfiles, generated, digests, err := c.renderMembers(ctx, f, root, only, &report, true, ignores, &missing)
+	rendered, err := c.renderMembers(ctx, f, root, only, &report, true, ignores, &missing)
 	if err != nil {
 		return Report{}, err
 	}
 
-	if err := c.recordGenerated(root, append(append([]string{}, generated...), lockfiles...), digests, &report); err != nil {
+	if err := c.recordGenerated(root, rendered.recorded(), rendered.digests, &report); err != nil {
 		return Report{}, err
 	}
 
@@ -308,23 +308,23 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 
 	var missing unregistered
 
-	commands, lockfiles, generated, _, err := c.renderMembers(ctx, f, root, only, &report, false, nil, &missing)
+	rendered, err := c.renderMembers(ctx, f, root, only, &report, false, nil, &missing)
 	if err != nil {
 		return Report{}, err
 	}
 
-	if err := c.guardRendered(root, generated); err != nil {
+	if err := c.guardRendered(root, rendered.generated); err != nil {
 		return Report{}, err
 	}
 
-	lockErr := c.lock(ctx, commands, &report)
+	lockErr := c.lock(ctx, rendered.commands, &report)
 
-	digests, err := c.digestsOnDisk(root, generated)
+	digests, err := c.digestsOnDisk(root, rendered.generated)
 	if err != nil {
 		return Report{}, err
 	}
 
-	if err := c.recordGenerated(root, append(append([]string{}, generated...), lockfiles...), digests, &report); err != nil {
+	if err := c.recordGenerated(root, rendered.recorded(), digests, &report); err != nil {
 		return Report{}, err
 	}
 
@@ -332,7 +332,7 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 		return Report{}, lockErr
 	}
 
-	if err := c.recordLockfiles(root, lockfiles, &report); err != nil {
+	if err := c.recordLockfiles(root, rendered.lockfiles, &report); err != nil {
 		return Report{}, err
 	}
 
@@ -755,33 +755,27 @@ func (c *Controller) renderMembers(
 	write bool,
 	ignores map[string][]string,
 	missing *unregistered,
-) ([]commandWire, []string, []string, Record, error) {
+) (rendering, error) {
 	resolved, err := c.resolve(f, root)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return rendering{}, err
 	}
 
 	record, err := ReadRecord(c.fs, root)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return rendering{}, err
 	}
 
-	var (
-		lockCommands []commandWire
-		lockfiles    []string
-		generated    []string
-	)
-
-	digests := Record{}
+	out := rendering{digests: Record{}}
 
 	for _, language := range f.Languages() {
 		uri, ok := f.EngineFor(language)
 		if !ok {
-			return nil, nil, nil, nil, fmt.Errorf("no engine is registered for %q", language)
+			return rendering{}, fmt.Errorf("no engine is registered for %q", language)
 		}
 
 		if err := c.checkLanguage(ctx, uri, language, resolved); err != nil {
-			return nil, nil, nil, nil, err
+			return rendering{}, err
 		}
 
 		known := len(*missing)
@@ -789,28 +783,28 @@ func (c *Controller) renderMembers(
 		deps, depNotes, err := c.resolver.Resolve(ctx, f, root, language, f.DependenciesFor(language))
 		if err != nil {
 			if err := missing.absorb(fmt.Errorf("resolving %s dependencies: %w", language, err)); err != nil {
-				return nil, nil, nil, nil, err
+				return rendering{}, err
 			}
 		}
 
 		dev, devNotes, err := c.resolver.Resolve(ctx, f, root, language, f.DevFor(language))
 		if err != nil {
 			if err := missing.absorb(fmt.Errorf("resolving %s devDependencies: %w", language, err)); err != nil {
-				return nil, nil, nil, nil, err
+				return rendering{}, err
 			}
 		}
 
 		if len(*missing) > known {
 			report.Notes = append(report.Notes, depNotes...)
 			report.Notes = append(report.Notes, devNotes...)
-			generated = append(generated, recordedPaths(root, record)...)
+			out.carried = recordedPaths(root, record)
 
 			continue
 		}
 
 		members, err := c.resolver.ResolveMembers(ctx, f, root, language)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("resolving %s member modules: %w", language, err)
+			return rendering{}, fmt.Errorf("resolving %s member modules: %w", language, err)
 		}
 
 		required := c.internalRequires(resolved, language)
@@ -839,32 +833,32 @@ func (c *Controller) renderMembers(
 			Dev:          dev,
 		}
 
-		var out renderOutput
+		var engine renderOutput
 
-		if err := c.caller.Call(ctx, uri, ToolRender, in, &out); err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("rendering %s: %w", language, err)
+		if err := c.caller.Call(ctx, uri, ToolRender, in, &engine); err != nil {
+			return rendering{}, fmt.Errorf("rendering %s: %w", language, err)
 		}
 
-		for _, file := range out.Files {
+		for _, file := range engine.Files {
 			if only != "" && !underMemberOrRoot(root, only, file.Path) {
 				continue
 			}
 
-			generated = append(generated, file.Path)
+			out.generated = append(out.generated, file.Path)
 		}
 
 		if write {
-			for _, file := range out.Files {
+			for _, file := range engine.Files {
 				if only != "" && !underMemberOrRoot(root, only, file.Path) {
 					continue
 				}
 
 				digest, err := WriteRendered(c.fs, root, file.Path, []byte(file.Content), record)
 				if err != nil {
-					return nil, nil, nil, nil, err
+					return rendering{}, err
 				}
 
-				digests[relative(root, file.Path)] = digest
+				out.digests[relative(root, file.Path)] = digest
 				report.Written = append(report.Written, file.Path)
 
 				if file.Gitignore != "" {
@@ -875,24 +869,36 @@ func (c *Controller) renderMembers(
 			}
 		}
 
-		for _, cmd := range out.DependencyLock {
+		for _, cmd := range engine.DependencyLock {
 			if only != "" && cmd.Dir != filepath.Join(root, only) && cmd.Dir != root {
 				continue
 			}
 
-			lockCommands = append(lockCommands, cmd)
+			out.commands = append(out.commands, cmd)
 		}
 
-		for _, lf := range out.Lockfiles {
+		for _, lf := range engine.Lockfiles {
 			if only != "" && !underMemberOrRoot(root, only, lf) {
 				continue
 			}
 
-			lockfiles = append(lockfiles, lf)
+			out.lockfiles = append(out.lockfiles, lf)
 		}
 	}
 
-	return lockCommands, lockfiles, generated, digests, nil
+	return out, nil
+}
+
+type rendering struct {
+	commands  []commandWire
+	lockfiles []string
+	generated []string
+	carried   []string
+	digests   Record
+}
+
+func (r rendering) recorded() []string {
+	return slices.Concat(r.generated, r.lockfiles, r.carried)
 }
 
 func recordedPaths(root string, record Record) []string {

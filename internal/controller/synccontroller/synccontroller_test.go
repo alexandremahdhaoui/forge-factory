@@ -1714,3 +1714,59 @@ func TestALockNamesAMissingPackageAfterLockingTheOtherLanguages(t *testing.T) {
 	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
 	require.ErrorContains(t, err, "rust:missing-crate is not in the register")
 }
+
+func lockWithRustSkipped(t *testing.T, root string, recorded ...synccontroller.RenderedFile) error {
+	t.Helper()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".forge"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(root, filepath.FromSlash(synccontroller.GeneratedManifestPath)),
+		recordDocument(t, recorded...), 0o600))
+
+	caller := engineadaptermock.NewMockCaller(t)
+	repos := repoadaptermock.NewMockReader(t)
+	repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Maybe()
+	answersFor(caller, "forge://example.com/lang-go", synccontroller.ToolLanguage, `{"language":"go"}`)
+	answersFor(caller, "forge://example.com/lang-rust", synccontroller.ToolLanguage, `{"language":"rust"}`)
+	answersFor(caller, "forge://example.com/lang-go", synccontroller.ToolRender, `{"files":[]}`)
+
+	c := synccontroller.New(caller, fsadapter.New(), repos, execadaptermock.NewMockRunner(t), unregisteredIn{language: "rust"})
+
+	_, err := c.Lock(t.Context(), parse(t, twoLanguageFactory), root, "")
+
+	return err
+}
+
+func answersFor(caller *engineadaptermock.MockCaller, uri, tool, payload string) {
+	caller.EXPECT().Call(mock.Anything, uri, tool, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, _, _ string, _, out any) error {
+			return json.Unmarshal([]byte(payload), out)
+		}).Maybe()
+}
+
+func TestALockWithASkippedLanguageNamesTheMissingPackageAndNeverGuardsAFileNoLanguageRenders(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "FOLLOWUP.md"), []byte("edited by the user\n"), 0o600))
+
+	err := lockWithRustSkipped(t, root, synccontroller.RenderedFile{
+		Path: "FOLLOWUP.md", SHA256: synccontroller.Digest([]byte("as the bootstrap placed it\n")),
+	})
+	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
+	require.NotErrorIs(t, err, synccontroller.ErrHandEdited)
+}
+
+func TestALockWithASkippedLanguageKeepsACarriedLockfileWithItsEmptyDigest(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "golden-rust"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "golden-rust", "Cargo.lock"), []byte("locked\n"), 0o600))
+
+	err := lockWithRustSkipped(t, root, synccontroller.RenderedFile{Path: "golden-rust/Cargo.lock"})
+	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
+
+	record, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(synccontroller.GeneratedManifestPath)))
+	require.NoError(t, readErr)
+	assert.JSONEq(t, string(recordDocument(t, synccontroller.RenderedFile{Path: "golden-rust/Cargo.lock"})), string(record))
+}
