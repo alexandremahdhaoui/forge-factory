@@ -313,6 +313,10 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 		return Report{}, err
 	}
 
+	if err := missing.err(); err != nil {
+		return Report{}, err
+	}
+
 	if err := c.guardRendered(root, rendered.generated); err != nil {
 		return Report{}, err
 	}
@@ -333,10 +337,6 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 	}
 
 	if err := c.recordLockfiles(root, rendered.lockfiles, &report); err != nil {
-		return Report{}, err
-	}
-
-	if err := missing.err(); err != nil {
 		return Report{}, err
 	}
 

@@ -1694,7 +1694,7 @@ func TestALanguageWithAMissingEntryRendersNothingWhileTheOthersRender(t *testing
 		"the skipped language keeps its files in the record, so the next sync still guards them")
 }
 
-func TestALockNamesAMissingPackageAfterLockingTheOtherLanguages(t *testing.T) {
+func TestALockWithAMissingPackageRunsNoCommandAndWritesNothing(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
@@ -1703,16 +1703,19 @@ func TestALockNamesAMissingPackageAfterLockingTheOtherLanguages(t *testing.T) {
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-rust", "language", map[string]any{"language": "rust"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
-		"files":          []any{},
+		"files":          []map[string]any{{"path": "/w/golden-go/go.mod", "content": goMod}},
 		"dependencyLock": []map[string]any{{"dir": "/w/golden-go", "command": "true"}},
+		"lockfiles":      []string{"/w/golden-go/go.sum"},
 	})
-	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", mock.Anything, "true").
-		Return(execadapter.Result{}, nil).Once()
+	h.fs.EXPECT().Exists(mock.Anything).Return(true, nil).Maybe()
+	h.goMods["/w/golden-go/go.mod"] = goMod
 	h.recordWrites()
 
 	_, err := h.c.Lock(t.Context(), parse(t, twoLanguageFactory), "/w", "")
 	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
 	require.ErrorContains(t, err, "rust:missing-crate is not in the register")
+	h.runner.AssertNotCalled(t, "RunEnv", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	assert.Empty(t, h.wrote, "neither the render record nor the dependency locks may be written")
 }
 
 func lockWithRustSkipped(t *testing.T, root string, recorded ...synccontroller.RenderedFile) error {
