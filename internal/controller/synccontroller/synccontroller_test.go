@@ -1718,7 +1718,7 @@ func TestALockWithAMissingPackageRunsNoCommandAndWritesNothing(t *testing.T) {
 	assert.Empty(t, h.wrote, "neither the render record nor the dependency locks may be written")
 }
 
-func lockWithRustSkipped(t *testing.T, root string, recorded ...synccontroller.RenderedFile) error {
+func lockWithRustMissing(t *testing.T, root string, recorded ...synccontroller.RenderedFile) error {
 	t.Helper()
 
 	require.NoError(t, os.MkdirAll(filepath.Join(root, ".forge"), 0o750))
@@ -1746,27 +1746,27 @@ func answersFor(caller *engineadaptermock.MockCaller, uri, tool, payload string)
 		}).Maybe()
 }
 
-func TestALockWithASkippedLanguageNamesTheMissingPackageAndNeverGuardsAFileNoLanguageRenders(t *testing.T) {
+func TestALockWithAMissingPackageNamesItEvenWhenARecordedFileWasEditedByHand(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(root, "FOLLOWUP.md"), []byte("edited by the user\n"), 0o600))
 
-	err := lockWithRustSkipped(t, root, synccontroller.RenderedFile{
+	err := lockWithRustMissing(t, root, synccontroller.RenderedFile{
 		Path: "FOLLOWUP.md", SHA256: synccontroller.Digest([]byte("as the bootstrap placed it\n")),
 	})
 	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
 	require.NotErrorIs(t, err, synccontroller.ErrHandEdited)
 }
 
-func TestALockWithASkippedLanguageKeepsACarriedLockfileWithItsEmptyDigest(t *testing.T) {
+func TestALockWithAMissingPackageLeavesTheRecordAsItWas(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "golden-rust"), 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "golden-rust", "Cargo.lock"), []byte("locked\n"), 0o600))
 
-	err := lockWithRustSkipped(t, root, synccontroller.RenderedFile{Path: "golden-rust/Cargo.lock"})
+	err := lockWithRustMissing(t, root, synccontroller.RenderedFile{Path: "golden-rust/Cargo.lock"})
 	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
 
 	record, readErr := os.ReadFile(filepath.Join(root, filepath.FromSlash(synccontroller.GeneratedManifestPath)))
