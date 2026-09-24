@@ -39,7 +39,6 @@ var (
 type Driver struct {
 	offline     bool
 	prune       bool
-	only        string
 	toolingFrom string
 	out         io.Writer
 	fs          fsadapter.FS
@@ -151,7 +150,7 @@ func renderClone(report clonecontroller.Report) string {
 }
 
 func (d *Driver) runSync(ctx context.Context, f config.Factory, path, root string) error {
-	report, err := d.sync.Sync(ctx, f, root, d.only)
+	report, err := d.sync.Sync(ctx, f, root, "")
 	if err != nil {
 		return err
 	}
@@ -206,7 +205,7 @@ func renderTake(report synccontroller.TakeReport) string {
 // verb because cloning is not building: sync writes manifests and stops,
 // and the build phase is what calls this.
 func (d *Driver) runLock(ctx context.Context, f config.Factory, root string) error {
-	report, err := d.sync.Lock(ctx, f, root, d.only)
+	report, err := d.sync.Lock(ctx, f, root, "")
 	if err != nil {
 		return err
 	}
@@ -659,18 +658,15 @@ func (d *Driver) load(
 		"resolve from the register checkout as it stands, ignoring the pinned revision")
 	prune := fs.Bool("prune-pins", false,
 		"delete the soft pins the resolver names dead, then sync again")
-	only := fs.String("only", "",
-		"restrict sync writes and dependency-lock commands to one member")
 	toolingFrom := fs.String("tooling-from", "",
 		"consume a distribution (a directory or an http(s) base URL) into the store and link .forge/bin; FORGE_DIST_MIRROR is the environment form")
 
 	if err := fs.Parse(args); err != nil {
-		return config.Factory{}, "", "", nil, fmt.Errorf("parsing flags: %w", err)
+		return config.Factory{}, "", "", nil, fmt.Errorf("parsing flags: %w: %w", err, ErrUsage)
 	}
 
 	d.offline = *offline
 	d.prune = *prune
-	d.only = *only
 	d.toolingFrom = *toolingFrom
 
 	raw, err := d.fs.ReadFile(*path)
@@ -859,7 +855,7 @@ Usage:
 
 Workspace:
   clone                        Fetch every member the factory names, then sync
-  sync [--only <member>]       Regenerate every workspace file and manifest;
+  sync                         Regenerate every workspace file and manifest;
                                resolve versions; provision the toolchain
   take <file>                  Give a hand edited rendered file back to the
                                factory: copy it to <file>.bak, then sync

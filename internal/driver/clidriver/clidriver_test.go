@@ -139,7 +139,7 @@ func TestSyncPrintsWhatItWrote(t *testing.T) {
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, "").Return(
 		synccontroller.Report{
 			Root:    "/w",
 			Written: []string{"/w/go.work", "/w/golden-go/go.mod"},
@@ -508,6 +508,17 @@ func TestRunReportsABadFlag(t *testing.T) {
 	assert.Contains(t, err.Error(), "parsing flags")
 }
 
+func TestSyncAndLockRefuseTheOnlyFlagAsAUsageError(t *testing.T) {
+	t.Parallel()
+
+	for _, verb := range []string{"sync", "lock"} {
+		h := newHarness(t)
+
+		err := h.driver.Run(t.Context(), []string{verb, "--only", "x"})
+		require.ErrorIs(t, err, clidriver.ErrUsage, verb)
+	}
+}
+
 func TestRootDefaultsToTheFactoryFilesParent(t *testing.T) {
 	t.Parallel()
 
@@ -595,7 +606,7 @@ func TestLockPrintsWhatItRan(t *testing.T) {
 
 	h := newHarness(t)
 	h.reads(factory)
-	h.sync.EXPECT().Lock(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+	h.sync.EXPECT().Lock(mock.Anything, mock.Anything, mock.Anything, "").Return(
 		synccontroller.Report{Root: "/w", Locked: []string{"go mod tidy in /w/a"}}, nil).Once()
 
 	require.NoError(t, h.driver.Run(t.Context(), []string{"lock", "--root", "/w"}))

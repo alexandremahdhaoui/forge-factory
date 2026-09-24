@@ -686,7 +686,7 @@ engines:
     engine: forge://example.com/lang-go
 `
 
-func TestSyncOnlyRendersTheOneMemberAndTheRoot(t *testing.T) {
+func TestARunCacheSyncWhoseWorkspaceIsOneMemberRendersThatMemberAndTheRoot(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
@@ -718,7 +718,7 @@ func TestSyncOnlyRendersTheOneMemberAndTheRoot(t *testing.T) {
 	assert.NotContains(t, h.wrote, "/w/other-go/go.mod")
 }
 
-func TestLockOnlyRunsTheOneMemberAndTheRoot(t *testing.T) {
+func TestARunCacheLockWhoseWorkspaceIsOneMemberRunsThatMemberAndTheRoot(t *testing.T) {
 	t.Parallel()
 
 	h := newHarness(t)
