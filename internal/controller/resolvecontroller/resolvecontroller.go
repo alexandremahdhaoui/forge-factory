@@ -147,13 +147,13 @@ func (v view) list(rel string) ([]string, error) {
 	return v.c.fs.List(filepath.Join(v.dir, filepath.FromSlash(rel)))
 }
 
-// Resolve maps entries to versions. The returned notes are diagnostics the
-// driver prints: pins standing, pins to remove, deprecated tracks, requests
-// filed.
 func (c *Controller) Resolve(ctx context.Context, f config.Factory, root, language string, deps map[string]config.DependencySpec) (map[string]string, []string, error) {
 	out := make(map[string]string, len(deps))
 
-	var notes []string
+	var (
+		notes   []string
+		missing []error
+	)
 
 	names := make([]string, 0, len(deps))
 	for name := range deps {
@@ -174,11 +174,21 @@ func (c *Controller) Resolve(ctx context.Context, f config.Factory, root, langua
 		version, entryNotes, err := c.resolveEntry(ctx, f, root, language, name, d)
 		notes = append(notes, entryNotes...)
 
+		if errors.Is(err, ErrUnregistered) {
+			missing = append(missing, err)
+
+			continue
+		}
+
 		if err != nil {
 			return nil, notes, err
 		}
 
 		out[name] = version
+	}
+
+	if len(missing) > 0 {
+		return nil, notes, errors.Join(missing...)
 	}
 
 	return out, notes, nil

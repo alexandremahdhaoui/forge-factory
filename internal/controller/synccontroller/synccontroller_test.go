@@ -11,8 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/gitadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/controller/resolvecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/runtimecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/toolingcontroller"
@@ -1508,4 +1512,132 @@ func TestAFailedGeneratedRecordFailsTheSync(t *testing.T) {
 	_, err := c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.ErrorIs(t, err, assert.AnError)
 	assert.Contains(t, err.Error(), "recording the render of /w")
+}
+
+const twoLanguageFactory = `version: "1"
+name: golden
+repos:
+  - name: golden-go
+    url: u
+    languages: [go]
+  - name: golden-rust
+    url: v
+    languages: [rust]
+register:
+  url: git@github.com:example/golden-register.git
+engines:
+  - alias: go
+    engine: forge://example.com/lang-go
+  - alias: rust
+    engine: forge://example.com/lang-rust
+`
+
+func TestOneSyncNamesEveryMissingPackageInOneError(t *testing.T) {
+	t.Parallel()
+
+	const threeMissing = twoLanguageFactory + `dependencies:
+  go:
+    example.com/missing-lib: {}
+    example.com/other-missing-lib: {}
+  rust:
+    missing-crate: {}
+toolchain:
+  runtimes:
+    go: { track: "runtime:missing-runtime" }
+  binaries:
+    - name: missing-tool
+      module: example.com/missing-tool
+      track: go:example.com/missing-tool
+  image:
+    ref: ghcr.io/owner/tools
+    track: internal:ghcr.io/owner/missing-image
+`
+
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "golden-register"), 0o750))
+
+	h := newHarness(t)
+	h.envrcExists(t, true)
+	h.identityAnswers()
+	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner,
+		resolvecontroller.New(fsadapter.New(), gitadapter.New(execadapter.New()), time.Now))
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-rust", "language", map[string]any{"language": "rust"})
+	h.recordWrites()
+
+	_, err := h.c.Sync(t.Context(), parse(t, threeMissing), root, "")
+	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
+	require.ErrorContains(t, err, "go:example.com/missing-lib is not in the register")
+	require.ErrorContains(t, err, "go:example.com/other-missing-lib is not in the register")
+	require.ErrorContains(t, err, "rust:missing-crate is not in the register")
+	require.ErrorContains(t, err, "go:example.com/missing-tool is not in the register")
+	require.ErrorContains(t, err, "runtime:missing-runtime is not in the register")
+	require.ErrorContains(t, err, "internal:ghcr.io/owner/missing-image is not in the register")
+	h.caller.AssertNotCalled(t, "Call", mock.Anything, mock.Anything, synccontroller.ToolRender, mock.Anything, mock.Anything)
+}
+
+type unregisteredIn struct {
+	passthrough
+
+	language string
+}
+
+func (u unregisteredIn) Resolve(
+	ctx context.Context, f config.Factory, root, language string, deps map[string]config.DependencySpec,
+) (map[string]string, []string, error) {
+	if language == u.language {
+		return nil, nil, fmt.Errorf("%s:missing-crate is %w", language, resolvecontroller.ErrUnregistered)
+	}
+
+	return u.passthrough.Resolve(ctx, f, root, language, deps)
+}
+
+func TestALanguageWithAMissingEntryRendersNothingWhileTheOthersRender(t *testing.T) {
+	t.Parallel()
+
+	cargo := synccontroller.RenderedFile{Path: "golden-rust/Cargo.toml", SHA256: synccontroller.Digest([]byte("[package]\n"))}
+
+	h := newHarness(t)
+	h.envrcExists(t, true)
+	h.identityAnswers()
+	h.record = recordDocument(t, cargo)
+	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner, unregisteredIn{language: "rust"})
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-rust", "language", map[string]any{"language": "rust"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{"files": []map[string]any{
+		{"path": "/w/golden-go/go.mod", "content": goMod},
+	}})
+	h.recordWrites()
+
+	_, err := h.c.Sync(t.Context(), parse(t, twoLanguageFactory), "/w", "")
+	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
+	require.ErrorContains(t, err, "rust:missing-crate is not in the register")
+
+	assert.Equal(t, goMod, h.wrote["/w/golden-go/go.mod"])
+	assert.JSONEq(t, string(recordDocument(t,
+		synccontroller.RenderedFile{Path: "golden-go/go.mod", SHA256: synccontroller.Digest([]byte(goMod))},
+		cargo,
+	)), h.wrote["/w/.forge/factory-generated.json"],
+		"the skipped language keeps its files in the record, so the next sync still guards them")
+}
+
+func TestALockNamesAMissingPackageAfterLockingTheOtherLanguages(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.identityAnswers()
+	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner, unregisteredIn{language: "rust"})
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+	h.answers("forge://example.com/lang-rust", "language", map[string]any{"language": "rust"})
+	h.answers("forge://example.com/lang-go", "render", map[string]any{
+		"files":          []any{},
+		"dependencyLock": []map[string]any{{"dir": "/w/golden-go", "command": "true"}},
+	})
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", mock.Anything, "true").
+		Return(execadapter.Result{}, nil).Once()
+	h.recordWrites()
+
+	_, err := h.c.Lock(t.Context(), parse(t, twoLanguageFactory), "/w", "")
+	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
+	require.ErrorContains(t, err, "rust:missing-crate is not in the register")
 }

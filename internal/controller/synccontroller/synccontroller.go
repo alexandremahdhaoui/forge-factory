@@ -151,76 +151,13 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		ignores[r.Name] = append(ignores[r.Name], ".envrc")
 	}
 
-	if f.Toolchain != nil {
-		for _, name := range sortedKeys(f.Toolchain.Runtimes) {
-			r := f.Toolchain.Runtimes[name]
-			version := r.Version
+	var missing unregistered
 
-			if r.Track != "" {
-				resolved, runtimeNotes, err := c.resolver.ResolveTool(ctx, f, root, r.Track)
-				report.Notes = append(report.Notes, runtimeNotes...)
-
-				if err != nil {
-					return Report{}, fmt.Errorf("resolving runtime %s: %w", name, err)
-				}
-
-				version = resolved
-			}
-
-			report.Runtimes = append(report.Runtimes, runtimecontroller.Pin{
-				Name: name, Version: version, Params: r.Params, Targets: r.Targets,
-			})
-		}
-
-		for _, b := range f.Toolchain.Binaries {
-			version := b.Version
-
-			if b.Track != "" {
-				resolved, toolNotes, err := c.resolver.ResolveTool(ctx, f, root, b.Track)
-				report.Notes = append(report.Notes, toolNotes...)
-
-				if err != nil {
-					return Report{}, fmt.Errorf("resolving toolchain binary %s: %w", b.Name, err)
-				}
-
-				version = resolved
-			}
-
-			report.Toolchain = append(report.Toolchain, toolingcontroller.Binary{
-				Name: b.Name, Module: b.Module, Version: version,
-			})
-		}
-
-		if img := f.Toolchain.Image; img != nil {
-			version := img.Version
-
-			if img.Track != "" {
-				resolved, imgNotes, err := c.resolver.ResolveTool(ctx, f, root, img.Track)
-				report.Notes = append(report.Notes, imgNotes...)
-
-				if err != nil {
-					return Report{}, fmt.Errorf("resolving the toolchain image: %w", err)
-				}
-
-				version = resolved
-			}
-
-			report.Image = img.Ref + ":" + version
-
-			changed, err := c.writeIfChanged(
-				filepath.Join(root, filepath.FromSlash(ToolchainImagePath)),
-				[]byte(report.Image+"\n"))
-			if err != nil {
-				return Report{}, fmt.Errorf("persisting the toolchain image: %w", err)
-			}
-
-			if changed {
-				report.Written = append(report.Written, ToolchainImagePath)
-			}
-		}
+	if err := c.resolveToolchain(ctx, f, root, &report, &missing); err != nil {
+		return Report{}, err
 	}
 
-	_, lockfiles, generated, digests, err := c.renderMembers(ctx, f, root, only, &report, true, ignores)
+	_, lockfiles, generated, digests, err := c.renderMembers(ctx, f, root, only, &report, true, ignores, &missing)
 	if err != nil {
 		return Report{}, err
 	}
@@ -229,10 +166,6 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		return Report{}, err
 	}
 
-	// The factory's engines, by alias, for every member to consult: the
-	// outer ring of forge's engine registry. A member's own forge.yaml entry
-	// wins over one here; a name in neither falls through to forge's own
-	// module. Written only when the bytes moved, like everything else here.
 	if len(f.Engines) > 0 {
 		changed, err := c.writeIfChanged(
 			filepath.Join(root, filepath.FromSlash(EnginesPath)),
@@ -261,7 +194,105 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		}
 	}
 
+	if err := missing.err(); err != nil {
+		return Report{}, err
+	}
+
 	return report, nil
+}
+
+type unregistered []error
+
+func (u *unregistered) absorb(err error) error {
+	if !errors.Is(err, resolvecontroller.ErrUnregistered) {
+		return err
+	}
+
+	*u = append(*u, err)
+
+	return nil
+}
+
+func (u unregistered) err() error {
+	if len(u) == 0 {
+		return nil
+	}
+
+	return fmt.Errorf("resolving every register entry the factory names:\n%w", errors.Join(u...))
+}
+
+func (c *Controller) resolveToolchain(ctx context.Context, f config.Factory, root string, report *Report, missing *unregistered) error {
+	if f.Toolchain == nil {
+		return nil
+	}
+
+	for _, name := range sortedKeys(f.Toolchain.Runtimes) {
+		r := f.Toolchain.Runtimes[name]
+
+		version, err := c.trackedVersion(ctx, f, root, r.Version, r.Track, report)
+		if err != nil {
+			if err := missing.absorb(fmt.Errorf("resolving runtime %s: %w", name, err)); err != nil {
+				return err
+			}
+
+			continue
+		}
+
+		report.Runtimes = append(report.Runtimes, runtimecontroller.Pin{
+			Name: name, Version: version, Params: r.Params, Targets: r.Targets,
+		})
+	}
+
+	for _, b := range f.Toolchain.Binaries {
+		version, err := c.trackedVersion(ctx, f, root, b.Version, b.Track, report)
+		if err != nil {
+			if err := missing.absorb(fmt.Errorf("resolving toolchain binary %s: %w", b.Name, err)); err != nil {
+				return err
+			}
+
+			continue
+		}
+
+		report.Toolchain = append(report.Toolchain, toolingcontroller.Binary{
+			Name: b.Name, Module: b.Module, Version: version,
+		})
+	}
+
+	img := f.Toolchain.Image
+	if img == nil {
+		return nil
+	}
+
+	version, err := c.trackedVersion(ctx, f, root, img.Version, img.Track, report)
+	if err != nil {
+		return missing.absorb(fmt.Errorf("resolving the toolchain image: %w", err))
+	}
+
+	report.Image = img.Ref + ":" + version
+
+	changed, err := c.writeIfChanged(
+		filepath.Join(root, filepath.FromSlash(ToolchainImagePath)),
+		[]byte(report.Image+"\n"))
+	if err != nil {
+		return fmt.Errorf("persisting the toolchain image: %w", err)
+	}
+
+	if changed {
+		report.Written = append(report.Written, ToolchainImagePath)
+	}
+
+	return nil
+}
+
+func (c *Controller) trackedVersion(ctx context.Context, f config.Factory, root, version, track string, report *Report) (string, error) {
+	if track == "" {
+		return version, nil
+	}
+
+	resolved, notes, err := c.resolver.ResolveTool(ctx, f, root, track)
+	report.Notes = append(report.Notes, notes...)
+
+	return resolved, err
 }
 
 func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only string) (Report, error) {
@@ -275,7 +306,9 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 		Unlocked: []string{},
 	}
 
-	commands, lockfiles, generated, digests, err := c.renderMembers(ctx, f, root, only, &report, false, nil)
+	var missing unregistered
+
+	commands, lockfiles, generated, digests, err := c.renderMembers(ctx, f, root, only, &report, false, nil, &missing)
 	if err != nil {
 		return Report{}, err
 	}
@@ -289,6 +322,10 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 	}
 
 	if err := c.recordLockfiles(root, lockfiles, &report); err != nil {
+		return Report{}, err
+	}
+
+	if err := missing.err(); err != nil {
 		return Report{}, err
 	}
 
@@ -672,6 +709,7 @@ func (c *Controller) renderMembers(
 	report *Report,
 	write bool,
 	ignores map[string][]string,
+	missing *unregistered,
 ) ([]commandWire, []string, []string, Record, error) {
 	resolved, err := c.resolve(f, root)
 	if err != nil {
@@ -701,14 +739,28 @@ func (c *Controller) renderMembers(
 			return nil, nil, nil, nil, err
 		}
 
+		known := len(*missing)
+
 		deps, depNotes, err := c.resolver.Resolve(ctx, f, root, language, f.DependenciesFor(language))
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("resolving %s dependencies: %w", language, err)
+			if err := missing.absorb(fmt.Errorf("resolving %s dependencies: %w", language, err)); err != nil {
+				return nil, nil, nil, nil, err
+			}
 		}
 
 		dev, devNotes, err := c.resolver.Resolve(ctx, f, root, language, f.DevFor(language))
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("resolving %s devDependencies: %w", language, err)
+			if err := missing.absorb(fmt.Errorf("resolving %s devDependencies: %w", language, err)); err != nil {
+				return nil, nil, nil, nil, err
+			}
+		}
+
+		if len(*missing) > known {
+			report.Notes = append(report.Notes, depNotes...)
+			report.Notes = append(report.Notes, devNotes...)
+			generated = append(generated, recordedPaths(root, record)...)
+
+			continue
 		}
 
 		members, err := c.resolver.ResolveMembers(ctx, f, root, language)
@@ -796,6 +848,15 @@ func (c *Controller) renderMembers(
 	}
 
 	return lockCommands, lockfiles, generated, digests, nil
+}
+
+func recordedPaths(root string, record Record) []string {
+	out := make([]string, 0, len(record))
+	for rel := range record {
+		out = append(out, filepath.Join(root, filepath.FromSlash(rel)))
+	}
+
+	return out
 }
 
 func underMemberOrRoot(root, only, path string) bool {

@@ -203,6 +203,37 @@ func TestAMissingPackageFailsLoudAndFilesARequest(t *testing.T) {
 	require.Contains(t, string(raw), `"type":"admission"`)
 }
 
+func TestResolveNamesEveryMissingPackageInOneError(t *testing.T) {
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{
+			"example.com/first-absent":  {},
+			"example.com/pkg":           {},
+			"example.com/second-absent": {},
+		})
+	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
+	require.ErrorContains(t, err, "go:example.com/first-absent is not in the register")
+	require.ErrorContains(t, err, "go:example.com/second-absent is not in the register")
+}
+
+func TestResolveStopsAtOnceOnAnErrorThatIsNotAMissingPackage(t *testing.T) {
+	f, root := register(t, map[string]string{"go/example.com/b-corrupt/1": "{not json"})
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{
+			"example.com/a-absent":  {},
+			"example.com/b-corrupt": {Track: "1"},
+			"example.com/c-absent":  {},
+		})
+	require.ErrorContains(t, err, "decoding track")
+	require.NotErrorIs(t, err, resolvecontroller.ErrUnregistered)
+
+	filed, globErr := filepath.Glob(filepath.Join(root, "golden-register", "request", "go", "example.com", "c-absent", "*.json"))
+	require.NoError(t, globErr)
+	require.Empty(t, filed)
+}
+
 func TestAMissingRegisterCheckoutSaysHowToGetIt(t *testing.T) {
 	f := config.Factory{Register: &config.Register{URL: "git@github.com:example/golden-register.git"}}
 
