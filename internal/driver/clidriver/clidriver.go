@@ -34,6 +34,8 @@ var (
 	ErrDrift = errors.New("the workspace disagrees with the factory")
 
 	ErrUnlocked = errors.New("the files were written and the dependency closure did not resolve")
+
+	errCacheVerb = fmt.Errorf("cache takes one verb, clean: %w", ErrUsage)
 )
 
 type Driver struct {
@@ -372,7 +374,7 @@ func (d *Driver) pruneDeadPins(
 
 func (d *Driver) runCache(args []string) error {
 	if len(args) == 0 || args[0] != "clean" {
-		return errors.New("usage: forge-factory cache clean")
+		return errCacheVerb
 	}
 
 	fs := flag.NewFlagSet("cache", flag.ContinueOnError)
@@ -384,7 +386,7 @@ func (d *Driver) runCache(args []string) error {
 	}
 
 	if len(fs.Args()) != 0 {
-		return errors.New("usage: forge-factory cache clean")
+		return errCacheVerb
 	}
 
 	dir := *cache

@@ -1008,17 +1008,19 @@ func TestCacheWithoutCleanIsAUsageError(t *testing.T) {
 	h := newHarness(t)
 
 	err := h.driver.Run(context.Background(), []string{"cache"})
-	require.ErrorContains(t, err, "usage: forge-factory cache clean")
+	require.ErrorIs(t, err, clidriver.ErrUsage)
+	require.ErrorContains(t, err, "cache takes one verb, clean")
 }
 
-func TestCacheRefusesAnythingButClean(t *testing.T) {
+func TestCacheRefusesAnythingButCleanAsAUsageError(t *testing.T) {
 	for _, args := range [][]string{
 		{"cache", "wipe"},
 		{"cache", "clean", "extra"},
 	} {
 		h := newHarness(t)
-		require.ErrorContains(t, h.driver.Run(context.Background(), args),
-			"usage: forge-factory cache clean")
+		err := h.driver.Run(context.Background(), args)
+		require.ErrorIs(t, err, clidriver.ErrUsage, args)
+		require.ErrorContains(t, err, "cache takes one verb, clean", args)
 	}
 }
 
