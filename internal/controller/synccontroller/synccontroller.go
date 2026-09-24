@@ -313,6 +313,10 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 		return Report{}, err
 	}
 
+	if err := c.guardRendered(root, generated); err != nil {
+		return Report{}, err
+	}
+
 	lockErr := c.lock(ctx, commands, &report)
 
 	digests, err := c.digestsOnDisk(root, generated)
@@ -549,6 +553,21 @@ func WriteRecord(fs fsadapter.FS, root string, paths []string, digests Record) (
 	}
 
 	return target, true, nil
+}
+
+func (c *Controller) guardRendered(root string, paths []string) error {
+	record, err := ReadRecord(c.fs, root)
+	if err != nil {
+		return err
+	}
+
+	for _, path := range paths {
+		if err := guard(c.fs, root, path, record); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (c *Controller) digestsOnDisk(root string, paths []string) (Record, error) {

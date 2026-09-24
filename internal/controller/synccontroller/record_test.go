@@ -384,7 +384,7 @@ func TestARecordThatDidNotMoveIsNotRewritten(t *testing.T) {
 
 const tidiedGoMod = "module example.com/g\n\nrequire sigs.k8s.io/yaml v1.6.0\n"
 
-func syncedAndLocked(t *testing.T) (string, *synccontroller.Controller) {
+func synced(t *testing.T) (string, *synccontroller.Controller, *execadaptermock.MockRunner) {
 	t.Helper()
 
 	root := t.TempDir()
@@ -410,17 +410,27 @@ func syncedAndLocked(t *testing.T) (string, *synccontroller.Controller) {
 
 			return json.Unmarshal(raw, out)
 		}).Maybe()
-	runner.EXPECT().RunEnv(mock.Anything, member, mock.Anything, "go", "mod", "tidy").
-		RunAndReturn(func(context.Context, string, map[string]string, string, ...string) (execadapter.Result, error) {
-			return execadapter.Result{}, os.WriteFile(filepath.Join(member, "go.mod"), []byte(tidiedGoMod), 0o600)
-		}).Once()
 
 	c := synccontroller.New(caller, fsadapter.New(), repos, runner, passthrough{})
 
 	_, err := c.Sync(t.Context(), parse(t, factory), root, "")
 	require.NoError(t, err)
 
-	_, err = c.Lock(t.Context(), parse(t, factory), root, "")
+	return root, c, runner
+}
+
+func syncedAndLocked(t *testing.T) (string, *synccontroller.Controller) {
+	t.Helper()
+
+	root, c, runner := synced(t)
+	member := filepath.Join(root, "golden-go")
+
+	runner.EXPECT().RunEnv(mock.Anything, member, mock.Anything, "go", "mod", "tidy").
+		RunAndReturn(func(context.Context, string, map[string]string, string, ...string) (execadapter.Result, error) {
+			return execadapter.Result{}, os.WriteFile(filepath.Join(member, "go.mod"), []byte(tidiedGoMod), 0o600)
+		}).Once()
+
+	_, err := c.Lock(t.Context(), parse(t, factory), root, "")
 	require.NoError(t, err)
 
 	locked, err := os.ReadFile(filepath.Join(member, "go.mod"))
@@ -464,6 +474,18 @@ func TestALockFailsByNameWhenItCannotReadWhatItLeftOnDisk(t *testing.T) {
 			require.ErrorContains(t, err, tc.message)
 		})
 	}
+}
+
+func TestAHandEditMadeBeforeALockIsRefusedAndNoLockCommandRuns(t *testing.T) {
+	t.Parallel()
+
+	root, c, runner := synced(t)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "golden-go", "go.mod"),
+		[]byte(goMod+"\nrequire example.com/by-hand v1.0.0\n"), 0o600))
+
+	_, err := c.Lock(t.Context(), parse(t, factory), root, "")
+	require.ErrorIs(t, err, synccontroller.ErrHandEdited)
+	runner.AssertNotCalled(t, "RunEnv", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestAHandEditMadeAfterALockIsStillRefused(t *testing.T) {
