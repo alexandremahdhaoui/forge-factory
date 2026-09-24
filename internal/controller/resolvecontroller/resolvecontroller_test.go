@@ -22,13 +22,10 @@ import (
 var now = time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
 
 func newController(opts ...resolvecontroller.Option) *resolvecontroller.Controller {
-	// The driver wires the engine; a unit test does not shell out, and only
-	// the tests that name a runner get one.
 	return resolvecontroller.New(fsadapter.New(), gitadapter.New(execadapter.New()),
 		func() time.Time { return now }, opts...)
 }
 
-// register materialises a register checkout with the given track files.
 func register(t *testing.T, tracks map[string]string) (config.Factory, string) {
 	t.Helper()
 
@@ -43,8 +40,6 @@ func register(t *testing.T, tracks map[string]string) (config.Factory, string) {
 
 	require.NoError(t, os.MkdirAll(dir, 0o750))
 
-	// A member that speaks go, because the reachability question is asked of
-	// the repos that receive the dependency rather than of the register.
 	f := config.Factory{
 		Register: &config.Register{URL: "git@github.com:example/golden-register.git"},
 		Repos: []config.Repo{
@@ -56,11 +51,6 @@ func register(t *testing.T, tracks map[string]string) (config.Factory, string) {
 	return f, root
 }
 
-// track is a measured-clean record: the feed answered and no published
-// range covers this version. The outcome is not decoration - it is what
-// separates that from a package nobody ever asked about, and leaving it
-// out of every fixture is why nothing noticed the consumer accepted an
-// absent one.
 func track(current string) string {
 	raw, _ := json.Marshal(map[string]any{
 		"package": "p", "ecosystem": "go", "prefix": "1",
@@ -116,7 +106,6 @@ func TestWrapsRendersTheResolvedVersion(t *testing.T) {
 func TestASoftPinFloorsAndExplains(t *testing.T) {
 	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
 
-	// Ahead of the track: the pin wins and asks for an upgrade.
 	got, notes, err := newController().Resolve(context.Background(), f, root, "go",
 		map[string]config.DependencySpec{"example.com/pkg": {
 			Track: "1", Pin: "v1.7.0", Mode: "soft", Reason: "needs the new parser",
@@ -126,7 +115,6 @@ func TestASoftPinFloorsAndExplains(t *testing.T) {
 	require.Len(t, notes, 1)
 	require.Contains(t, notes[0], "ahead of track")
 
-	// Behind the track: the register wins and the pin is dead.
 	got, notes, err = newController().Resolve(context.Background(), f, root, "go",
 		map[string]config.DependencySpec{"example.com/pkg": {
 			Track: "1", Pin: "v1.5.0", Mode: "soft", Reason: "old workaround",
@@ -365,7 +353,6 @@ func TestACorruptTrackFileIsAnError(t *testing.T) {
 func TestPinOrderingHandlesPrefixesAndPrereleases(t *testing.T) {
 	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
 
-	// A pre-release pin sorts below its release: the register wins.
 	_, notes, err := newController().Resolve(context.Background(), f, root, "go",
 		map[string]config.DependencySpec{"example.com/pkg": {
 			Track: "1", Pin: "v1.6.0-rc.1", Mode: "soft", Reason: "tried the rc",
@@ -373,7 +360,6 @@ func TestPinOrderingHandlesPrefixesAndPrereleases(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, notes[0], "remove this pin")
 
-	// More parts beat fewer at the same numbers.
 	_, notes, err = newController().Resolve(context.Background(), f, root, "go",
 		map[string]config.DependencySpec{"example.com/pkg": {
 			Track: "1", Pin: "v1.6.0.1", Mode: "soft", Reason: "hotfix line",
@@ -453,8 +439,6 @@ func TestEqualVersionsCompareEqualThroughAPin(t *testing.T) {
 func gitIn(t *testing.T, dir string, args ...string) {
 	t.Helper()
 
-	// Signing off explicitly, so a machine's global tag.gpgsign or
-	// commit.gpgsign cannot turn these plain commands into signed ones.
 	full := append([]string{"-c", "tag.gpgsign=false", "-c", "commit.gpgsign=false"}, args...)
 
 	res, err := execadapter.New().Run(context.Background(), dir, "git", full...)
@@ -471,19 +455,16 @@ func TestAPinnedRevisionIsWhatConsumersConsume(t *testing.T) {
 	gitIn(t, dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "index")
 	gitIn(t, dir, "tag", "v0.1.0")
 
-	// The worktree moves past the tag.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "index", "go", "example.com", "pkg", "1.json"),
 		[]byte(track("v1.7.0")), 0o600))
 
-	// Pinned: the tag's version, whatever the worktree says.
 	f.Register.Revision = "v0.1.0"
 	got, _, err := newController().Resolve(context.Background(), f, root, "go",
 		map[string]config.DependencySpec{"example.com/pkg": {}})
 	require.NoError(t, err)
 	require.Equal(t, "v1.6.0", got["example.com/pkg"])
 
-	// Unpinned: the checkout as it stands.
 	f.Register.Revision = ""
 	got, _, err = newController().Resolve(context.Background(), f, root, "go",
 		map[string]config.DependencySpec{"example.com/pkg": {}})
@@ -537,7 +518,6 @@ func TestAnExpiredHardPinIsAnError(t *testing.T) {
 	require.ErrorIs(t, err, resolvecontroller.ErrExpired)
 	require.ErrorContains(t, err, "re-decide it or remove it")
 
-	// A pin that has not expired yet stands.
 	_, notes, err := newController().Resolve(context.Background(), f, root, "go",
 		map[string]config.DependencySpec{"example.com/pkg": {
 			Track: "1", Pin: "v1.4.0", Mode: "hard",
@@ -560,7 +540,6 @@ func TestADeprecationPastGraceIsAnError(t *testing.T) {
 		return string(raw)
 	}
 
-	// Inside the grace window: a warning with the deadline.
 	f, root := register(t, map[string]string{
 		"go/example.com/pkg/1": deprecated("2026-08-10T00:00:00Z"),
 	})
@@ -570,7 +549,6 @@ func TestADeprecationPastGraceIsAnError(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, notes[0], "before")
 
-	// Past it: the resolution fails.
 	f, root = register(t, map[string]string{
 		"go/example.com/pkg/1": deprecated("2026-06-01T00:00:00Z"),
 	})
@@ -586,8 +564,6 @@ func TestTheRegisterSetsItsOwnGraceWindow(t *testing.T) {
 		`"deprecated":{"reason":"superseded","since":"2026-06-01T00:00:00Z"}}`
 	f, root := register(t, map[string]string{"go/example.com/pkg/1": deprecated})
 
-	// Past the 30-day fallback but inside the register's own 120-day window:
-	// the knob is register-level, and the consumer reads it.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(root, "golden-register", "forge-register.yaml"),
 		[]byte("params:\n  deprecatedGraceDays: 120\n"), 0o600))
@@ -672,9 +648,6 @@ func TestDeadPinReadsTheNoteBack(t *testing.T) {
 func TestAPEP440PrereleasePinComparesBelowItsRelease(t *testing.T) {
 	f, root := register(t, map[string]string{"python/httpx/0": track("0.28.1")})
 
-	// 1.0.dev5 carries no hyphen and is still a pre-release: it must sort
-	// above the 0.x track (numerically) but below 1.0 - so a soft pin on it
-	// reads as ahead of track 0, the same reading the register uses.
 	_, notes, err := newController().Resolve(context.Background(), f, root, "python",
 		map[string]config.DependencySpec{"httpx": {
 			Track: "0", Pin: "1.0.dev5", Mode: "soft", Reason: "trying the beta",
@@ -686,8 +659,6 @@ func TestAPEP440PrereleasePinComparesBelowItsRelease(t *testing.T) {
 func TestVersionTailsCombineAndOrder(t *testing.T) {
 	f, root := register(t, map[string]string{"python/httpx/1": track("1.0rc1-x")})
 
-	// A hyphen tail on top of a PEP 440 segment still parses; the pin below
-	// the current is named dead, which pins the ordering both ways.
 	_, notes, err := newController().Resolve(context.Background(), f, root, "python",
 		map[string]config.DependencySpec{"httpx": {
 			Track: "1", Pin: "1.0.dev5", Mode: "soft", Reason: "old",
@@ -696,12 +667,6 @@ func TestVersionTailsCombineAndOrder(t *testing.T) {
 	require.Contains(t, notes[0], "remove this pin")
 }
 
-// A lone checkout resolves through a cache materialisation of the register: a
-// git worktree, whose .git is a link file. A request filed there is answered
-// by nothing, so a missing package fails honestly instead - naming the real
-// register and the commands that admit the package - and files nothing.
-// Live case: a fresh bootstrap hard-blocked on the toolchain binaries with a
-// message promising a self-heal that could never happen.
 func TestACacheRegisterFilesNothingAndPointsAtTheRealOne(t *testing.T) {
 	f, root := register(t, nil)
 	dir := filepath.Join(root, "golden-register")
@@ -721,7 +686,6 @@ func TestACacheRegisterFilesNothingAndPointsAtTheRealOne(t *testing.T) {
 	require.True(t, os.IsNotExist(statErr), "no request may be filed into the cache")
 }
 
-// The toolchain path goes through the same door.
 func TestACacheRegisterFailsAToolchainTrackHonestly(t *testing.T) {
 	f, root := register(t, nil)
 	dir := filepath.Join(root, "golden-register")
@@ -737,7 +701,6 @@ func TestACacheRegisterFailsAToolchainTrackHonestly(t *testing.T) {
 	require.True(t, os.IsNotExist(statErr))
 }
 
-// A real checkout still files the request visibly, exactly as before.
 func TestARealCheckoutStillFilesTheRequest(t *testing.T) {
 	f, root := register(t, nil)
 	dir := filepath.Join(root, "golden-register")
@@ -753,10 +716,6 @@ func TestARealCheckoutStillFilesTheRequest(t *testing.T) {
 	require.Len(t, entries, 1)
 }
 
-// An admission committed locally but never pushed reads as "not in the
-// register" on every other machine. The sync that resolves against such a
-// checkout says so once. Live case: sixty local-only commits carried the
-// toolchain admissions and a colleague's fresh clone blocked on them.
 func TestAnUnpushedRegisterIsNamedInTheNotes(t *testing.T) {
 	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
 	dir := filepath.Join(root, "golden-register")
@@ -771,7 +730,6 @@ func TestAnUnpushedRegisterIsNamedInTheNotes(t *testing.T) {
 	gitIn(t, dir, "push", "-q", "origin", "main")
 	gitIn(t, dir, "fetch", "-q", "origin")
 
-	// One admission lands locally and never leaves the machine.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "local-only.json"), []byte("{}"), 0o600))
 	gitIn(t, dir, "add", ".")
 	gitIn(t, dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "local admission")
@@ -784,10 +742,6 @@ func TestAnUnpushedRegisterIsNamedInTheNotes(t *testing.T) {
 	require.Contains(t, notes[0], "a fresh clone will not see them")
 }
 
-// A checkout behind its origin reads a missing admission as "not in the
-// register" when it may already sit upstream. The failure names that
-// second cause and the pull that resolves it. Live case: sixty unpushed
-// commits made three tools read as unadmitted on every other machine.
 func TestABehindCheckoutNamesThePullInTheFailure(t *testing.T) {
 	f, root := register(t, nil)
 	dir := filepath.Join(root, "golden-register")
@@ -802,8 +756,6 @@ func TestABehindCheckoutNamesThePullInTheFailure(t *testing.T) {
 	gitIn(t, dir, "remote", "add", "origin", origin)
 	gitIn(t, dir, "push", "-q", "origin", "main")
 
-	// The admission lands upstream through another clone; this checkout
-	// never pulls it.
 	other := filepath.Join(t.TempDir(), "other")
 	gitIn(t, root, "clone", "-q", "-b", "main", origin, other)
 	require.NoError(t, os.MkdirAll(filepath.Join(other, "index"), 0o750))
@@ -819,13 +771,6 @@ func TestABehindCheckoutNamesThePullInTheFailure(t *testing.T) {
 	require.Contains(t, err.Error(), "git pull in")
 }
 
-// The finding golden-register actually carries, and the way out of it.
-//
-// GO-2026-5932 on golang.org/x/crypto has no severity, no fix upstream ever
-// because the package is unmaintained by design, and an import scope that
-// does not include anything this workspace uses. Upgrading cannot clear it,
-// so acknowledging it is the only way past - which is why the error has to
-// say all of that instead of a sentence somebody wrote once.
 func TestAFindingSaysEverythingNeededToActOnIt(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"package": "golang.org/x/crypto", "ecosystem": "go", "prefix": "0",
@@ -861,9 +806,6 @@ func TestAFindingSaysEverythingNeededToActOnIt(t *testing.T) {
 	require.Contains(t, msg, "reason:")
 }
 
-// When a fix exists the error names it, because that is the easiest way out
-// and the one a person should take. This line used to read "no fix upstream"
-// on every advisory, whether or not anyone had looked.
 func TestAFindingWithAFixNamesTheVersionThatFixesIt(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"package": "golang.org/x/net", "ecosystem": "go", "prefix": "0",
@@ -884,8 +826,6 @@ func TestAFindingWithAFixNamesTheVersionThatFixesIt(t *testing.T) {
 	require.NotContains(t, err.Error(), "no newer version fixes this")
 }
 
-// Acknowledging the finding you looked at clears it. Acknowledging it does
-// not accept the next one.
 func TestAnAcknowledgementClearsOnlyTheFindingItNames(t *testing.T) {
 	one, _ := json.Marshal(map[string]any{
 		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
@@ -907,7 +847,6 @@ func TestAnAcknowledgementClearsOnlyTheFindingItNames(t *testing.T) {
 	require.NoError(t, err, "the finding was named on purpose, with a reason")
 	require.Equal(t, "v1.6.0", got["example.com/pkg"])
 
-	// A second finding appears. The first acknowledgement does not cover it.
 	two, _ := json.Marshal(map[string]any{
 		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
 		"vulns":   map[string]int{"critical": 1, "high": 0, "medium": 0, "low": 0},
@@ -926,9 +865,6 @@ func TestAnAcknowledgementClearsOnlyTheFindingItNames(t *testing.T) {
 	require.NotContains(t, err.Error(), "  CVE-2026-1\n", "the one that was named stays cleared")
 }
 
-// An acknowledgement that outlived its finding is named for removal, the same
-// way a dead soft pin is. An accepted risk that no longer exists is a line
-// nobody removes unless something says so.
 func TestAnAcknowledgementIsNamedDeadWhenTheFindingGoes(t *testing.T) {
 	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
 
@@ -945,9 +881,6 @@ func TestAnAcknowledgementIsNamedDeadWhenTheFindingGoes(t *testing.T) {
 	require.Contains(t, strings.Join(notes, "\n"), "remove the acknowledgement")
 }
 
-// A package the feed never carried is not a package known to be safe. It
-// warns, loudly, with the reason - and does not stop the build, because
-// refusing to build when a feed is down protects nobody.
 func TestAnUnmeasuredPackageWarnsAndDoesNotBlock(t *testing.T) {
 	for _, outcome := range []string{"not-found", "unreachable"} {
 		t.Run(outcome, func(t *testing.T) {
@@ -970,8 +903,6 @@ func TestAnUnmeasuredPackageWarnsAndDoesNotBlock(t *testing.T) {
 			require.Contains(t, joined, "is unexamined, not known to be safe")
 			require.Contains(t, joined, "The feed carries no record")
 
-			// One line, not a paragraph. Fifty-six paragraphs is noise
-			// nobody reads, which is the failure this note exists to stop.
 			require.Len(t, notes, 1)
 			require.NotContains(t, joined, "..")
 			require.Less(t, len(notes[0]), 180, "one tight line: %q", notes[0])
@@ -979,8 +910,6 @@ func TestAnUnmeasuredPackageWarnsAndDoesNotBlock(t *testing.T) {
 	}
 }
 
-// An expiry re-opens the decision. A risk accepted until something lands has
-// to stop being accepted when it does not.
 func TestAnExpiredAcknowledgementBlocksAgain(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
@@ -1005,11 +934,6 @@ func TestAnExpiredAcknowledgementBlocksAgain(t *testing.T) {
 	require.ErrorContains(t, err, "accepted until 2020-01-01")
 }
 
-// The reachability line, when an engine can answer.
-//
-// It is an enrichment and never a gate: the finding blocks either way. That
-// ordering is the point - a reachability answer is a static approximation,
-// and an approximation must not be the thing that unblocks a release.
 func TestReachabilityEnrichesTheErrorAndNeverClearsIt(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"package": "golang.org/x/crypto", "ecosystem": "go", "prefix": "0",
@@ -1048,10 +972,6 @@ func TestReachabilityEnrichesTheErrorAndNeverClearsIt(t *testing.T) {
 	require.ErrorContains(t, err, "acknowledge:",
 		"the way out is still to name it on purpose")
 
-	// The engine is asked about the members that receive the dependency, not
-	// about the register checkout. It used to be handed the register, so the
-	// sentence "your code does not reach it" was computed over a repo the
-	// operator was not asking about, and printed as a fact about theirs.
 	require.NotEmpty(t, asked)
 
 	for _, d := range asked {
@@ -1062,7 +982,6 @@ func TestReachabilityEnrichesTheErrorAndNeverClearsIt(t *testing.T) {
 	require.Contains(t, asked[0], "golden-go", "a member that speaks go")
 }
 
-// No engine, one line fewer. Nothing fails and nothing is invented.
 func TestAnUnavailableReachabilityEngineChangesNothingElse(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
@@ -1088,9 +1007,6 @@ func TestAnUnavailableReachabilityEngineChangesNothingElse(t *testing.T) {
 	require.NotContains(t, err.Error(), "your code")
 }
 
-// A reason that is only punctuation crashed the whole sync with a stack
-// trace. sentence() sliced the first byte off a string that was empty after
-// trimming, and split a multi-byte rune when it was not.
 func TestASloppyReasonDoesNotCrashTheSync(t *testing.T) {
 	for _, reason := range []string{" ", ".", ". ", "..", "  .  ", "élan is unmeasured"} {
 		t.Run(reason, func(t *testing.T) {
@@ -1113,9 +1029,6 @@ func TestASloppyReasonDoesNotCrashTheSync(t *testing.T) {
 	}
 }
 
-// The quiet way past the gate was to delete the advisory block. Removing the
-// whole track file fails loud; removing the block left outcome: findings and
-// a non-zero vector behind, and resolved green with no note at all.
 func TestARecordThatContradictsItselfIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1184,8 +1097,6 @@ func TestARecordThatContradictsItselfIsRefused(t *testing.T) {
 	}
 }
 
-// An expiry that cannot be read is not an expiry. Treating it as "never
-// expires" turned a typo into a permanent acceptance, silently.
 func TestAnUnreadableExpiryFailsClosed(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
@@ -1209,9 +1120,6 @@ func TestAnUnreadableExpiryFailsClosed(t *testing.T) {
 	require.ErrorContains(t, err, "is not a date")
 }
 
-// "accepted until 2026-08-21" means through that day. time.Parse gives
-// midnight, so the acknowledgement used to die a day before the date it named
-// - and the error still printed that date back at the operator.
 func TestTheExpiryDateItselfIsStillAccepted(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"package": "p", "ecosystem": "go", "prefix": "1", "current": "v1.6.0", "updatedAt": now,
@@ -1224,7 +1132,6 @@ func TestTheExpiryDateItselfIsStillAccepted(t *testing.T) {
 
 	f, root := register(t, map[string]string{"go/example.com/pkg/1": string(raw)})
 
-	// now is 2026-08-21T12:00Z.
 	for _, tc := range []struct {
 		expires string
 		blocked bool
@@ -1253,8 +1160,6 @@ func TestTheExpiryDateItselfIsStillAccepted(t *testing.T) {
 	}
 }
 
-// A finding on a toolchain binary was unrecoverable: the gate refused and the
-// error told the operator to write yaml the schema then rejected.
 func TestAToolchainBinaryCanBeAcknowledgedToo(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"package": "github.com/vektra/mockery/v3", "ecosystem": "go", "prefix": "3",
@@ -1289,10 +1194,6 @@ func TestAToolchainBinaryCanBeAcknowledgedToo(t *testing.T) {
 func TestAnUnreadableTrackFileIsNamed(t *testing.T) {
 	f, root := register(t, nil)
 
-	// A directory where the track file belongs. The register is a git
-	// checkout somebody may have mangled, and the reply has to name the path
-	// rather than report the package as absent, which would file a spurious
-	// admission request.
 	require.NoError(t, os.MkdirAll(
 		filepath.Join(root, "golden-register", "index", "go", "p", "1.json"), 0o750))
 
@@ -1304,8 +1205,6 @@ func TestAnUnreadableTrackFileIsNamed(t *testing.T) {
 func TestAnUnlistableTrackDirectoryIsNamed(t *testing.T) {
 	f, root := register(t, nil)
 
-	// A file where the package's directory belongs, so the default track
-	// cannot be chosen.
 	dir := filepath.Join(root, "golden-register", "index", "go")
 	require.NoError(t, os.MkdirAll(dir, 0o750))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "p"), nil, 0o600))
@@ -1326,8 +1225,6 @@ func TestResolveNamesAnUncheckedOutRegister(t *testing.T) {
 
 	_, _, err := newController().Resolve(context.Background(), f, t.TempDir(), "go",
 		map[string]config.DependencySpec{"p": {}})
-	// The remedy, not just the diagnosis. Nobody guesses "clone" from
-	// "not checked out".
 	require.ErrorContains(t, err, "run: forge-factory clone")
 }
 
@@ -1340,9 +1237,6 @@ func TestResolveToolRefusesATrackThatIsNotAPair(t *testing.T) {
 	}
 }
 
-// The register writes a reason for every unmeasured record, and a copy
-// written by hand may not. The note still has to say something: "is
-// unexamined." followed by nothing reads as a truncated message.
 func TestAnUnmeasuredRecordWithNoReasonStillReads(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"package": "p", "ecosystem": "go", "prefix": "1",
@@ -1360,11 +1254,6 @@ func TestAnUnmeasuredRecordWithNoReasonStillReads(t *testing.T) {
 	require.Contains(t, notes[0], "The register does not say why.")
 }
 
-// The outcome is what tells a measured-clean package from one nobody ever
-// asked about, and every rule downstream switches on it. An absent or
-// misspelled one matched no case and resolved green with no note - the
-// "clean when nothing was measured" bug again, reachable by editing one
-// line of a file every consumer shares.
 func TestATrackWithNoReadableOutcomeIsRefused(t *testing.T) {
 	for name, outcome := range map[string]any{
 		"absent":     nil,
@@ -1388,16 +1277,11 @@ func TestATrackWithNoReadableOutcomeIsRefused(t *testing.T) {
 			_, _, err := newController().Resolve(context.Background(), f, root, "go",
 				map[string]config.DependencySpec{"example.com/pkg": {Track: "1"}})
 			require.ErrorContains(t, err, "which is not one this can read")
-			// The four it does read, so the reader can fix the file.
 			require.ErrorContains(t, err, "findings, clean, not-found or unreachable")
 		})
 	}
 }
 
-// A proof-published internal entry is the one legitimate empty outcome: the
-// register's publish verb asks no feed and records nothing it did not
-// measure. It resolves - with the unexamined note, never silently - and the
-// same emptiness without provenance stays a malformed record.
 func TestAProofPublishedEntryResolvesWithAnUnexaminedNote(t *testing.T) {
 	t.Parallel()
 
@@ -1449,15 +1333,9 @@ func internalTrack(t *testing.T, module, prefix, current string) (string, string
 	return "internal/" + module + "/" + prefix, string(raw)
 }
 
-// A shared spec one member imports from another is declared in no dependency
-// list, so its version was decided by the tidy that follows: the highest
-// published tag. That drifted in the real workspace, one member carrying a
-// spec at v0.3.1 while the register's track said v0.3.0 - a version nothing
-// ever adopted.
 func TestMemberModulesResolveFromTheInternalTrack(t *testing.T) {
 	k1, v1 := internalTrack(t, "github.com/example/spec-a", "0", "v0.3.0")
 	k2, v2 := internalTrack(t, "github.com/example/spec-b", "1", "v1.4.2")
-	// A lower track on the same module: the highest wins, as everywhere else.
 	k3, v3 := internalTrack(t, "github.com/example/spec-b", "0", "v0.9.9")
 
 	f, root := register(t, map[string]string{k1: v1, k2: v2, k3: v3})
@@ -1474,8 +1352,6 @@ func TestMemberModulesAreAGoQuestionOnly(t *testing.T) {
 	k, v := internalTrack(t, "github.com/example/spec-a", "0", "v0.3.0")
 	f, root := register(t, map[string]string{k: v})
 
-	// The internal ecosystem is module paths the go command resolves.
-	// Another language's members are named differently and have no tracks.
 	for _, language := range []string{"rust", "python", "typescript"} {
 		got, err := newController().ResolveMembers(context.Background(), f, root, language)
 		require.NoError(t, err)
@@ -1484,24 +1360,17 @@ func TestMemberModulesAreAGoQuestionOnly(t *testing.T) {
 }
 
 func TestNoInternalTracksIsNotAFailure(t *testing.T) {
-	// A register with no internal ecosystem is the first-run shape, and a
-	// workspace whose members share nothing has no tracks to read.
 	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
 
 	got, err := newController().ResolveMembers(context.Background(), f, root, "go")
 	require.NoError(t, err)
 	require.Empty(t, got)
 
-	// And a workspace with no register at all resolves nothing rather than
-	// failing: the register block is optional.
 	got, err = newController().ResolveMembers(context.Background(), config.Factory{}, root, "go")
 	require.NoError(t, err)
 	require.Empty(t, got)
 }
 
-// The register is a git checkout somebody can mangle. A track that exists
-// and cannot be read is named, because somebody has to fix that file; a
-// module with no track at all is simply not pinned.
 func TestAMangledInternalTrackIsNamed(t *testing.T) {
 	for name, mangle := range map[string]func(*testing.T, string){
 		"a track file that is not json": func(t *testing.T, dir string) {
@@ -1535,8 +1404,6 @@ func TestAnUncheckedOutRegisterIsNamed(t *testing.T) {
 	require.ErrorContains(t, err, "run: forge-factory clone")
 }
 
-// A track directory holding no json at all - the shape a half-written
-// register leaves behind.
 func TestATrackDirectoryWithNoRecordIsSkipped(t *testing.T) {
 	good, raw := internalTrack(t, "github.com/example/spec-a", "0", "v0.3.0")
 	f, root := register(t, map[string]string{good: raw})
@@ -1549,9 +1416,6 @@ func TestATrackDirectoryWithNoRecordIsSkipped(t *testing.T) {
 	require.Len(t, got, 1)
 }
 
-// A pinned register is read through git rather than the worktree, and git
-// lists recursively. The two readers walk the tree differently, so both need
-// driving or half of this is untested.
 func TestMemberModulesReadThroughAPinnedRevision(t *testing.T) {
 	k1, v1 := internalTrack(t, "github.com/example/spec-a", "0", "v0.3.0")
 	k2, v2 := internalTrack(t, "github.com/example/deep/spec-b", "1", "v1.4.2")
@@ -1564,7 +1428,6 @@ func TestMemberModulesReadThroughAPinnedRevision(t *testing.T) {
 	gitIn(t, dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "index")
 	gitIn(t, dir, "tag", "v0.1.0")
 
-	// The worktree moves past the tag.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "index", "internal", "github.com", "example", "spec-a", "0.json"),
 		[]byte(v1[:len(v1)-1]+`,"x":1}`), 0o600))
@@ -1574,7 +1437,6 @@ func TestMemberModulesReadThroughAPinnedRevision(t *testing.T) {
 	got, err := newController().ResolveMembers(context.Background(), f, root, "go")
 	require.NoError(t, err)
 
-	// Both modules, including the deeper one, and at the tag's versions.
 	require.Equal(t, map[string]string{
 		"github.com/example/spec-a":      "v0.3.0",
 		"github.com/example/deep/spec-b": "v1.4.2",

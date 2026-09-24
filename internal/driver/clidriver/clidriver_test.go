@@ -152,9 +152,6 @@ func TestSyncPrintsWhatItWrote(t *testing.T) {
 	assert.Contains(t, h.out.String(), "ignored in golden-go/.gitignore")
 }
 
-// The sync verb consumes a distribution when a source is named: the flag
-// form here, the FORGE_DIST_MIRROR environment form below - the airgap
-// door, where the mirrored release assets are the bundle.
 func TestSyncConsumesADistributionWhenAsked(t *testing.T) {
 	t.Parallel()
 
@@ -191,8 +188,6 @@ func TestSyncConsumesTheMirrorNamedByTheEnvironment(t *testing.T) {
 	assert.Contains(t, h.out.String(), "tooling abc123def456")
 }
 
-// Toolchain binaries sync resolved are provisioned into the store, and
-// the report says what was built and what was reused.
 func TestSyncProvisionsTheResolvedToolchainBinaries(t *testing.T) {
 	t.Parallel()
 
@@ -213,8 +208,6 @@ func TestSyncProvisionsTheResolvedToolchainBinaries(t *testing.T) {
 	assert.Contains(t, h.out.String(), "installed mockery")
 }
 
-// Runtimes provision BEFORE the toolchain binaries: a binary's `go install`
-// needs the go the runtimes just stood up.
 func TestSyncProvisionsRuntimesBeforeBinaries(t *testing.T) {
 	t.Parallel()
 
@@ -358,8 +351,6 @@ func TestBumpRewritesTheFileAndSyncs(t *testing.T) {
 	h.recordWrites()
 	h.expectSync()
 
-	// A bump proves its own version: sync writes the manifests, and the
-	// lock is what fails when the new version resolves nowhere.
 	h.sync.EXPECT().Lock(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(synccontroller.Report{Root: "/w"}, nil).Once()
 
@@ -581,9 +572,6 @@ func TestAPathOutsideTheRootPrintsWhole(t *testing.T) {
 	assert.Contains(t, h.out.String(), "/absolute/go.work")
 }
 
-// lock is its own verb: sync writes manifests and stops, and this is what
-// resolves the closure. A lock that could not resolve leaves every member
-// unbuildable, so reporting it and exiting zero would be a lie.
 func TestALockThatCouldNotResolveFails(t *testing.T) {
 	t.Parallel()
 
@@ -986,8 +974,6 @@ func TestBootstrapNeedsAFactoryURL(t *testing.T) {
 	require.ErrorIs(t, h.driver.Run(t.Context(), []string{"bootstrap"}), clidriver.ErrUsage)
 }
 
-// cache clean is the one last-resort verb: everything under the cache is
-// derived, so removing it is always safe and the next run rebuilds it.
 func TestCacheCleanRemovesTheCacheDir(t *testing.T) {
 	h := newHarness(t)
 
@@ -1019,9 +1005,6 @@ func TestCacheWithoutCleanIsAUsageError(t *testing.T) {
 }
 
 func TestCacheRefusesAnythingButClean(t *testing.T) {
-	// clean is the only verb, and it deletes a directory. A misspelling that
-	// fell through to the default would delete the cache the user did not ask
-	// to delete.
 	for _, args := range [][]string{
 		{"cache", "wipe"},
 		{"cache", "clean", "extra"},
@@ -1035,8 +1018,6 @@ func TestCacheRefusesAnythingButClean(t *testing.T) {
 func TestCacheRefusesAnUnknownFlag(t *testing.T) {
 	h := newHarness(t)
 
-	// An ignored flag makes the operator think they cleaned a directory they
-	// did not clean.
 	require.Error(t, h.driver.Run(context.Background(), []string{"cache", "clean", "--nope"}))
 }
 
@@ -1065,10 +1046,6 @@ func TestCacheSaysSoWhenThereIsNoUserCache(t *testing.T) {
 	require.ErrorContains(t, err, "finding the cache directory")
 }
 
-// --root arrives verbatim from a CI recipe, and ".." is the form the recipe
-// prints. It used to reach go work sync as GOWORK=../go.work, which go
-// refuses outright, so the sync reported the workspace unbuildable and
-// exited before provisioning any tooling.
 func TestARelativeRootIsMadeAbsolute(t *testing.T) {
 	h := newHarness(t)
 

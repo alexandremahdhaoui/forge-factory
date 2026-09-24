@@ -343,13 +343,8 @@ const LockManifestPath = ".forge/dependency-locks.json"
 
 const ToolchainImagePath = ".forge/toolchain-image"
 
-// EnginesPath is where sync writes the factory's engines by alias, the file
-// forge reads as the outer ring of its engine registry.
 const EnginesPath = ".forge/engines.yaml"
 
-// RenderEngines is the registry document: one alias to engine pair per
-// factory engine, in the factory's order, and nothing a member did not
-// declare in its factory.
 func RenderEngines(engines []config.Engine) []byte {
 	var b bytes.Buffer
 

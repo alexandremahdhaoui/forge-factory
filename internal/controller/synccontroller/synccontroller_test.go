@@ -874,8 +874,6 @@ func TestSyncLeavesAConvergedToolchainImageAlone(t *testing.T) {
 	assert.NotContains(t, report.Written, ".forge/toolchain-image")
 }
 
-// The factory's engines are written by alias for every member to consult,
-// and a converged file is left alone.
 func TestSyncWritesTheFactoryEnginesAsTheOuterRegistryRing(t *testing.T) {
 	t.Parallel()
 

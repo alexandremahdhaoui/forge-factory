@@ -78,8 +78,6 @@ func (d *Driver) Run(ctx context.Context, args []string) error {
 
 	verb := args[0]
 
-	// run, bootstrap and cache need no local factory file: the target,
-	// the bootstrap URL or the cache directory names everything.
 	switch verb {
 	case "run":
 		return d.runRun(ctx, args[1:])
@@ -118,8 +116,6 @@ func (d *Driver) Run(ctx context.Context, args []string) error {
 	}
 }
 
-// runClone fetches what is missing and then syncs, because a member with no
-// manifest is not yet something forge can build.
 func (d *Driver) runClone(ctx context.Context, f config.Factory, path, root string) error {
 	report, err := d.clone.Clone(ctx, f, root)
 	if err != nil {
@@ -160,7 +156,7 @@ func (d *Driver) runSync(ctx context.Context, f config.Factory, path, root strin
 	}
 
 	if d.prune {
-		d.prune = false // one pass: the re-sync must not loop
+		d.prune = false
 
 		updated, pruned, err := d.pruneDeadPins(path, report)
 		if err != nil {
@@ -201,9 +197,6 @@ func renderTake(report synccontroller.TakeReport) string {
 	return b.String()
 }
 
-// runLock resolves the dependency closure the manifests name. It is its own
-// verb because cloning is not building: sync writes manifests and stops,
-// and the build phase is what calls this.
 func (d *Driver) runLock(ctx context.Context, f config.Factory, root string) error {
 	report, err := d.sync.Lock(ctx, f, root, "")
 	if err != nil {
@@ -214,9 +207,6 @@ func (d *Driver) runLock(ctx context.Context, f config.Factory, root string) err
 		return err
 	}
 
-	// A lock that could not resolve leaves every member unbuildable.
-	// Reporting that and exiting zero is a lie, so it is an error unless
-	// the caller says it is offline on purpose.
 	if len(report.Unlocked) > 0 && !d.offline {
 		return fmt.Errorf("%w: %s", ErrUnlocked, report.Unlocked[0])
 	}
@@ -224,12 +214,6 @@ func (d *Driver) runLock(ctx context.Context, f config.Factory, root string) err
 	return nil
 }
 
-// applyTooling provisions what sync resolved: a distribution when a source
-// is in reach (the --tooling-from flag, else the FORGE_DIST_MIRROR
-// environment - the airgap door, where the mirrored release assets ARE the
-// bundle), every declared runtime, and every declared toolchain binary at
-// its pinned version. Runtimes go first: a binary's `go install` needs the
-// go the runtimes provision.
 func (d *Driver) applyTooling(ctx context.Context, f config.Factory, root string, sync synccontroller.Report) error {
 	if d.tooling == nil {
 		return nil
@@ -340,8 +324,6 @@ func renderTooling(report toolingcontroller.Report) string {
 	return b.String()
 }
 
-// pruneDeadPins deletes the soft pins the resolver named dead, so the factory
-// file ends the run already clean. It acts only on what the notes said.
 func (d *Driver) pruneDeadPins(
 	path string,
 	report synccontroller.Report,
@@ -388,10 +370,6 @@ func (d *Driver) pruneDeadPins(
 	return updated, true, nil
 }
 
-// runCache owns the derived cache: mirrors, run materialisations and warm
-// markers under the user cache. clean removes the whole thing; every entry
-// rebuilds itself on the next run, so the command needs no flags and asks
-// no questions. The verified tool store is not the cache and stays.
 func (d *Driver) runCache(args []string) error {
 	if len(args) == 0 || args[0] != "clean" {
 		return errors.New("usage: forge-factory cache clean")
@@ -430,8 +408,6 @@ func (d *Driver) runCache(args []string) error {
 	return d.write(fmt.Sprintf("cache: removed %s - the next run rebuilds it", dir))
 }
 
-// runRun materialises the context a runnable needs and delegates execution
-// to forge, propagating the program's exit code verbatim.
 func (d *Driver) runRun(ctx context.Context, args []string) error {
 	req := runcontroller.Request{}
 
@@ -490,8 +466,6 @@ func (d *Driver) runRun(ctx context.Context, args []string) error {
 	return nil
 }
 
-// runBootstrap places a factory's workspace files, then clones every member
-// and syncs: one command from nothing to a working workspace.
 func (d *Driver) runBootstrap(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
 	fs.SetOutput(d.out)
@@ -615,9 +589,6 @@ func (d *Driver) runBump(
 		return err
 	}
 
-	// A bump is a deliberate version change, and proving the new version
-	// resolves is its point: a bump to a version nobody can resolve used to
-	// report success and leave every member unbuildable, which is a lie.
 	return d.runLock(ctx, updated, root)
 }
 
@@ -679,18 +650,10 @@ func (d *Driver) load(
 		return config.Factory{}, "", "", nil, fmt.Errorf("reading %s: %w", *path, err)
 	}
 
-	// The canary is the one caller that must see the candidate index, not the
-	// published tag - it exists to test what the pin would hide.
 	if *registerHead && f.Register != nil {
 		f.Register.Revision = ""
 	}
 
-	// The root is absolute from here on, whichever way it arrived. A
-	// relative --root reached go work sync as GOWORK=../go.work, which go
-	// refuses outright: "invalid GOWORK: not an absolute path". The sync
-	// then reported the workspace as unbuildable and exited before
-	// provisioning any tooling, so "--root .." - the form the CI recipe
-	// prints - skipped the whole toolchain step and failed.
 	if *root == "" {
 		abs, err := filepath.Abs(*path)
 		if err != nil {
@@ -846,7 +809,6 @@ func short(sha string) string {
 	return sha
 }
 
-// Usage is what main prints when it is called with nothing.
 func Usage() string {
 	return `forge-factory - one factory file, every workspace file generated from it
 

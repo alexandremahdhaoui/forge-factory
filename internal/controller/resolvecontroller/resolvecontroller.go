@@ -1,9 +1,3 @@
-// Package resolvecontroller turns dependency entries into concrete versions.
-// A legacy string passes through verbatim; a register entry resolves from the
-// register at the pinned revision - consumers consume tags - or from the
-// checkout as it stands when no revision is pinned. Resolution is strict: a
-// missing package or track fails loud and files a request, an advisory
-// pierces every pin, and a pin is never silent.
 package resolvecontroller
 
 import (
@@ -27,31 +21,16 @@ import (
 )
 
 var (
-	// ErrNoRegister means an entry resolves from the register and the
-	// register checkout is nowhere to be found.
-	ErrNoRegister = errors.New("the register checkout is missing")
-	// ErrUnregistered means the register does not carry the package or track
-	// an entry names. A request was filed; the pipeline answers it.
+	ErrNoRegister   = errors.New("the register checkout is missing")
 	ErrUnregistered = errors.New("not in the register")
-	// ErrAdvisory means a resolved version carries a security advisory. An
-	// advisory pierces every pin.
-	ErrAdvisory = errors.New("security advisory")
-	// ErrExpired means a hard pin outlived its expires date.
-	ErrExpired = errors.New("pin expired")
-	// ErrDeprecated means a track's deprecation outlived the register's
-	// grace window.
-	ErrDeprecated = errors.New("deprecated past grace")
+	ErrAdvisory     = errors.New("security advisory")
+	ErrExpired      = errors.New("pin expired")
+	ErrDeprecated   = errors.New("deprecated past grace")
 )
 
-// Resolver resolves one language's dependency entries to versions.
 type Resolver interface {
 	Resolve(ctx context.Context, f config.Factory, root, language string, deps map[string]config.DependencySpec) (map[string]string, []string, error)
-	// ResolveTool answers the version pinning one toolchain binary from a
-	// register track named "<ecosystem>:<package>".
 	ResolveTool(ctx context.Context, f config.Factory, root, track string) (string, []string, error)
-	// ResolveMembers answers the version of every workspace member module
-	// the register carries an internal track for, so a shared spec is
-	// governed by the register rather than by whatever tag tidy finds.
 	ResolveMembers(ctx context.Context, f config.Factory, root, language string) (map[string]string, error)
 }
 
@@ -60,22 +39,14 @@ type Controller struct {
 	git gitadapter.Git
 	now func() time.Time
 
-	// warnedUnpushed dedupes the local-only-entries warning per register
-	// checkout. Resolution runs sequentially within one sync, so a plain
-	// map is enough.
 	warnedUnpushed map[string]bool
 
-	// reach asks whether a finding's code is in the build at all. It runs
-	// only when a finding already blocks, and never changes whether it does.
 	reach reachability
 }
 
 var _ Resolver = (*Controller)(nil)
 
 func New(fs fsadapter.FS, git gitadapter.Git, now func() time.Time, opts ...Option) *Controller {
-	// No reachability by default. The driver wires it, because deciding to
-	// shell out to another binary belongs to the composition root rather
-	// than to a constructor everything calls.
 	c := &Controller{
 		fs: fs, git: git, now: now,
 		warnedUnpushed: map[string]bool{},
@@ -88,27 +59,18 @@ func New(fs fsadapter.FS, git gitadapter.Git, now func() time.Time, opts ...Opti
 	return c
 }
 
-// Option configures the resolver.
 type Option func(*Controller)
 
-// WithReachability replaces how the reachability engine is run. The engine is
-// an enrichment on a failing path, so a test needs the seam more than
-// production does.
 func WithReachability(run func(ctx context.Context, dirs []string, stdin []byte) ([]byte, error)) Option {
 	return func(c *Controller) { c.reach = reachability{run: run} }
 }
 
-// registerParams is the slice of the register's own config a consumer reads.
-// The knobs are register-level; a consumer reads them and never sets them.
 type registerParams struct {
 	Params struct {
 		DeprecatedGraceDays int `json:"deprecatedGraceDays"`
 	} `json:"params"`
 }
 
-// view reads the register index either from the worktree or, when a revision
-// is pinned, from that revision - which is how "consumers consume tags" is
-// enforced rather than conventional.
 type view struct {
 	c         *Controller
 	ctx       context.Context
@@ -193,20 +155,12 @@ func (c *Controller) Resolve(ctx context.Context, f config.Factory, root, langua
 	return out, notes, nil
 }
 
-// ResolveTool answers the version pinning one toolchain binary: the named
-// track's current version, under the same advisory and deprecation rules
-// every dependency resolves under. A missing package files an admission
-// request, exactly like a dependency would.
 func (c *Controller) ResolveTool(ctx context.Context, f config.Factory, root, track string) (string, []string, error) {
 	ecosystem, pkg, ok := strings.Cut(track, ":")
 	if !ok || ecosystem == "" || pkg == "" {
 		return "", nil, fmt.Errorf("toolchain track %q is named <ecosystem>:<package>", track)
 	}
 
-	// A toolchain binary accepts a finding the same way a dependency does.
-	// Without this the gate refused and the error told the operator to write
-	// yaml the schema then rejected, so a finding on a toolchain binary
-	// bricked sync with no way out.
 	spec := config.DependencySpec{}
 
 	if f.Toolchain != nil {
@@ -254,18 +208,9 @@ func (c *Controller) resolveEntry(ctx context.Context, f config.Factory, root, l
 		}
 	}
 
-	// An advisory pierces every pin: whatever a pin froze, a track whose
-	// current carries a finding fails the resolution until the finding is
-	// acknowledged by name. The gate also says, out loud, when a package was
-	// never checked at all - which is not the same as being clean, and used
-	// to be recorded as if it were.
 	gateNotes, gateErr := advisoryGate{
 		language: language, name: name, track: track,
 		acks: d.Acknowledge, now: c.now(),
-		// The modules that would import this dependency, not the register
-		// checkout. Asking the register whether IT imports the vulnerable
-		// package answered a question nobody asked, and printed the answer
-		// as a fact about the operator's own code.
 		modules: memberDirs(f, root, language), reach: c.reach, ctx: ctx,
 	}.decide()
 
@@ -300,9 +245,6 @@ func (c *Controller) resolveEntry(ctx context.Context, f config.Factory, root, l
 	return version, notes, nil
 }
 
-// applyPin floors the track with a soft pin or freezes it with a hard one,
-// and always explains itself. A soft pin ahead of its track doubles as the
-// upgrade request.
 func (c *Controller) applyPin(v view, language, name string, d config.DependencySpec, track spec.Track) (string, []string, error) {
 	where := fmt.Sprintf("%s:%s", language, name)
 
@@ -326,8 +268,6 @@ func (c *Controller) applyPin(v view, language, name string, d config.Dependency
 	}
 
 	if compareVersions(d.Pin, track.Current) > 0 {
-		// A cache materialisation takes no filings: the pin still floors the
-		// track, and the retire request waits for a real checkout's sync.
 		if c.cacheCheckout(v.dir) {
 			return d.Pin, []string{fmt.Sprintf(
 				"soft pin %s %s (reason: %s) is ahead of track %s (%s)",
@@ -351,9 +291,6 @@ func (c *Controller) applyPin(v view, language, name string, d config.Dependency
 		where, d.Pin, track.Prefix, track.Current)}, nil
 }
 
-// DeadPin reads a note back: when it names a pin for removal, it answers the
-// language:name the pin sits on. The note format and this parser live side by
-// side, so sync --prune-pins acts on exactly what the resolver said.
 func DeadPin(note string) (string, bool) {
 	if !strings.HasSuffix(note, "remove this pin") {
 		return "", false
@@ -367,9 +304,6 @@ func DeadPin(note string) (string, bool) {
 	return fields[2], true
 }
 
-// memberDirs names every member repo that speaks a language, which is who
-// actually gets the dependency: a workspace declares it once and every member
-// of that language receives it. The reachability question spans all of them.
 func memberDirs(f config.Factory, root, language string) []string {
 	var dirs []string
 
@@ -388,8 +322,6 @@ func memberDirs(f config.Factory, root, language string) []string {
 	return dirs
 }
 
-// registerDir finds the register checkout: an explicit path, or the directory
-// the URL names, rooted in the workspace.
 func (c *Controller) registerDir(f config.Factory, root string) (string, error) {
 	if f.Register == nil {
 		return "", fmt.Errorf("%w: no register block", ErrNoRegister)
@@ -437,8 +369,6 @@ func (c *Controller) track(v view, language, name string, d config.DependencySpe
 			return spec.Track{}, unfiledError(v, language, name, ErrUnregistered)
 		}
 
-		// The package may carry other tracks: then this is an open-track
-		// request, judged by the deny policies, not an admission.
 		kind := spec.Admission
 
 		if others, lerr := v.list(path.Join("index", language, name)); lerr == nil && len(others) > 0 {
@@ -462,18 +392,6 @@ func (c *Controller) track(v view, language, name string, d config.DependencySpe
 		return spec.Track{}, fmt.Errorf("decoding track %s: %w", rel, err)
 	}
 
-	// The outcome is what tells a measured-clean package from one nobody
-	// ever asked about, and every rule downstream switches on it. An absent
-	// or misspelled one matched no case and resolved green with no note -
-	// exactly the "clean when nothing was measured" this wave exists to
-	// remove, reachable by editing one line of a shared file.
-	//
-	// One absence is legitimate: a proof-published internal entry. The
-	// register's publish verb asks no feed and records nothing it did not
-	// measure, so the outcome is empty exactly when provenance names the
-	// proving revision - and the advisory gate turns that into an
-	// unexamined note rather than silence. Empty WITHOUT provenance is
-	// still a malformed record.
 	if !track.Outcome.Valid() {
 		proof := string(track.Outcome) == "" &&
 			track.Provenance != nil && *track.Provenance != ""
@@ -489,7 +407,6 @@ func (c *Controller) track(v view, language, name string, d config.DependencySpe
 	return track, nil
 }
 
-// defaultTrack is the highest prefix the register carries for the package.
 func (c *Controller) defaultTrack(v view, language, name string) (string, error) {
 	entries, err := v.list(path.Join("index", language, name))
 	if err != nil {
@@ -501,7 +418,7 @@ func (c *Controller) defaultTrack(v view, language, name string) (string, error)
 	for _, e := range entries {
 		prefix := strings.TrimSuffix(e, ".json")
 		if prefix == e {
-			continue // a directory, not a track file
+			continue
 		}
 
 		if best == "" || compareVersions(prefix, best) > 0 {
@@ -542,11 +459,6 @@ type request struct {
 	reason  string
 }
 
-// cacheCheckout reports whether the register checkout is a materialisation
-// under the run cache rather than a checkout a person works in: a cache
-// materialisation is a git worktree, whose .git is a link file, while a real
-// checkout carries a .git directory. A request filed into the cache is
-// answered by nothing, so filing there is worse than refusing.
 func (c *Controller) cacheCheckout(dir string) bool {
 	gitPath := filepath.Join(dir, ".git")
 
@@ -560,11 +472,6 @@ func (c *Controller) cacheCheckout(dir string) bool {
 	return err == nil && !isDir
 }
 
-// unpushedNote warns once per register checkout when its entries exist only
-// locally: a colleague's fresh clone resolves against origin, so an
-// admission that never left this machine reads as "not in the register"
-// everywhere else. A cache materialisation is detached and skipped, and a
-// checkout that cannot answer (offline, no origin) stays silent.
 func (c *Controller) unpushedNote(ctx context.Context, v view) string {
 	if v.rev != "" || c.warnedUnpushed[v.dir] || c.cacheCheckout(v.dir) {
 		return ""
@@ -582,11 +489,6 @@ func (c *Controller) unpushedNote(ctx context.Context, v view) string {
 		v.dir, ahead)
 }
 
-// staleHint names the second reason a package reads as unregistered: the
-// checkout is behind its origin and the admission may already sit there.
-// A fetch only updates remote-tracking refs, so it is safe on the user's
-// checkout; a checkout that cannot answer (offline, no origin) stays
-// silent and the plain failure stands.
 func (c *Controller) staleHint(v view) string {
 	if err := c.git.Fetch(v.ctx, v.dir); err != nil {
 		return ""
@@ -602,9 +504,6 @@ func (c *Controller) staleHint(v view) string {
 		behind, v.dir)
 }
 
-// unfiledError is the honest failure for a cache materialisation: nothing is
-// filed, because nothing would ever answer it, and the message names the
-// real register and the commands that admit the package there.
 func unfiledError(v view, language, name string, cause error) error {
 	where := v.url
 	if where == "" {
@@ -698,8 +597,6 @@ func requestPhrase(key string, filed bool) string {
 	return "request " + key + " is already open"
 }
 
-// graceWindow reads the register's own deprecatedGraceDays. The knob is
-// register-level: readable by every consumer, settable by none.
 func (c *Controller) graceWindow(dir string) time.Duration {
 	const fallback = 30
 
@@ -726,9 +623,6 @@ func parseDate(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("not a date (want 2006-01-02 or RFC3339)")
 }
 
-// compareVersions orders dotted versions numerically, tolerating a leading v
-// and sorting a pre-release below its release. The same ordering the register
-// uses.
 func compareVersions(a, b string) int {
 	ap, apre := parseVersion(a)
 	bp, bpre := parseVersion(b)
@@ -786,9 +680,6 @@ func parseVersion(s string) ([]int, string) {
 			continue
 		}
 
-		// PEP 440 spells pre-releases with no hyphen (1.0.dev5, 1.0rc1):
-		// any non-numeric segment joins the pre-release tail, with leading
-		// digits kept numeric - the same reading the register uses.
 		digits := len(r) - len(strings.TrimLeft(r, "0123456789"))
 		if digits > 0 {
 			n, _ := strconv.Atoi(r[:digits])
