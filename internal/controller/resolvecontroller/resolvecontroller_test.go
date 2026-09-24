@@ -217,6 +217,81 @@ func TestResolveNamesEveryMissingPackageInOneError(t *testing.T) {
 	require.ErrorContains(t, err, "go:example.com/second-absent is not in the register")
 }
 
+func controllerAt(at time.Time) *resolvecontroller.Controller {
+	return resolvecontroller.New(fsadapter.New(), gitadapter.New(execadapter.New()),
+		func() time.Time { return at })
+}
+
+func TestEveryFilingPathFilesNothingWhileARequestIsOpen(t *testing.T) {
+	for name, tc := range map[string]struct {
+		deps map[string]config.DependencySpec
+		pkg  string
+	}{
+		"admission":  {map[string]config.DependencySpec{"example.com/absent": {}}, "absent"},
+		"open track": {map[string]config.DependencySpec{"example.com/pkg": {Track: "2", Reason: "needs v2"}}, "pkg"},
+		"upgrade": {map[string]config.DependencySpec{"example.com/pkg": {
+			Track: "1", Pin: "v1.7.0", Mode: "soft", Reason: "needs the new parser",
+		}}, "pkg"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+
+			_, firstNotes, firstErr := controllerAt(now).Resolve(context.Background(), f, root, "go", tc.deps)
+			require.Contains(t, said(firstNotes, firstErr), "filed go/example.com/"+tc.pkg+"/")
+
+			_, notes, err := controllerAt(now.Add(time.Hour)).Resolve(context.Background(), f, root, "go", tc.deps)
+			require.Contains(t, said(notes, err), "is already open")
+
+			filed, globErr := filepath.Glob(filepath.Join(root, "golden-register", "request", "go", "example.com", tc.pkg, "*.json"))
+			require.NoError(t, globErr)
+			require.Len(t, filed, 1)
+		})
+	}
+}
+
+func said(notes []string, err error) string {
+	if err != nil {
+		notes = append(notes, err.Error())
+	}
+
+	return strings.Join(notes, "\n")
+}
+
+func TestARequestWithAVerdictDoesNotCountAsOpen(t *testing.T) {
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+	deps := map[string]config.DependencySpec{"example.com/absent": {}}
+	requests := filepath.Join(root, "golden-register", "request", "go", "example.com", "absent")
+	verdicts := filepath.Join(root, "golden-register", "verdict", "go", "example.com", "absent")
+
+	_, _, err := controllerAt(now).Resolve(context.Background(), f, root, "go", deps)
+	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
+
+	filed, err := filepath.Glob(filepath.Join(requests, "*.json"))
+	require.NoError(t, err)
+	require.Len(t, filed, 1)
+	require.NoError(t, os.MkdirAll(verdicts, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(verdicts, filepath.Base(filed[0])), []byte("{}"), 0o600))
+
+	_, _, err = controllerAt(now.Add(time.Hour)).Resolve(context.Background(), f, root, "go", deps)
+	require.ErrorContains(t, err, "filed go/example.com/absent/")
+
+	filed, err = filepath.Glob(filepath.Join(requests, "*.json"))
+	require.NoError(t, err)
+	require.Len(t, filed, 2)
+}
+
+func TestAnUnlistableRequestDirectoryFailsByNameRatherThanFilingBlind(t *testing.T) {
+	f, root := register(t, map[string]string{"go/example.com/pkg/1": track("v1.6.0")})
+	requests := filepath.Join(root, "golden-register", "request", "go", "example.com")
+	require.NoError(t, os.MkdirAll(requests, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(requests, "absent"), []byte("not a directory"), 0o600))
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go",
+		map[string]config.DependencySpec{"example.com/absent": {}})
+	require.ErrorContains(t, err, "listing the requests filed for go:example.com/absent")
+	require.NotErrorIs(t, err, resolvecontroller.ErrUnregistered)
+}
+
 func TestResolveStopsAtOnceOnAnErrorThatIsNotAMissingPackage(t *testing.T) {
 	f, root := register(t, map[string]string{"go/example.com/b-corrupt/1": "{not json"})
 

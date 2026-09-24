@@ -1532,6 +1532,92 @@ engines:
     engine: forge://example.com/lang-rust
 `
 
+func registerRoot(t *testing.T) string {
+	t.Helper()
+
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "golden-register"), 0o750))
+
+	return root
+}
+
+func syncAgainstARealRegister(t *testing.T, root, raw string, now func() time.Time) (*harness, error) {
+	t.Helper()
+
+	h := newHarness(t)
+	h.envrcExists(t, true)
+	h.identityAnswers()
+	h.recordWrites()
+	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner,
+		resolvecontroller.New(fsadapter.New(), gitadapter.New(execadapter.New()), now))
+
+	for uri, language := range map[string]string{
+		"forge://example.com/lang-go":   "go",
+		"forge://example.com/lang-rust": "rust",
+	} {
+		h.caller.EXPECT().Call(mock.Anything, uri, synccontroller.ToolLanguage, mock.Anything, mock.Anything).
+			RunAndReturn(func(_ context.Context, _, _ string, _, out any) error {
+				return json.Unmarshal([]byte(`{"language":"`+language+`"}`), out)
+			}).Maybe()
+	}
+
+	h.caller.EXPECT().Call(mock.Anything, mock.Anything, synccontroller.ToolRender, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, _, _ string, _, out any) error {
+			return json.Unmarshal([]byte(`{"files":[]}`), out)
+		}).Maybe()
+
+	_, err := h.c.Sync(t.Context(), parse(t, raw), root, "")
+
+	return h, err
+}
+
+func TestASecondSyncFilesNoSecondRequestWhileTheFirstIsOpen(t *testing.T) {
+	t.Parallel()
+
+	root := registerRoot(t)
+	first := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+
+	_, err := syncAgainstARealRegister(t, root, oneMissingFactory, func() time.Time { return first })
+	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
+	require.ErrorContains(t, err, "filed go/example.com/missing-lib/")
+
+	_, err = syncAgainstARealRegister(t, root, oneMissingFactory, func() time.Time { return first.Add(time.Hour) })
+	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
+	require.ErrorContains(t, err, "is already open")
+
+	require.Len(t, filedRequests(t, root), 1)
+}
+
+const oneMissingFactory = twoLanguageFactory + `dependencies:
+  go:
+    example.com/missing-lib: {}
+`
+
+func filedRequests(t *testing.T, root string) []string {
+	t.Helper()
+
+	filed, err := filepath.Glob(filepath.Join(root, "golden-register", "request", "go", "example.com", "missing-lib", "*.json"))
+	require.NoError(t, err)
+
+	return filed
+}
+
+func TestAFiledRequestNamesTheFactoryAsItsRequester(t *testing.T) {
+	t.Parallel()
+
+	root := registerRoot(t)
+
+	_, err := syncAgainstARealRegister(t, root, oneMissingFactory, time.Now)
+	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
+
+	filed := filedRequests(t, root)
+	require.Len(t, filed, 1)
+
+	request, err := os.ReadFile(filed[0])
+	require.NoError(t, err)
+	assert.Contains(t, string(request), `"requester":"golden"`)
+}
+
 func TestOneSyncNamesEveryMissingPackageInOneError(t *testing.T) {
 	t.Parallel()
 
@@ -1553,19 +1639,7 @@ toolchain:
     track: internal:ghcr.io/owner/missing-image
 `
 
-	root := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(root, "golden-register"), 0o750))
-
-	h := newHarness(t)
-	h.envrcExists(t, true)
-	h.identityAnswers()
-	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner,
-		resolvecontroller.New(fsadapter.New(), gitadapter.New(execadapter.New()), time.Now))
-	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
-	h.answers("forge://example.com/lang-rust", "language", map[string]any{"language": "rust"})
-	h.recordWrites()
-
-	_, err := h.c.Sync(t.Context(), parse(t, threeMissing), root, "")
+	h, err := syncAgainstARealRegister(t, registerRoot(t), threeMissing, time.Now)
 	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
 	require.ErrorContains(t, err, "go:example.com/missing-lib is not in the register")
 	require.ErrorContains(t, err, "go:example.com/other-missing-lib is not in the register")

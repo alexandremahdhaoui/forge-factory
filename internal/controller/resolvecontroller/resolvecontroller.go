@@ -110,13 +110,12 @@ type registerParams struct {
 // is pinned, from that revision - which is how "consumers consume tags" is
 // enforced rather than conventional.
 type view struct {
-	c   *Controller
-	ctx context.Context
-	dir string
-	rev string
-	// url names the register remote, so a failure in a cache
-	// materialisation can point at the real register to fix.
-	url string
+	c         *Controller
+	ctx       context.Context
+	dir       string
+	rev       string
+	url       string
+	requester string
 }
 
 func (v view) read(rel string) (string, bool, error) {
@@ -229,7 +228,7 @@ func (c *Controller) resolveEntry(ctx context.Context, f config.Factory, root, l
 		return "", nil, err
 	}
 
-	v := view{c: c, ctx: ctx, dir: dir, rev: f.Register.Revision, url: f.Register.URL}
+	v := view{c: c, ctx: ctx, dir: dir, rev: f.Register.Revision, url: f.Register.URL, requester: f.Name}
 
 	var notes []string
 
@@ -335,7 +334,7 @@ func (c *Controller) applyPin(v view, language, name string, d config.Dependency
 				where, d.Pin, d.Reason, track.Prefix, track.Current)}, nil
 		}
 
-		key, err := c.fileRequest(v.dir, language, name, request{
+		key, filed, err := c.fileRequest(v, language, name, request{
 			kind: spec.Upgrade, version: d.Pin, track: track.Prefix, reason: d.Reason,
 		})
 		if err != nil {
@@ -343,8 +342,8 @@ func (c *Controller) applyPin(v view, language, name string, d config.Dependency
 		}
 
 		return d.Pin, []string{fmt.Sprintf(
-			"soft pin %s %s (reason: %s) is ahead of track %s (%s) - filed %s so the pin can retire",
-			where, d.Pin, d.Reason, track.Prefix, track.Current, key)}, nil
+			"soft pin %s %s (reason: %s) is ahead of track %s (%s) - %s so the pin can retire",
+			where, d.Pin, d.Reason, track.Prefix, track.Current, requestPhrase(key, filed))}, nil
 	}
 
 	return track.Current, []string{fmt.Sprintf(
@@ -446,7 +445,7 @@ func (c *Controller) track(v view, language, name string, d config.DependencySpe
 			kind = spec.OpenTrack
 		}
 
-		key, ferr := c.fileRequest(v.dir, language, name, request{
+		key, filed, ferr := c.fileRequest(v, language, name, request{
 			kind: kind, track: d.Track, version: d.Pin, reason: d.Reason,
 		})
 		if ferr != nil {
@@ -454,8 +453,8 @@ func (c *Controller) track(v view, language, name string, d config.DependencySpe
 		}
 
 		return spec.Track{}, fmt.Errorf(
-			"%s:%s track %q is %w at %s; filed %s - the register pipeline answers it, then sync again%s",
-			language, name, prefix, ErrUnregistered, revLabel(v.rev), key, c.staleHint(v))
+			"%s:%s track %q is %w at %s; %s - the register pipeline answers it, then sync again%s",
+			language, name, prefix, ErrUnregistered, revLabel(v.rev), requestPhrase(key, filed), c.staleHint(v))
 	}
 
 	var track spec.Track
@@ -515,14 +514,14 @@ func (c *Controller) defaultTrack(v view, language, name string) (string, error)
 			return "", unfiledError(v, language, name, ErrUnregistered)
 		}
 
-		key, ferr := c.fileRequest(v.dir, language, name, request{kind: spec.Admission})
+		key, filed, ferr := c.fileRequest(v, language, name, request{kind: spec.Admission})
 		if ferr != nil {
 			return "", ferr
 		}
 
 		return "", fmt.Errorf(
-			"%s:%s is %w at %s; filed %s - the register pipeline answers it, then sync again%s",
-			language, name, ErrUnregistered, revLabel(v.rev), key, c.staleHint(v))
+			"%s:%s is %w at %s; %s - the register pipeline answers it, then sync again%s",
+			language, name, ErrUnregistered, revLabel(v.rev), requestPhrase(key, filed), c.staleHint(v))
 	}
 
 	return best, nil
@@ -617,17 +616,21 @@ func unfiledError(v view, language, name string, cause error) error {
 		language, name, cause, revLabel(v.rev), where, language, name)
 }
 
-// fileRequest writes a request into the register checkout's worktree. Filing
-// is not writing the index: requests are the register's only door, and the
-// pipeline answers them.
-func (c *Controller) fileRequest(dir, language, name string, r request) (string, error) {
+func (c *Controller) fileRequest(v view, language, name string, r request) (string, bool, error) {
+	open, found, err := c.openRequest(v.dir, language, name)
+	if err != nil || found {
+		return open, false, err
+	}
+
 	now := c.now()
+	requester := v.requester
 
 	wire := spec.Request{
 		Type:      r.kind,
 		Package:   name,
 		Ecosystem: spec.RequestEcosystem(language),
 		Reason:    "filed by forge-factory sync: the workspace factory names this",
+		Requester: &requester,
 		CreatedAt: now,
 	}
 
@@ -649,15 +652,50 @@ func (c *Controller) fileRequest(dir, language, name string, r request) (string,
 
 	payload, err := json.Marshal(wire)
 	if err != nil {
-		return "", fmt.Errorf("encoding the request: %w", err)
+		return "", false, fmt.Errorf("encoding the request: %w", err)
 	}
 
-	full := filepath.Join(dir, "request", filepath.FromSlash(key)+".json")
+	full := filepath.Join(v.dir, "request", filepath.FromSlash(key)+".json")
 	if err := c.fs.WriteFile(full, payload); err != nil {
-		return "", fmt.Errorf("filing the request: %w", err)
+		return "", false, fmt.Errorf("filing the request: %w", err)
 	}
 
-	return key, nil
+	return key, true, nil
+}
+
+func (c *Controller) openRequest(dir, language, name string) (string, bool, error) {
+	pkg := language + "/" + name
+
+	entries, err := c.fs.List(filepath.Join(dir, "request", filepath.FromSlash(pkg)))
+	if err != nil {
+		return "", false, fmt.Errorf("listing the requests filed for %s:%s: %w", language, name, err)
+	}
+
+	for _, entry := range entries {
+		stem, isRequest := strings.CutSuffix(entry, ".json")
+		if !isRequest {
+			continue
+		}
+
+		answered, err := c.fs.Exists(filepath.Join(dir, "verdict", filepath.FromSlash(pkg), entry))
+		if err != nil {
+			return "", false, fmt.Errorf("looking for the verdict on request %s/%s: %w", pkg, stem, err)
+		}
+
+		if !answered {
+			return pkg + "/" + stem, true, nil
+		}
+	}
+
+	return "", false, nil
+}
+
+func requestPhrase(key string, filed bool) string {
+	if filed {
+		return "filed " + key
+	}
+
+	return "request " + key + " is already open"
 }
 
 // graceWindow reads the register's own deprecatedGraceDays. The knob is
