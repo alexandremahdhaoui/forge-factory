@@ -489,14 +489,21 @@ func TestRunReportsAFactoryThatDoesNotParse(t *testing.T) {
 	assert.Contains(t, err.Error(), "reading forge-factory.yaml")
 }
 
-func TestRunReportsABadFlag(t *testing.T) {
+func TestABadFlagIsAUsageErrorOnEveryVerbThatParsesFlags(t *testing.T) {
 	t.Parallel()
 
-	h := newHarness(t)
+	for _, args := range [][]string{
+		{"sync", "--nope"},
+		{"run", "--nope"},
+		{"bootstrap", "--nope"},
+		{"cache", "clean", "--nope"},
+	} {
+		h := newHarness(t)
 
-	err := h.driver.Run(t.Context(), []string{"sync", "--nope"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing flags")
+		err := h.driver.Run(t.Context(), args)
+		require.ErrorIs(t, err, clidriver.ErrUsage, args[0])
+		assert.Contains(t, err.Error(), "parsing flags", args[0])
+	}
 }
 
 func TestSyncAndLockRefuseTheOnlyFlagAsAUsageError(t *testing.T) {

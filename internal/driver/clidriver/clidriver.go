@@ -379,7 +379,7 @@ func (d *Driver) runCache(args []string) error {
 	fs.SetOutput(d.out)
 	cache := fs.String("cache", "", "cache directory, defaults to the user cache")
 
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := parseFlags(fs, args[1:]); err != nil {
 		return err
 	}
 
@@ -418,8 +418,8 @@ func (d *Driver) runRun(ctx context.Context, args []string) error {
 	quiet := fs.Bool("quiet", false, "silence the progress lines")
 	cache := fs.String("cache", "", "cache directory, defaults to the user cache")
 
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("parsing flags: %w", err)
+	if err := parseFlags(fs, args); err != nil {
+		return err
 	}
 
 	rest := fs.Args()
@@ -472,8 +472,8 @@ func (d *Driver) runBootstrap(ctx context.Context, args []string) error {
 	quiet := fs.Bool("quiet", false, "silence the progress lines")
 	cache := fs.String("cache", "", "cache directory, defaults to the user cache")
 
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("parsing flags: %w", err)
+	if err := parseFlags(fs, args); err != nil {
+		return err
 	}
 
 	rest := fs.Args()
@@ -614,6 +614,14 @@ func (d *Driver) runCheckout(
 	return d.runSync(ctx, f, path, root)
 }
 
+func parseFlags(fs *flag.FlagSet, args []string) error {
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parsing flags: %w: %w", err, ErrUsage)
+	}
+
+	return nil
+}
+
 func (d *Driver) load(
 	verb string,
 	args []string,
@@ -632,8 +640,8 @@ func (d *Driver) load(
 	toolingFrom := fs.String("tooling-from", "",
 		"consume a distribution (a directory or an http(s) base URL) into the store and link .forge/bin; FORGE_DIST_MIRROR is the environment form")
 
-	if err := fs.Parse(args); err != nil {
-		return config.Factory{}, "", "", nil, fmt.Errorf("parsing flags: %w: %w", err, ErrUsage)
+	if err := parseFlags(fs, args); err != nil {
+		return config.Factory{}, "", "", nil, err
 	}
 
 	d.offline = *offline
