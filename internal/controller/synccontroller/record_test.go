@@ -1,10 +1,18 @@
 package synccontroller_test
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/execadapter"
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/synccontroller"
+	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/engineadaptermock"
+	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/execadaptermock"
+	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/repoadaptermock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -372,4 +380,99 @@ func TestARecordThatDidNotMoveIsNotRewritten(t *testing.T) {
 	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
 	assert.NotContains(t, report.Written, "/w/.forge/factory-generated.json")
+}
+
+const tidiedGoMod = "module example.com/g\n\nrequire sigs.k8s.io/yaml v1.6.0\n"
+
+func syncedAndLocked(t *testing.T) (string, *synccontroller.Controller) {
+	t.Helper()
+
+	root := t.TempDir()
+	member := filepath.Join(root, "golden-go")
+	caller := engineadaptermock.NewMockCaller(t)
+	repos := repoadaptermock.NewMockReader(t)
+	runner := execadaptermock.NewMockRunner(t)
+
+	repos.EXPECT().Identity(member).Return(map[string]string{"module": "example.com/g"}, nil).Maybe()
+	caller.EXPECT().Call(mock.Anything, mock.Anything, synccontroller.ToolLanguage, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, _, _ string, _, out any) error {
+			return json.Unmarshal([]byte(`{"language":"go"}`), out)
+		}).Maybe()
+	caller.EXPECT().Call(mock.Anything, mock.Anything, synccontroller.ToolRender, mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, _, _ string, _, out any) error {
+			raw, err := json.Marshal(map[string]any{
+				"files":          []map[string]any{{"path": filepath.Join(member, "go.mod"), "content": goMod}},
+				"dependencyLock": []map[string]any{{"dir": member, "command": "go", "args": []string{"mod", "tidy"}}},
+			})
+			if err != nil {
+				return err
+			}
+
+			return json.Unmarshal(raw, out)
+		}).Maybe()
+	runner.EXPECT().RunEnv(mock.Anything, member, mock.Anything, "go", "mod", "tidy").
+		RunAndReturn(func(context.Context, string, map[string]string, string, ...string) (execadapter.Result, error) {
+			return execadapter.Result{}, os.WriteFile(filepath.Join(member, "go.mod"), []byte(tidiedGoMod), 0o600)
+		}).Once()
+
+	c := synccontroller.New(caller, fsadapter.New(), repos, runner, passthrough{})
+
+	_, err := c.Sync(t.Context(), parse(t, factory), root, "")
+	require.NoError(t, err)
+
+	_, err = c.Lock(t.Context(), parse(t, factory), root, "")
+	require.NoError(t, err)
+
+	locked, err := os.ReadFile(filepath.Join(member, "go.mod"))
+	require.NoError(t, err)
+	require.Equal(t, tidiedGoMod, string(locked))
+
+	return root, c
+}
+
+func TestASyncAfterALockAcceptsTheFileTheLockRewrote(t *testing.T) {
+	t.Parallel()
+
+	root, c := syncedAndLocked(t)
+
+	_, err := c.Sync(t.Context(), parse(t, factory), root, "")
+	require.NoError(t, err)
+}
+
+func TestALockFailsByNameWhenItCannotReadWhatItLeftOnDisk(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		exists  error
+		message string
+	}{
+		"inspecting": {exists: assert.AnError, message: "inspecting /w/golden-go/go.mod as the lock left it"},
+		"reading":    {message: "reading /w/golden-go/go.mod as the lock left it: no manifest yet"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newHarness(t)
+			h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+			h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+			h.answers("forge://example.com/lang-go", "render", map[string]any{
+				"files": []map[string]any{{"path": "/w/golden-go/go.mod", "content": goMod}},
+			})
+			h.fs.EXPECT().Exists("/w/golden-go/go.mod").Return(tc.exists == nil, tc.exists).Once()
+
+			_, err := h.c.Lock(t.Context(), parse(t, factory), "/w", "")
+			require.ErrorContains(t, err, tc.message)
+		})
+	}
+}
+
+func TestAHandEditMadeAfterALockIsStillRefused(t *testing.T) {
+	t.Parallel()
+
+	root, c := syncedAndLocked(t)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "golden-go", "go.mod"),
+		[]byte(tidiedGoMod+"\nrequire example.com/by-hand v1.0.0\n"), 0o600))
+
+	_, err := c.Sync(t.Context(), parse(t, factory), root, "")
+	require.ErrorIs(t, err, synccontroller.ErrHandEdited)
 }

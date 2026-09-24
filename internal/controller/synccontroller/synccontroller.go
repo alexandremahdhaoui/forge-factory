@@ -308,7 +308,14 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 
 	var missing unregistered
 
-	commands, lockfiles, generated, digests, err := c.renderMembers(ctx, f, root, only, &report, false, nil, &missing)
+	commands, lockfiles, generated, _, err := c.renderMembers(ctx, f, root, only, &report, false, nil, &missing)
+	if err != nil {
+		return Report{}, err
+	}
+
+	lockErr := c.lock(ctx, commands, &report)
+
+	digests, err := c.digestsOnDisk(root, generated)
 	if err != nil {
 		return Report{}, err
 	}
@@ -317,8 +324,8 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 		return Report{}, err
 	}
 
-	if err := c.lock(ctx, commands, &report); err != nil {
-		return Report{}, err
+	if lockErr != nil {
+		return Report{}, lockErr
 	}
 
 	if err := c.recordLockfiles(root, lockfiles, &report); err != nil {
@@ -547,6 +554,30 @@ func WriteRecord(fs fsadapter.FS, root string, paths []string, digests Record) (
 	}
 
 	return target, true, nil
+}
+
+func (c *Controller) digestsOnDisk(root string, paths []string) (Record, error) {
+	out := Record{}
+
+	for _, path := range paths {
+		exists, err := c.fs.Exists(path)
+		if err != nil {
+			return nil, fmt.Errorf("inspecting %s as the lock left it: %w", path, err)
+		}
+
+		if !exists {
+			continue
+		}
+
+		raw, err := c.fs.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s as the lock left it: %w", path, err)
+		}
+
+		out[relative(root, path)] = Digest(raw)
+	}
+
+	return out, nil
 }
 
 func (c *Controller) recordGenerated(root string, paths []string, digests Record, report *Report) error {

@@ -483,6 +483,7 @@ func TestLockRunsWhatAnEngineDeclares(t *testing.T) {
 	})
 	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", map[string]string{"GOWORK": "off"},
 		"go", "mod", "tidy").Return(execadapter.Result{}, nil).Once()
+	h.fs.EXPECT().Exists("/w/golden-go/go.mod").Return(false, nil).Once()
 	h.recordWrites()
 
 	report, err := h.c.Lock(t.Context(), parse(t, factory), "/w", "")
