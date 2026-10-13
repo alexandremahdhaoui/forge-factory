@@ -1,6 +1,5 @@
 package rendertypes
 
-// Repo is one member of the workspace as a renderer sees it.
 type Repo struct {
 	Name      string
 	Path      string
@@ -8,7 +7,6 @@ type Repo struct {
 	Identity  map[string]string
 }
 
-// Input is everything a renderer needs to decide what to write.
 type Input struct {
 	Root         string
 	Repos        []Repo
@@ -16,8 +14,6 @@ type Input struct {
 	Dev          map[string]string
 }
 
-// Command is what to run after the files land. A generated go.mod names only
-// the direct requires, so a tidy is what puts the indirect ones back.
 type Command struct {
 	Dir      string
 	Command  string
@@ -26,21 +22,12 @@ type Command struct {
 	Optional bool
 }
 
-// Output is everything a renderer decided.
 type Output struct {
-	Files []File
-	// DependencyLock is the commands that resolve this language's dependency
-	// closure into its lockfile. Only a language engine knows them, and only
-	// the build phase runs them - a clone or sync writes manifests and stops.
+	Files          []File
 	DependencyLock []Command
-	// Lockfiles is the files those commands resolve into, absolute like
-	// every rendered path. The caller hashes and records them so a revision
-	// carries the exact closure it was proven with; only this engine knows
-	// their names.
-	Lockfiles []string
+	Lockfiles      []string
 }
 
-// File is one file a renderer wants written.
 type File struct {
 	Path       string
 	Content    string
@@ -48,7 +35,6 @@ type File struct {
 	AlsoIgnore []string
 }
 
-// Speaks reports whether a repo is written in a language.
 func (r Repo) Speaks(language string) bool {
 	for _, l := range r.Languages {
 		if l == language {

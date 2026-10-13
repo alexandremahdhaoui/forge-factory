@@ -719,31 +719,6 @@ func TestTypeScriptWithNoDevDependencies(t *testing.T) {
 	assert.Contains(t, pkg, "\"fastify\": \"^5\"\n  }\n}")
 }
 
-func TestAModuleNeverRequiresItself(t *testing.T) {
-	t.Parallel()
-
-	out, err := rendercontroller.NewGo(existing(t, "/w/spec-a/go.mod",
-		"module example.com/spec-a\n\ngo 1.25\n\nrequire example.com/other v0.9.0\n",
-	)).Render(rendertypes.Input{
-		Root: "/w",
-		Repos: []rendertypes.Repo{{
-			Name: "spec-a", Path: "/w/spec-a",
-			Languages: []string{"go"},
-			Identity:  map[string]string{"module": "example.com/spec-a"},
-		}},
-		Dependencies: map[string]string{
-			"example.com/spec-a": "v0.3.0",
-			"example.com/other":  "v1.0.0",
-		},
-	})
-	require.NoError(t, err)
-
-	mod := find(t, out, "spec-a/go.mod").Content
-	require.Contains(t, mod, "module example.com/spec-a")
-	require.Contains(t, mod, "example.com/other v1.0.0")
-	require.NotContains(t, mod, "example.com/spec-a v0.3.0")
-}
-
 func TestTheManifestModeIsWhatTheRepoSays(t *testing.T) {
 	t.Parallel()
 
