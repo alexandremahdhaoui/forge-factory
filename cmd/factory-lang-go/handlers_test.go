@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -257,13 +258,44 @@ func TestTheGoEngineTakesTheGoWorkLineFromTheGoModOfAMemberThatOwnsItsManifest(t
 		goModOf(t, out, filepath.Join(root, "go.work")))
 }
 
-func TestTheGoEngineRefusesAnUnreadableGoVersionByName(t *testing.T) {
+func TestTheGoEngineAcceptsExactlyTheDeclaredGoVersionsGoAcceptsInAGoLine(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := renderIdentity(t, "", map[string]string{"module": "example.com/renamed", "goVersion": "tip"})
+	for declared, accepted := range map[string]bool{
+		"1":         false,
+		"1.26":      true,
+		"1.26.0":    true,
+		"1.26rc1":   true,
+		"1.26.0rc1": true,
+		"tip":       false,
+		" 1.26":     false,
+	} {
+		t.Run(declared, func(t *testing.T) {
+			t.Parallel()
+
+			root, out, err := renderIdentity(t, "", map[string]string{"module": "example.com/renamed", "goVersion": declared})
+
+			if !accepted {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), fmt.Sprintf("member declares goVersion %q, which go rejects in a go line", declared))
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Contains(t, goModOf(t, out, filepath.Join(root, "member", "go.mod")), "\ngo "+declared+"\n")
+		})
+	}
+}
+
+func TestTheGoEngineRefusesAGoModWhoseGoLineGoRejectsAndNamesTheFileAndTheLine(t *testing.T) {
+	t.Parallel()
+
+	root, _, err := renderIdentity(t, "module example.com/old\n\ngo 1\n", map[string]string{"module": "example.com/renamed"})
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `"tip" is not a Go version`)
+	assert.Contains(t, err.Error(), filepath.Join(root, "member", "go.mod"))
+	assert.Contains(t, err.Error(), "line 3 cannot be read: go 1")
 }
 
 func TestTheGoEngineOrdersAReleaseCandidateBelowItsRelease(t *testing.T) {

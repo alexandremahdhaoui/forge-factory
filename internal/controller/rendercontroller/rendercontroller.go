@@ -98,6 +98,10 @@ func (g Go) Render(in rendertypes.Input) (rendertypes.Output, error) {
 	for _, r := range repos {
 		path := filepath.Join(r.Path, "go.mod")
 
+		if err := declaredGoVersionIsReadable(r); err != nil {
+			return rendertypes.Output{}, err
+		}
+
 		if ownsItsManifest(r) {
 			line, err := g.ownGoVersion(path, r)
 			if err != nil {
@@ -141,14 +145,9 @@ func (g Go) Render(in rendertypes.Input) (rendertypes.Output, error) {
 		files = append(files, file)
 	}
 
-	goVersion, err := workVersion(versions)
-	if err != nil {
-		return rendertypes.Output{}, err
-	}
-
 	var work strings.Builder
 
-	fmt.Fprintf(&work, "%s\ngo %s\n\nuse (\n", goHeader, goVersion)
+	fmt.Fprintf(&work, "%s\ngo %s\n\nuse (\n", goHeader, workVersion(versions))
 
 	for _, r := range repos {
 		fmt.Fprintf(&work, "\t./%s\n", r.Name)
@@ -274,16 +273,19 @@ func dependencyLock(root string, repos []rendertypes.Repo) []rendertypes.Command
 
 var ErrGoVersion = errors.New("a Go member carries an unreadable Go version")
 
-func workVersion(versions []string) (string, error) {
-	for _, v := range versions {
-		if !version.IsValid("go" + v) {
-			return "", fmt.Errorf("%w: %q is not a Go version", ErrGoVersion, v)
-		}
+func declaredGoVersionIsReadable(r rendertypes.Repo) error {
+	declared := r.Identity["goVersion"]
+	if declared == "" || gomod.ValidGoVersion(declared) {
+		return nil
 	}
 
+	return fmt.Errorf("%w: %s declares goVersion %q, which go rejects in a go line", ErrGoVersion, r.Name, declared)
+}
+
+func workVersion(versions []string) string {
 	return slices.MaxFunc(versions, func(a, b string) int {
 		return version.Compare("go"+a, "go"+b)
-	}), nil
+	})
 }
 
 type Rust struct{}

@@ -226,8 +226,8 @@ func TestEditRefusesALineWhoseTokenItCannotFindAndNamesTheLine(t *testing.T) {
 			`line 4 cannot be edited: 1.24: "go" is not on the line`,
 		},
 		"an old token missing after the anchor": {
-			"module example.com/m\n\ngo (\n\tgogo\n)\n",
-			`line 4 cannot be edited: gogo: "gogo" does not follow "go" on the line`,
+			"module example.com/m\n\ngo (\n\t1.24 // go\n)\n",
+			`line 4 cannot be edited: 1.24 // go: "1.24" does not follow "go" on the line`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -238,6 +238,37 @@ func TestEditRefusesALineWhoseTokenItCannotFindAndNamesTheLine(t *testing.T) {
 			assert.ErrorContains(t, err, tc.refusal)
 		})
 	}
+}
+
+func TestValidGoVersionAgreesWithGoOnWhatAGoLineAccepts(t *testing.T) {
+	t.Parallel()
+
+	for version, accepted := range map[string]bool{
+		"1":         false,
+		"1.26":      true,
+		"1.26.0":    true,
+		"1.26rc1":   true,
+		"1.26.0rc1": true,
+		" 1.26":     false,
+		"tip":       false,
+		"":          false,
+	} {
+		assert.Equal(t, accepted, gomod.ValidGoVersion(version), version)
+	}
+}
+
+func TestEveryReaderRefusesAGoLineGoRejectsAndNamesTheLine(t *testing.T) {
+	t.Parallel()
+
+	content := "module example.com/m\n\ngo 1\n"
+
+	_, err := gomod.GoVersion(content)
+	require.ErrorIs(t, err, gomod.ErrRefused)
+	assert.ErrorContains(t, err, "line 3 cannot be read: go 1")
+
+	_, err = gomod.Edit(content, "example.com/m", "1.26", nil)
+	require.ErrorIs(t, err, gomod.ErrRefused)
+	assert.ErrorContains(t, err, "line 3 cannot be read: go 1")
 }
 
 func TestEditKeepsTheGoLineWhenNoGoVersionIsGiven(t *testing.T) {

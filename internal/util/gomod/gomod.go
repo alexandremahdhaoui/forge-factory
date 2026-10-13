@@ -3,12 +3,19 @@ package gomod
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 )
 
 var ErrRefused = errors.New("go.mod refused")
+
+var goLineVersion = regexp.MustCompile(`^([1-9][0-9]*)\.(0|[1-9][0-9]*)(\.(0|[1-9][0-9]*))?([a-z]+[0-9]+)?$`)
+
+func ValidGoVersion(version string) bool {
+	return goLineVersion.MatchString(version)
+}
 
 func Edit(content, module, goVersion string, versions map[string]string) (string, error) {
 	set := map[string]string{"module": module, "go": goVersion}
@@ -119,7 +126,7 @@ func eachStatement(content string, visit func(verb string, args []string, line s
 			verb, args = fields[0], fields[1:]
 		}
 
-		if want, ok := arity[verb]; ok && !readable(args, want) {
+		if want, ok := arity[verb]; ok && !readable(verb, args, want) {
 			return "", fmt.Errorf("%w: line %d cannot be read: %s", ErrRefused, i+1, strings.TrimSpace(line))
 		}
 
@@ -154,8 +161,12 @@ func tokens(line string) ([]string, bool) {
 	return fields, true
 }
 
-func readable(args []string, want int) bool {
-	return len(args) == want && !slices.Contains(args, "(") && !slices.Contains(args, ")")
+func readable(verb string, args []string, want int) bool {
+	if len(args) != want || slices.Contains(args, "(") || slices.Contains(args, ")") {
+		return false
+	}
+
+	return verb != "go" || ValidGoVersion(args[0])
 }
 
 func replaceAfter(line, anchor, old, value string) (string, error) {

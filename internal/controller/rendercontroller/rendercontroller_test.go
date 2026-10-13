@@ -1,6 +1,7 @@
 package rendercontroller_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -293,19 +294,25 @@ func TestGoWorkTakesTheNewestMemberVersion(t *testing.T) {
 	assert.Contains(t, find(t, out, "go.work").Content, "go 1.26.5")
 }
 
-func TestGoWorkRefusesAnUnreadableVersionByName(t *testing.T) {
+func TestADeclaredGoVersionGoRejectsIsRefusedByNameBeforeAnyEdit(t *testing.T) {
 	t.Parallel()
 
-	in := rendertypes.Input{Root: "/w", Repos: []rendertypes.Repo{
-		{
-			Name: "a", Path: "/w/a", Languages: []string{"go"},
-			Identity: map[string]string{"module": "example.com/a", "goVersion": "tip"},
-		},
-	}}
+	for _, owned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("owned=%t", owned), func(t *testing.T) {
+			t.Parallel()
 
-	_, err := rendercontroller.NewGo(absent(t)).Render(in)
-	require.ErrorIs(t, err, rendercontroller.ErrGoVersion)
-	assert.ErrorContains(t, err, `"tip" is not a Go version`)
+			identity := map[string]string{"module": "example.com/a", "goVersion": "1"}
+			if owned {
+				identity["manifest"] = rendercontroller.OwnManifest
+			}
+
+			_, err := rendercontroller.NewGo(fsadaptermock.NewMockFS(t)).Render(rendertypes.Input{Root: "/w", Repos: []rendertypes.Repo{
+				{Name: "a", Path: "/w/a", Languages: []string{"go"}, Identity: identity},
+			}})
+			require.ErrorIs(t, err, rendercontroller.ErrGoVersion)
+			assert.ErrorContains(t, err, `a declares goVersion "1", which go rejects in a go line`)
+		})
+	}
 }
 
 func TestGoWorkOrdersVersionsTheWayGoDoes(t *testing.T) {
@@ -318,6 +325,7 @@ func TestGoWorkOrdersVersionsTheWayGoDoes(t *testing.T) {
 		{lower: "1.27beta1", higher: "1.27rc1"},
 		{lower: "1.27", higher: "1.27rc1"},
 		{lower: "1.26.5", higher: "1.27rc1"},
+		{lower: "1.26.0rc1", higher: "1.26"},
 	} {
 		t.Run(tc.lower+" below "+tc.higher, func(t *testing.T) {
 			t.Parallel()
