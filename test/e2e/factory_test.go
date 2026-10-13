@@ -266,7 +266,7 @@ func TestAddPutsANewMemberInEveryMembershipList(t *testing.T) {
 
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "sample-two"), 0o755))
 	write(t, filepath.Join(root, "sample-two", "forge.yaml"),
-		"name: sample-two\nfactory:\n  module: example.com/two\n")
+		"name: sample-two\nfactory:\n  module: example.com/two\n  goVersion: \"1.26\"\n")
 
 	mustRun(t, root, "add", "sample-two",
 		"git@github.com:x/sample-two.git", "go", "rust", "typescript")
