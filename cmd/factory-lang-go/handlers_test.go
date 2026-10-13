@@ -32,20 +32,41 @@ replace example.com/declared => ../declared
 func render(t *testing.T, gomod string) (string, *RenderOutput, error) {
 	t.Helper()
 
-	root := t.TempDir()
-	member := filepath.Join(root, "member")
-	require.NoError(t, os.MkdirAll(member, 0o750))
+	return renderIdentity(t, gomod, map[string]string{"module": "example.com/renamed", "goVersion": "1.26"})
+}
 
-	if gomod != "" {
-		require.NoError(t, os.WriteFile(filepath.Join(member, "go.mod"), []byte(gomod), 0o600))
+func renderIdentity(t *testing.T, gomod string, identity map[string]string) (string, *RenderOutput, error) {
+	t.Helper()
+
+	return renderMembers(t, member{name: "member", gomod: gomod, identity: identity})
+}
+
+type member struct {
+	name     string
+	gomod    string
+	identity map[string]string
+}
+
+func renderMembers(t *testing.T, members ...member) (string, *RenderOutput, error) {
+	t.Helper()
+
+	root := t.TempDir()
+	repos := make([]Repo, 0, len(members))
+
+	for _, m := range members {
+		dir := filepath.Join(root, m.name)
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+
+		if m.gomod != "" {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(m.gomod), 0o600))
+		}
+
+		repos = append(repos, Repo{Name: m.name, Path: dir, Languages: []string{"go"}, Identity: m.identity})
 	}
 
 	out, err := NewHandlers().Render(t.Context(), RenderInput{
-		Root: root,
-		Repos: []Repo{{
-			Name: "member", Path: member, Languages: []string{"go"},
-			Identity: map[string]string{"module": "example.com/renamed", "goVersion": "1.26"},
-		}},
+		Root:  root,
+		Repos: repos,
 		Dependencies: map[string]string{
 			"example.com/single":   "v1.0.5",
 			"example.com/declared": "v1.2.0",
@@ -190,6 +211,72 @@ func TestTheGoEngineKeepsEveryLineOfAGodebugBlock(t *testing.T) {
 	assert.Equal(t,
 		goHeader+"module example.com/renamed\n\ngo 1.26\n\ngodebug (\n\tgo 1\n\tpanicnil=1\n)\n",
 		goModOf(t, out, filepath.Join(root, "member", "go.mod")))
+}
+
+func TestTheGoEngineKeepsTheMemberGoLineAndGoWorkTakesItWhenTheIdentityDeclaresNoGoVersion(t *testing.T) {
+	t.Parallel()
+
+	root, out, err := renderIdentity(t, "module example.com/old\n\ngo 1.24.3 // pinned\n",
+		map[string]string{"module": "example.com/renamed"})
+	require.NoError(t, err)
+
+	assert.Equal(t, goHeader+"module example.com/renamed\n\ngo 1.24.3 // pinned\n",
+		goModOf(t, out, filepath.Join(root, "member", "go.mod")))
+	assert.Equal(t, goHeader+"\ngo 1.24.3\n\nuse (\n\t./member\n)\n",
+		goModOf(t, out, filepath.Join(root, "go.work")))
+}
+
+func TestTheGoEngineRefusesAMemberWithNoGoModAndNoGoVersionByName(t *testing.T) {
+	t.Parallel()
+
+	for name, identity := range map[string]map[string]string{
+		"a rendered manifest": {"module": "example.com/renamed"},
+		"an owned manifest":   {"manifest": "own"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, _, err := renderIdentity(t, "", identity)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "member needs factory.goVersion in its forge.yaml")
+		})
+	}
+}
+
+func TestTheGoEngineTakesTheGoWorkLineFromTheGoModOfAMemberThatOwnsItsManifest(t *testing.T) {
+	t.Parallel()
+
+	root, out, err := renderMembers(t,
+		member{name: "owned", gomod: "module example.com/owned\n\ngo 1.27.1\n", identity: map[string]string{"manifest": "own"}},
+		member{name: "rendered", identity: map[string]string{"module": "example.com/rendered", "goVersion": "1.26.5"}},
+	)
+	require.NoError(t, err)
+
+	assert.Equal(t, goHeader+"\ngo 1.27.1\n\nuse (\n\t./owned\n\t./rendered\n)\n",
+		goModOf(t, out, filepath.Join(root, "go.work")))
+}
+
+func TestTheGoEngineRefusesAnUnreadableGoVersionByName(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := renderIdentity(t, "", map[string]string{"module": "example.com/renamed", "goVersion": "tip"})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"tip" is not a Go version`)
+}
+
+func TestTheGoEngineOrdersAReleaseCandidateBelowItsRelease(t *testing.T) {
+	t.Parallel()
+
+	root, out, err := renderMembers(t,
+		member{name: "candidate", identity: map[string]string{"module": "example.com/candidate", "goVersion": "1.27rc1"}},
+		member{name: "release", identity: map[string]string{"module": "example.com/release", "goVersion": "1.27.0"}},
+	)
+	require.NoError(t, err)
+
+	assert.Contains(t, goModOf(t, out, filepath.Join(root, "go.work")), "\ngo 1.27.0\n")
+	assert.Contains(t, goModOf(t, out, filepath.Join(root, "candidate", "go.mod")), "\ngo 1.27rc1\n")
 }
 
 func TestTheGoEngineLockSyncsTheWorkspaceBeforeItTidiesTheMember(t *testing.T) {

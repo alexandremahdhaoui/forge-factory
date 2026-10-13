@@ -18,6 +18,10 @@ func Edit(content, module, goVersion string, versions map[string]string) (string
 		if value, ok := set[verb]; ok {
 			seen[verb] = true
 
+			if value == "" {
+				return line
+			}
+
 			return replaceAfter(line, verb, args[0], value)
 		}
 
@@ -42,6 +46,27 @@ func Edit(content, module, goVersion string, versions map[string]string) (string
 	}
 
 	return edited, nil
+}
+
+func GoVersion(content string) (string, error) {
+	version := ""
+
+	_, err := eachStatement(content, func(verb string, args []string, line string) string {
+		if verb == "go" {
+			version = args[0]
+		}
+
+		return line
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if version == "" {
+		return "", fmt.Errorf("%w: it has no go line", ErrRefused)
+	}
+
+	return version, nil
 }
 
 func Requires(content string) (map[string]bool, error) {

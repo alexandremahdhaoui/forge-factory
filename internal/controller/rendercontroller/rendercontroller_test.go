@@ -293,7 +293,7 @@ func TestGoWorkTakesTheNewestMemberVersion(t *testing.T) {
 	assert.Contains(t, find(t, out, "go.work").Content, "go 1.26.5")
 }
 
-func TestGoWorkIgnoresAnUnreadableVersion(t *testing.T) {
+func TestGoWorkRefusesAnUnreadableVersionByName(t *testing.T) {
 	t.Parallel()
 
 	in := rendertypes.Input{Root: "/w", Repos: []rendertypes.Repo{
@@ -303,10 +303,34 @@ func TestGoWorkIgnoresAnUnreadableVersion(t *testing.T) {
 		},
 	}}
 
-	out, err := rendercontroller.NewGo(absent(t)).Render(in)
-	require.NoError(t, err)
+	_, err := rendercontroller.NewGo(absent(t)).Render(in)
+	require.ErrorIs(t, err, rendercontroller.ErrGoVersion)
+	assert.ErrorContains(t, err, `"tip" is not a Go version`)
+}
 
-	assert.Contains(t, find(t, out, "go.work").Content, "go 1.25")
+func TestGoWorkOrdersVersionsTheWayGoDoes(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		lower, higher string
+	}{
+		{lower: "1.27rc1", higher: "1.27.0"},
+		{lower: "1.27beta1", higher: "1.27rc1"},
+		{lower: "1.27", higher: "1.27rc1"},
+		{lower: "1.26.5", higher: "1.27rc1"},
+	} {
+		t.Run(tc.lower+" below "+tc.higher, func(t *testing.T) {
+			t.Parallel()
+
+			out, err := rendercontroller.NewGo(absent(t)).Render(rendertypes.Input{Root: "/w", Repos: []rendertypes.Repo{
+				{Name: "a", Path: "/w/a", Languages: []string{"go"}, Identity: map[string]string{"module": "example.com/a", "goVersion": tc.higher}},
+				{Name: "b", Path: "/w/b", Languages: []string{"go"}, Identity: map[string]string{"module": "example.com/b", "goVersion": tc.lower}},
+			}})
+			require.NoError(t, err)
+
+			assert.Contains(t, find(t, out, "go.work").Content, "\ngo "+tc.higher+"\n")
+		})
+	}
 }
 
 func TestGoRefusesARepoWithNoModulePath(t *testing.T) {
@@ -577,7 +601,7 @@ func TestARepoThatKeepsItsOwnManifestStillGetsMembership(t *testing.T) {
 	assert.Empty(t, out.Files, "python has no membership file, so nothing is written at all")
 }
 
-func TestARepoThatKeepsItsOwnManifestNeedsNoIdentity(t *testing.T) {
+func TestARepoThatKeepsItsOwnManifestNeedsNoIdentityAndGivesGoWorkTheGoLineOfItsGoMod(t *testing.T) {
 	t.Parallel()
 
 	in := rendertypes.Input{Root: "/w", Repos: []rendertypes.Repo{
@@ -587,11 +611,37 @@ func TestARepoThatKeepsItsOwnManifestNeedsNoIdentity(t *testing.T) {
 		},
 	}}
 
-	_, err := rendercontroller.NewGo(absent(t)).Render(in)
-	require.NoError(t, err, "the module path is only needed to write a go.mod")
+	out, err := rendercontroller.NewGo(existing(t, "/w/a/go.mod", "module example.com/a\n\ngo 1.24.3\n")).Render(in)
+	require.NoError(t, err)
+	assert.Equal(t, goHeader+"\ngo 1.24.3\n\nuse (\n\t./a\n)\n", find(t, out, "go.work").Content)
 
 	_, err = rendercontroller.Python{}.Render(in)
 	require.NoError(t, err)
+}
+
+func TestAnOwnedGoModThatCannotBeInspectedReadOrParsedStopsTheRender(t *testing.T) {
+	t.Parallel()
+
+	in := rendertypes.Input{Root: "/w", Repos: []rendertypes.Repo{
+		{Name: "a", Path: "/w/a", Languages: []string{"go"}, Identity: map[string]string{"manifest": rendercontroller.OwnManifest}},
+	}}
+
+	uninspectable := fsadaptermock.NewMockFS(t)
+	uninspectable.EXPECT().Exists("/w/a/go.mod").Return(false, assert.AnError).Once()
+
+	_, err := rendercontroller.NewGo(uninspectable).Render(in)
+	require.ErrorContains(t, err, "inspecting /w/a/go.mod")
+
+	unreadable := fsadaptermock.NewMockFS(t)
+	unreadable.EXPECT().Exists("/w/a/go.mod").Return(true, nil).Once()
+	unreadable.EXPECT().ReadFile("/w/a/go.mod").Return(nil, assert.AnError).Once()
+
+	_, err = rendercontroller.NewGo(unreadable).Render(in)
+	require.ErrorContains(t, err, "reading /w/a/go.mod")
+
+	_, err = rendercontroller.NewGo(existing(t, "/w/a/go.mod", "module example.com/a\n")).Render(in)
+	require.ErrorIs(t, err, gomod.ErrRefused)
+	require.ErrorContains(t, err, "reading the go line of /w/a/go.mod")
 }
 
 func TestRustTakesAVersionWithFeaturesVerbatim(t *testing.T) {

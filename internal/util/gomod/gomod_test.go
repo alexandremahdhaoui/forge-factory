@@ -195,6 +195,36 @@ func TestEditRefusesAGoModWithNoModuleOrNoGoLine(t *testing.T) {
 	assert.ErrorContains(t, err, "it has no go line")
 }
 
+func TestEditKeepsTheGoLineWhenNoGoVersionIsGiven(t *testing.T) {
+	t.Parallel()
+
+	got, err := gomod.Edit("module example.com/old\n\ngo 1.24.3 // pinned\n", "example.com/new", "", nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, "module example.com/new\n\ngo 1.24.3 // pinned\n", got)
+}
+
+func TestGoVersionReadsTheGoLine(t *testing.T) {
+	t.Parallel()
+
+	got, err := gomod.GoVersion("// header\r\nmodule example.com/m\r\n\r\ngo 1.27rc1 // pinned\r\n")
+	require.NoError(t, err)
+
+	assert.Equal(t, "1.27rc1", got)
+}
+
+func TestGoVersionRefusesAGoModWithNoGoLineOrAnUnreadableLine(t *testing.T) {
+	t.Parallel()
+
+	_, err := gomod.GoVersion("module example.com/m\n")
+	require.ErrorIs(t, err, gomod.ErrRefused)
+	assert.ErrorContains(t, err, "it has no go line")
+
+	_, err = gomod.GoVersion("module example.com/m\n\ngo\n")
+	require.ErrorIs(t, err, gomod.ErrRefused)
+	assert.ErrorContains(t, err, "line 3 cannot be read: go")
+}
+
 func TestEditKeepsTheTrailingCommentOfTheModuleAndGoLines(t *testing.T) {
 	t.Parallel()
 
