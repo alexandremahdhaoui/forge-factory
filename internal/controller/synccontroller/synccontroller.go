@@ -20,6 +20,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/resolvecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/runtimecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/toolingcontroller"
+	"github.com/alexandremahdhaoui/forge-factory/internal/util/gomod"
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
 )
 
@@ -935,55 +936,12 @@ func (c *Controller) internalRequires(repos []repoWire, language string) map[str
 			continue
 		}
 
-		for module := range requiredModules(string(raw)) {
+		for module := range gomod.Requires(string(raw)) {
 			out[module] = true
 		}
 	}
 
 	return out
-}
-
-func requiredModules(gomod string) map[string]bool {
-	out := map[string]bool{}
-	inRequire := false
-
-	for _, line := range strings.Split(gomod, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "//") {
-			continue
-		}
-
-		if inRequire {
-			if line == ")" {
-				inRequire = false
-
-				continue
-			}
-
-			addRequired(out, line)
-
-			continue
-		}
-
-		if line == "require (" {
-			inRequire = true
-
-			continue
-		}
-
-		if rest, ok := strings.CutPrefix(line, "require "); ok {
-			addRequired(out, rest)
-		}
-	}
-
-	return out
-}
-
-func addRequired(out map[string]bool, line string) {
-	module, _, _ := strings.Cut(strings.TrimSpace(line), " ")
-	if strings.Contains(module, "/") {
-		out[module] = true
-	}
 }
 
 const (

@@ -82,8 +82,6 @@ type languageOutput struct {
 	Language string `json:"language"`
 }
 
-// empty is the smallest input an engine accepts. A nil slice or map travels as
-// null and every engine's generated schema refuses it.
 func empty() renderInput {
 	return renderInput{Repos: []repo{}, Dependencies: map[string]string{}}
 }
@@ -109,11 +107,17 @@ func TestEveryEngineReportsItsOwnLanguage(t *testing.T) {
 }
 
 func TestTheGoEngineRendersOverMCP(t *testing.T) {
+	root := t.TempDir()
+	member := filepath.Join(root, "golden-go")
+	require.NoError(t, os.MkdirAll(member, 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(member, "go.mod"),
+		[]byte("module example.com/golden\n\ngo 1.25\n\nrequire sigs.k8s.io/yaml v1.5.0\n"), 0o600))
+
 	in := renderInput{
-		Root: "/w",
+		Root: root,
 		Repos: []repo{{
 			Name:      "golden-go",
-			Path:      "/w/golden-go",
+			Path:      member,
 			Languages: []string{"go"},
 			Identity:  map[string]string{"module": "example.com/golden", "goVersion": "1.26"},
 		}},
@@ -130,14 +134,14 @@ func TestTheGoEngineRendersOverMCP(t *testing.T) {
 		byPath[f.Path] = f
 	}
 
-	mod, ok := byPath["/w/golden-go/go.mod"]
+	mod, ok := byPath[filepath.Join(member, "go.mod")]
 	require.True(t, ok)
 	assert.Empty(t, mod.Gitignore,
 		"committed is the default now, so the manifest is not hidden from git")
 	assert.Contains(t, mod.Content, "module example.com/golden")
-	assert.Contains(t, mod.Content, "sigs.k8s.io/yaml v1.6.0")
+	assert.Contains(t, mod.Content, "require sigs.k8s.io/yaml v1.6.0")
 
-	work, ok := byPath["/w/go.work"]
+	work, ok := byPath[filepath.Join(root, "go.work")]
 	require.True(t, ok)
 	assert.Contains(t, work.Content, "./golden-go")
 }

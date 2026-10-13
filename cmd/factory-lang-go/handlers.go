@@ -3,17 +3,15 @@ package main
 import (
 	"context"
 
+	"github.com/alexandremahdhaoui/forge-factory/internal/adapter/fsadapter"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/describecontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/rendercontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/types/rendertypes"
 	"github.com/alexandremahdhaoui/forge-factory/internal/types/runtimetypes"
 )
 
-// NewHandlers wires one renderer into the generated tool surface. The generated
-// types are the wire, so they are mapped here rather than reaching the
-// controller.
 func NewHandlers() Handlers {
-	renderer := rendercontroller.Go{}
+	renderer := rendercontroller.NewGo(fsadapter.New())
 
 	return Handlers{
 		Describe: describeHandler(),
@@ -86,9 +84,6 @@ func fromFiles(files []rendertypes.File) []File {
 	return out
 }
 
-// describeHandler answers the runtime description through the language's
-// describer. Declared apart from NewHandlers so the wiring above stays the
-// render story it always was.
 func describeHandler() func(context.Context, DescribeInput) (*RuntimeDescription, error) {
 	describer := describecontroller.Go{}
 

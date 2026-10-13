@@ -85,8 +85,6 @@ engines:
     engine: forge://factory-lang-typescript
 `
 
-// workspace lays out a factory with three members, each carrying the identity
-// its language needs in its own forge.yaml.
 func workspace(t *testing.T) string {
 	t.Helper()
 
@@ -103,12 +101,18 @@ func workspace(t *testing.T) string {
 		write(t, filepath.Join(root, name, "forge.yaml"), forge)
 	}
 
-	// A tidy drops a require nothing imports, so the member has to use the
-	// dependency the factory names or the bump has nothing to prove.
 	write(t, filepath.Join(root, "sample-go", "main.go"), goSource)
+	write(t, filepath.Join(root, "sample-go", "go.mod"), sampleGoMod)
 
 	return root
 }
+
+const sampleGoMod = `module example.com/sample
+
+go 1.26
+
+require sigs.k8s.io/yaml v1.5.0
+`
 
 const goSource = `package main
 
@@ -186,24 +190,10 @@ func TestEverythingGeneratedIsGitignored(t *testing.T) {
 
 	mustRun(t, root, "sync")
 
-	// A GO manifest is committed by default now, so it is NOT hidden from git.
-	// The old default wrote the file and gitignored it, which reads as "this
-	// repo has no manifest" to everything outside a synced workspace - and
-	// three repos sat in that mode with git tracking their files anyway,
-	// where the ignore does not apply and every version bump dirties the tree.
 	assert.NotContains(t, read(t, filepath.Join(root, "sample-go", ".gitignore")), "/go.mod")
 
-	// The manifest knob is Go's alone: the typescript and python renderers
-	// have no committed mode and always gitignore what they write. Saying so
-	// here keeps the asymmetry deliberate rather than a thing someone
-	// discovers.
 	assert.Contains(t, read(t, filepath.Join(root, "sample-web", ".gitignore")), "/package.json")
 
-	// cargo needs no manifest inside a member, so this used to assert that a
-	// rust member gets no .gitignore at all. It gets one now, and for a
-	// reason that has nothing to do with manifests: sync writes a .envrc into
-	// EVERY member, holding that machine's own environment, and the lines
-	// keeping it out of git were hand-written per repo until now.
 	assert.NotContains(t, read(t, filepath.Join(root, "sample-rust", ".gitignore")), "Cargo.toml")
 	for _, member := range []string{"sample-go", "sample-web", "sample-rust"} {
 		assert.Contains(t, read(t, filepath.Join(root, member, ".gitignore")), "/.envrc",
@@ -217,8 +207,6 @@ func TestSyncIsIdempotent(t *testing.T) {
 	out := mustRun(t, root, "sync")
 	before := read(t, filepath.Join(root, "sample-go", ".gitignore"))
 
-	// The factory's engines land by alias at the root, the outer ring of
-	// every member's engine registry, and a converged file is not rewritten.
 	registry := read(t, filepath.Join(root, ".forge", "engines.yaml"))
 	assert.Contains(t, registry, "engines:")
 	assert.Contains(t, registry, "  - alias: go\n")
@@ -237,10 +225,6 @@ func TestOneBumpMovesEveryGoMemberWithNoCommitInAny(t *testing.T) {
 	mustRun(t, root, "sync")
 	require.Contains(t, read(t, filepath.Join(root, "sample-go", "go.mod")), "sigs.k8s.io/yaml v1.6.0")
 
-	// Both versions exist. A version nobody can resolve is its own test
-	// below, because the lock fails and the bump must say so. Offline: the
-	// fixture's rust and web members are stubs with no crate or package to
-	// lock, and this test's subject is the Go side of the bump.
 	out := mustRun(t, root, "bump", "--offline", "go:sigs.k8s.io/yaml", "v1.5.0")
 	assert.Contains(t, out, "now sigs.k8s.io/yaml: v1.5.0")
 
@@ -248,9 +232,6 @@ func TestOneBumpMovesEveryGoMemberWithNoCommitInAny(t *testing.T) {
 	assert.Contains(t, read(t, filepath.Join(root, "forge-factory.yaml")), "sigs.k8s.io/yaml: v1.5.0")
 }
 
-// A bump to a version nothing can resolve leaves every member unbuildable.
-// The bump locks after it syncs precisely so this fails at the bump, where
-// the cause is, rather than at some later build.
 func TestABumpToAVersionNobodyCanResolveFails(t *testing.T) {
 	root := workspace(t)
 
@@ -260,9 +241,6 @@ func TestABumpToAVersionNobodyCanResolveFails(t *testing.T) {
 	require.Error(t, err, out)
 	assert.Contains(t, out, "which a build will need")
 
-	// The proxy's exact words differ by environment: a direct fetch says
-	// "unknown revision", a filtered one says "Forbidden" on the fallback.
-	// What matters is that the reason reached the report.
 	if !strings.Contains(out, "unknown revision") && !strings.Contains(out, "unrecognized import path") {
 		t.Fatalf("the reason the build cannot be settled is not on the report:\n%s", out)
 	}
@@ -293,8 +271,6 @@ func TestAddPutsANewMemberInEveryMembershipList(t *testing.T) {
 	mustRun(t, root, "add", "sample-two",
 		"git@github.com:x/sample-two.git", "go", "rust", "typescript")
 
-	// One add, and all three membership lists move together. That is the whole
-	// point: membership used to be declared five times and no two agreed.
 	assert.Contains(t, read(t, filepath.Join(root, "go.work")), "./sample-two")
 	assert.Contains(t, read(t, filepath.Join(root, "Cargo.toml")), `"sample-two"`)
 	assert.Contains(t, read(t, filepath.Join(root, "pnpm-workspace.yaml")), `- "sample-two"`)
@@ -377,7 +353,6 @@ func gitInit(t *testing.T, dir string) {
 		{"init", "--quiet"},
 		{"config", "user.email", "t@example.com"},
 		{"config", "user.name", "t"},
-		// A machine's global signing config must not reach test repos.
 		{"config", "tag.gpgsign", "false"},
 		{"config", "commit.gpgsign", "false"},
 		{"add", "-A"},
@@ -391,13 +366,6 @@ func gitInit(t *testing.T, dir string) {
 	}
 }
 
-// TestAGeneratedGoModBuilds is the point of the whole tool. A member carries no
-// go.mod of its own, forge-factory writes one from the shared versions, and the
-// package compiles against a dependency the factory alone named.
-//
-// The tidy runs with GOWORK=off. In workspace mode a tidy writes no per module
-// sums, so the member would carry a go.mod naming versions and nothing proving
-// them.
 func TestAGeneratedGoModBuilds(t *testing.T) {
 	root := workspace(t)
 
@@ -405,10 +373,6 @@ func TestAGeneratedGoModBuilds(t *testing.T) {
 	require.NotContains(t, out, "ran go mod tidy",
 		"sync writes manifests and stops; cloning is not building")
 
-	// Offline: the fixture's rust and web members are stubs with no crate or
-	// package to lock, and what this test proves is the Go closure. The go
-	// commands still run - offline only tolerates the optional ones that
-	// could not - and the assertions below are what hold the proof.
 	out = mustRun(t, root, "lock", "--offline")
 	require.Contains(t, out, "ran go mod tidy", out)
 
@@ -429,9 +393,6 @@ func TestAGeneratedGoModBuilds(t *testing.T) {
 	require.NoError(t, err, string(logs))
 }
 
-// TestCheckoutPutsAMemberOnItsProvenSHA runs against a real state engine over
-// MCP. forge-factory speaks the transport in forge-revision-spec and imports
-// forge-ci nowhere, so any conforming engine works here.
 func TestCheckoutPutsAMemberOnItsProvenSHA(t *testing.T) {
 	engine, err := exec.LookPath("ci-state-git")
 	if err != nil {
@@ -466,11 +427,6 @@ state:
 	assert.Contains(t, out, "wrote go.work", "a checkout syncs to match")
 }
 
-// TestCheckoutRestoresTheRevisionsDependencyLocks proves the restore path
-// against the real engine: the store carries one dependency-lock record for
-// the revision, and a checkout writes the lockfile back where the lock
-// resolved it - even though the store's own spec never declares the kind,
-// because checkout names it per request.
 func TestCheckoutRestoresTheRevisionsDependencyLocks(t *testing.T) {
 	engine, err := exec.LookPath("ci-state-git")
 	if err != nil {
