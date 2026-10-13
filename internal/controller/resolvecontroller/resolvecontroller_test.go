@@ -558,6 +558,66 @@ func TestADeprecationPastGraceIsAnError(t *testing.T) {
 	require.ErrorIs(t, err, resolvecontroller.ErrDeprecated)
 }
 
+func deprecatedWithAFinding(t *testing.T, reason string) (config.Factory, string) {
+	t.Helper()
+
+	raw, err := json.Marshal(map[string]any{
+		"package": "golang.org/x/crypto", "ecosystem": "go", "prefix": "0",
+		"current": "v0.55.0", "updatedAt": now,
+		"vulns":   map[string]int{"critical": 0, "high": 1, "medium": 0, "low": 0},
+		"outcome": "findings",
+		"advisory": map[string]any{
+			"vulnIds": []string{"GO-2026-5932"}, "severity": "unknown",
+			"since": "2026-05-01T00:00:00Z", "fixedIn": []string{},
+		},
+		"deprecated": map[string]any{"reason": reason, "since": "2026-06-01T00:00:00Z"},
+	})
+	require.NoError(t, err)
+
+	return register(t, map[string]string{"go/golang.org/x/crypto/0": string(raw)})
+}
+
+func acknowledging(ids ...string) map[string]config.DependencySpec {
+	acks := make([]config.Acknowledgement, 0, len(ids))
+	for _, id := range ids {
+		acks = append(acks, config.Acknowledgement{ID: id, Reason: "we never import openpgp"})
+	}
+
+	return map[string]config.DependencySpec{"golang.org/x/crypto": {Track: "0", Acknowledge: acks}}
+}
+
+func TestANoFixDeprecationPastGraceResolvesWhenTheFactoryAcknowledgesEveryFinding(t *testing.T) {
+	t.Parallel()
+
+	f, root := deprecatedWithAFinding(t, "no-fix")
+
+	got, notes, err := newController().Resolve(context.Background(), f, root, "go", acknowledging("GO-2026-5932"))
+	require.NoError(t, err)
+	require.Equal(t, "v0.55.0", got["golang.org/x/crypto"])
+	require.Contains(t, strings.Join(notes, "\n"),
+		"go:golang.org/x/crypto track 0 is deprecated (no-fix) since 2026-06-01 and resolves because the factory acknowledges GO-2026-5932")
+}
+
+func TestANoFixDeprecationPastGraceRefusesWhileAFindingIsUnacknowledged(t *testing.T) {
+	t.Parallel()
+
+	f, root := deprecatedWithAFinding(t, "no-fix")
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go", acknowledging())
+	require.ErrorIs(t, err, resolvecontroller.ErrAdvisory)
+	require.ErrorContains(t, err, "GO-2026-5932")
+}
+
+func TestAStaleDeprecationPastGraceRefusesEvenWhenTheFactoryAcknowledgesEveryFinding(t *testing.T) {
+	t.Parallel()
+
+	f, root := deprecatedWithAFinding(t, "stale")
+
+	_, _, err := newController().Resolve(context.Background(), f, root, "go", acknowledging("GO-2026-5932"))
+	require.ErrorIs(t, err, resolvecontroller.ErrDeprecated)
+	require.ErrorContains(t, err, "deprecated (stale) since 2026-06-01")
+}
+
 func TestTheRegisterSetsItsOwnGraceWindow(t *testing.T) {
 	deprecated := `{"package":"p","ecosystem":"go","prefix":"1","current":"v1.6.0",` +
 		`"vulns":{"critical":0,"high":0,"medium":0,"low":0},"outcome":"clean",` +
