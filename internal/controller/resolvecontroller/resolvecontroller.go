@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -222,7 +221,7 @@ func (c *Controller) resolveEntry(ctx context.Context, f config.Factory, root, l
 	}
 
 	if track.Deprecated != nil {
-		note, err := c.deprecationNote(dir, language, name, track, d.Acknowledge)
+		note, err := c.deprecationNote(dir, language, name, track)
 		if err != nil {
 			return "", notes, err
 		}
@@ -237,7 +236,7 @@ func (c *Controller) resolveEntry(ctx context.Context, f config.Factory, root, l
 	return version, notes, nil
 }
 
-func (c *Controller) deprecationNote(dir, language, name string, track spec.Track, acks []config.Acknowledgement) (string, error) {
+func (c *Controller) deprecationNote(dir, language, name string, track spec.Track) (string, error) {
 	grace := c.graceWindow(dir)
 	since := track.Deprecated.Since.Format("2006-01-02")
 
@@ -247,7 +246,7 @@ func (c *Controller) deprecationNote(dir, language, name string, track spec.Trac
 			track.Deprecated.Since.Add(grace).Format("2006-01-02")), nil
 	}
 
-	if ids := acknowledgedNoFixFindings(track, acks); len(ids) > 0 {
+	if ids := acknowledgedNoFixFindings(track); len(ids) > 0 {
 		return fmt.Sprintf("%s:%s track %s is deprecated (%s) since %s and resolves because the factory acknowledges %s",
 			language, name, track.Prefix, track.Deprecated.Reason, since, strings.Join(ids, ", ")), nil
 	}
@@ -257,15 +256,9 @@ func (c *Controller) deprecationNote(dir, language, name string, track spec.Trac
 		language, name, track.Prefix, ErrDeprecated, track.Deprecated.Reason, since, grace)
 }
 
-func acknowledgedNoFixFindings(track spec.Track, acks []config.Acknowledgement) []string {
+func acknowledgedNoFixFindings(track spec.Track) []string {
 	if track.Deprecated.Reason != spec.NoFix || track.Advisory == nil {
 		return nil
-	}
-
-	for _, id := range track.Advisory.VulnIds {
-		if !slices.ContainsFunc(acks, func(ack config.Acknowledgement) bool { return ack.ID == id }) {
-			return nil
-		}
 	}
 
 	return track.Advisory.VulnIds
