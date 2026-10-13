@@ -182,6 +182,16 @@ func TestTheGoEngineRecognizesItsCRLFHeaderSoASecondRenderChangesNothing(t *test
 	assert.Equal(t, rendered, goModOf(t, out, filepath.Join(root, "member", "go.mod")))
 }
 
+func TestTheGoEngineKeepsEveryLineOfAGodebugBlock(t *testing.T) {
+	t.Parallel()
+
+	root, out := renderMember(t, "module example.com/old\n\ngo 1.24\n\ngodebug (\n\tgo 1\n\tpanicnil=1\n)\n")
+
+	assert.Equal(t,
+		goHeader+"module example.com/renamed\n\ngo 1.26\n\ngodebug (\n\tgo 1\n\tpanicnil=1\n)\n",
+		goModOf(t, out, filepath.Join(root, "member", "go.mod")))
+}
+
 func TestTheGoEngineLockSyncsTheWorkspaceBeforeItTidiesTheMember(t *testing.T) {
 	t.Parallel()
 
