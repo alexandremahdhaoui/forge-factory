@@ -195,6 +195,51 @@ func TestEditRefusesAGoModWithNoModuleOrNoGoLine(t *testing.T) {
 	assert.ErrorContains(t, err, "it has no go line")
 }
 
+func TestEveryReaderRefusesAnEscapedQuotedStringAndNamesTheLine(t *testing.T) {
+	t.Parallel()
+
+	content := "module example.com/m\n\ngo 1.25\n\nrequire \"example.com/\\x61\" v1.0.0\n"
+	refusal := "line 5 carries an escaped quoted string: require \"example.com/\\x61\" v1.0.0"
+
+	_, err := gomod.Edit(content, "example.com/m", "1.26", map[string]string{"example.com/a": "v1.1.0"})
+	require.ErrorIs(t, err, gomod.ErrRefused)
+	assert.ErrorContains(t, err, refusal)
+
+	_, err = gomod.Requires(content)
+	require.ErrorIs(t, err, gomod.ErrRefused)
+	assert.ErrorContains(t, err, refusal)
+
+	_, err = gomod.GoVersion(content)
+	require.ErrorIs(t, err, gomod.ErrRefused)
+	assert.ErrorContains(t, err, refusal)
+}
+
+func TestEditRefusesALineWhoseTokenItCannotFindAndNamesTheLine(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		content string
+		refusal string
+	}{
+		"an anchor missing from the line": {
+			"module example.com/m\n\ngo (\n\t1.24\n)\n",
+			`line 4 cannot be edited: 1.24: "go" is not on the line`,
+		},
+		"an old token missing after the anchor": {
+			"module example.com/m\n\ngo (\n\tgogo\n)\n",
+			`line 4 cannot be edited: gogo: "gogo" does not follow "go" on the line`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := gomod.Edit(tc.content, "example.com/m", "1.26", nil)
+			require.ErrorIs(t, err, gomod.ErrRefused)
+			assert.ErrorContains(t, err, tc.refusal)
+		})
+	}
+}
+
 func TestEditKeepsTheGoLineWhenNoGoVersionIsGiven(t *testing.T) {
 	t.Parallel()
 

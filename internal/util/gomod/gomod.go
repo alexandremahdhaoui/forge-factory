@@ -8,32 +8,32 @@ import (
 	"strings"
 )
 
-var ErrRefused = errors.New("refusing to edit a go.mod")
+var ErrRefused = errors.New("go.mod refused")
 
 func Edit(content, module, goVersion string, versions map[string]string) (string, error) {
 	set := map[string]string{"module": module, "go": goVersion}
 	seen := map[string]bool{}
 
-	edited, err := eachStatement(content, func(verb string, args []string, line string) string {
+	edited, err := eachStatement(content, func(verb string, args []string, line string) (string, error) {
 		if value, ok := set[verb]; ok {
 			seen[verb] = true
 
 			if value == "" {
-				return line
+				return line, nil
 			}
 
 			return replaceAfter(line, verb, args[0], value)
 		}
 
 		if verb != "require" {
-			return line
+			return line, nil
 		}
 
 		if declared, ok := versions[args[0]]; ok {
 			return replaceAfter(line, args[0], args[1], declared)
 		}
 
-		return line
+		return line, nil
 	})
 	if err != nil {
 		return "", err
@@ -51,12 +51,12 @@ func Edit(content, module, goVersion string, versions map[string]string) (string
 func GoVersion(content string) (string, error) {
 	version := ""
 
-	_, err := eachStatement(content, func(verb string, args []string, line string) string {
+	_, err := eachStatement(content, func(verb string, args []string, line string) (string, error) {
 		if verb == "go" {
 			version = args[0]
 		}
 
-		return line
+		return line, nil
 	})
 	if err != nil {
 		return "", err
@@ -72,12 +72,12 @@ func GoVersion(content string) (string, error) {
 func Requires(content string) (map[string]bool, error) {
 	out := map[string]bool{}
 
-	_, err := eachStatement(content, func(verb string, args []string, line string) string {
+	_, err := eachStatement(content, func(verb string, args []string, line string) (string, error) {
 		if verb == "require" {
 			out[args[0]] = true
 		}
 
-		return line
+		return line, nil
 	})
 	if err != nil {
 		return nil, err
@@ -88,12 +88,16 @@ func Requires(content string) (map[string]bool, error) {
 
 var arity = map[string]int{"module": 1, "go": 1, "require": 2}
 
-func eachStatement(content string, visit func(verb string, args []string, line string) string) (string, error) {
+func eachStatement(content string, visit func(verb string, args []string, line string) (string, error)) (string, error) {
 	lines := strings.Split(content, "\n")
 	block := ""
 
 	for i, line := range lines {
-		fields := tokens(line)
+		fields, plain := tokens(line)
+		if !plain {
+			return "", fmt.Errorf("%w: line %d carries an escaped quoted string: %s", ErrRefused, i+1, strings.TrimSpace(line))
+		}
+
 		verb, args := block, fields
 
 		switch {
@@ -119,32 +123,55 @@ func eachStatement(content string, visit func(verb string, args []string, line s
 			return "", fmt.Errorf("%w: line %d cannot be read: %s", ErrRefused, i+1, strings.TrimSpace(line))
 		}
 
-		lines[i] = visit(verb, args, line)
+		next, err := visit(verb, args, line)
+		if err != nil {
+			return "", fmt.Errorf("%w: line %d cannot be edited: %s: %w", ErrRefused, i+1, strings.TrimSpace(line), err)
+		}
+
+		lines[i] = next
 	}
 
 	return strings.Join(lines, "\n"), nil
 }
 
-func tokens(line string) []string {
+func tokens(line string) ([]string, bool) {
 	code, _, _ := strings.Cut(line, "//")
 	fields := strings.Fields(strings.NewReplacer("(", " ( ", ")", " ) ").Replace(code))
 
 	for i, field := range fields {
-		if unquoted, err := strconv.Unquote(field); err == nil {
-			fields[i] = unquoted
+		unquoted, err := strconv.Unquote(field)
+		if err != nil {
+			continue
 		}
+
+		if unquoted != field[1:len(field)-1] {
+			return nil, false
+		}
+
+		fields[i] = unquoted
 	}
 
-	return fields
+	return fields, true
 }
 
 func readable(args []string, want int) bool {
 	return len(args) == want && !slices.Contains(args, "(") && !slices.Contains(args, ")")
 }
 
-func replaceAfter(line, anchor, old, value string) string {
-	start := strings.Index(line, anchor) + len(anchor)
-	at := start + strings.Index(line[start:], old)
+func replaceAfter(line, anchor, old, value string) (string, error) {
+	start := strings.Index(line, anchor)
+	if start < 0 {
+		return "", fmt.Errorf("%q is not on the line", anchor)
+	}
 
-	return line[:at] + value + line[at+len(old):]
+	start += len(anchor)
+
+	at := strings.Index(line[start:], old)
+	if at < 0 {
+		return "", fmt.Errorf("%q does not follow %q on the line", old, anchor)
+	}
+
+	at += start
+
+	return line[:at] + value + line[at+len(old):], nil
 }

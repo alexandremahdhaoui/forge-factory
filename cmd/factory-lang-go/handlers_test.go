@@ -279,6 +279,55 @@ func TestTheGoEngineOrdersAReleaseCandidateBelowItsRelease(t *testing.T) {
 	assert.Contains(t, goModOf(t, out, filepath.Join(root, "candidate", "go.mod")), "\ngo 1.27rc1\n")
 }
 
+func TestTheGoEngineRefusesAnEscapedQuotedPathOrVersionAndNamesTheFileAndTheLine(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		gomod   string
+		refusal string
+	}{
+		"an escaped module path": {
+			"module \"example.com/\\x6fld\"\n\ngo 1.24\n",
+			"line 1 carries an escaped quoted string: module \"example.com/\\x6fld\"",
+		},
+		"an escaped require version": {
+			"module example.com/old\n\ngo 1.24\n\nrequire \"example.com/single\" \"v1.0.\\x30\"\n",
+			"line 5 carries an escaped quoted string: require \"example.com/single\" \"v1.0.\\x30\"",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			root, _, err := render(t, tc.gomod)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), filepath.Join(root, "member", "go.mod"))
+			assert.Contains(t, err.Error(), tc.refusal)
+		})
+	}
+}
+
+func TestTheGoEngineRefusesALineItCannotEditAndNamesTheFileAndTheLine(t *testing.T) {
+	t.Parallel()
+
+	root, _, err := render(t, "module example.com/old\n\ngo (\n\t1.24\n)\n")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), filepath.Join(root, "member", "go.mod"))
+	assert.Contains(t, err.Error(), `line 4 cannot be edited: 1.24: "go" is not on the line`)
+}
+
+func TestTheGoEngineSaysAnOwnedGoModCouldNotBeReadAndNeverClaimsAnEdit(t *testing.T) {
+	t.Parallel()
+
+	root, _, err := renderIdentity(t, "module (\n\texample.com/own\n)\n\ngo 1.24\n", map[string]string{"manifest": "own"})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading the go line of "+filepath.Join(root, "member", "go.mod"))
+	assert.Contains(t, err.Error(), "line 1 opens a factored module block")
+	assert.NotContains(t, err.Error(), "edit")
+}
+
 func TestTheGoEngineLockSyncsTheWorkspaceBeforeItTidiesTheMember(t *testing.T) {
 	t.Parallel()
 
