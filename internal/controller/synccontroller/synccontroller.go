@@ -808,7 +808,10 @@ func (c *Controller) renderMembers(
 			return rendering{}, fmt.Errorf("resolving %s member modules: %w", language, err)
 		}
 
-		required := c.internalRequires(resolved, language)
+		required, err := c.internalRequires(resolved, language)
+		if err != nil {
+			return rendering{}, err
+		}
 
 		for name, version := range members {
 			if _, declared := deps[name]; declared {
@@ -919,11 +922,11 @@ func underMemberOrRoot(root, only, path string) bool {
 	return filepath.Dir(path) == filepath.Clean(root)
 }
 
-func (c *Controller) internalRequires(repos []repoWire, language string) map[string]bool {
+func (c *Controller) internalRequires(repos []repoWire, language string) (map[string]bool, error) {
 	out := map[string]bool{}
 
 	if language != "go" {
-		return out
+		return out, nil
 	}
 
 	for _, r := range repos {
@@ -931,17 +934,24 @@ func (c *Controller) internalRequires(repos []repoWire, language string) map[str
 			continue
 		}
 
-		raw, err := c.fs.ReadFile(filepath.Join(r.Path, "go.mod"))
+		path := filepath.Join(r.Path, "go.mod")
+
+		raw, err := c.fs.ReadFile(path)
 		if err != nil {
 			continue
 		}
 
-		for module := range gomod.Requires(string(raw)) {
+		requires, err := gomod.Requires(string(raw))
+		if err != nil {
+			return nil, fmt.Errorf("reading the requires of %s: %w", path, err)
+		}
+
+		for module := range requires {
 			out[module] = true
 		}
 	}
 
-	return out
+	return out, nil
 }
 
 const (

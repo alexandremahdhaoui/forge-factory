@@ -24,6 +24,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/execadaptermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/fsadaptermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/repoadaptermock"
+	"github.com/alexandremahdhaoui/forge-factory/internal/util/gomod"
 	"github.com/alexandremahdhaoui/forge-factory/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -1248,6 +1249,22 @@ exclude (
 	require.NotContains(t, deps, "example.com/some-runnable",
 		"a replace block names a module; it does not require one")
 	require.Equal(t, "v0.3.0", deps["example.com/shared-spec"])
+}
+
+func TestSyncRefusesAMemberRequireItCannotReadAndNamesTheFileAndTheLine(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.envrcExists(t, true)
+	h.identityAnswers()
+	h.goMods["/w/golden-go/go.mod"] = "module example.com/g\n\ngo 1.26\n\nrequire ( // grouped\n\texample.com/shared-spec\n)\n"
+	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner, memberResolver{})
+	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
+
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	require.ErrorIs(t, err, gomod.ErrRefused)
+	require.ErrorContains(t, err, "/w/golden-go/go.mod")
+	require.ErrorContains(t, err, "line 6 cannot be read: example.com/shared-spec")
 }
 
 func TestSyncNamesAMemberModuleThatRefused(t *testing.T) {

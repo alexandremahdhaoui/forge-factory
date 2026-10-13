@@ -8,6 +8,7 @@ import (
 	"github.com/alexandremahdhaoui/forge-factory/internal/controller/rendercontroller"
 	"github.com/alexandremahdhaoui/forge-factory/internal/mocks/fsadaptermock"
 	"github.com/alexandremahdhaoui/forge-factory/internal/types/rendertypes"
+	"github.com/alexandremahdhaoui/forge-factory/internal/util/gomod"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -147,6 +148,52 @@ func TestRenderingItsOwnRenderChangesNothing(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(rendered, goHeader))
 }
 
+func TestACRLFGoModKeepsCRLFOnEveryLineIncludingTheHeader(t *testing.T) {
+	t.Parallel()
+
+	in := input()
+	in.Dependencies = map[string]string{"sigs.k8s.io/yaml": "v1.6.0"}
+
+	out, err := rendercontroller.NewGo(existing(t, "/w/alpha-go/go.mod",
+		"module example.com/old\r\n\r\ngo 1.24\r\n\r\nrequire sigs.k8s.io/yaml v1.4.0\r\n")).Render(in)
+	require.NoError(t, err)
+
+	assert.Equal(t,
+		strings.TrimSuffix(goHeader, "\n")+"\r\nmodule example.com/alpha\r\n\r\ngo 1.26\r\n\r\nrequire sigs.k8s.io/yaml v1.6.0\r\n",
+		find(t, out, "go.mod").Content)
+}
+
+func TestACRLFHeaderIsRecognizedSoASecondRenderAddsNoSecondHeader(t *testing.T) {
+	t.Parallel()
+
+	rendered := strings.TrimSuffix(goHeader, "\n") + "\r\nmodule example.com/alpha\r\n\r\ngo 1.26\r\n"
+
+	out, err := rendercontroller.NewGo(existing(t, "/w/alpha-go/go.mod", rendered)).Render(input())
+	require.NoError(t, err)
+
+	assert.Equal(t, rendered, find(t, out, "go.mod").Content)
+}
+
+func TestAFactoredModuleBlockIsRefusedWithThePathOfItsGoMod(t *testing.T) {
+	t.Parallel()
+
+	_, err := rendercontroller.NewGo(existing(t, "/w/alpha-go/go.mod",
+		"module (\n\texample.com/old\n)\n\ngo 1.24\n")).Render(input())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "/w/alpha-go/go.mod")
+	assert.Contains(t, err.Error(), "line 1 opens a factored module block")
+}
+
+func TestAnUnreadableRequireIsRefusedWithThePathOfItsGoMod(t *testing.T) {
+	t.Parallel()
+
+	_, err := rendercontroller.NewGo(existing(t, "/w/alpha-go/go.mod",
+		"module example.com/old\n\ngo 1.24\n\nrequire (\n\tsigs.k8s.io/yaml v1.4.0 v1.5.0\n)\n")).Render(input())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "/w/alpha-go/go.mod")
+	assert.Contains(t, err.Error(), "line 6 cannot be read: sigs.k8s.io/yaml v1.4.0 v1.5.0")
+}
+
 func TestAMemberWithNoGoModGetsTheHeaderTheModuleAndTheGoLineOnly(t *testing.T) {
 	t.Parallel()
 
@@ -173,16 +220,18 @@ func TestAGoModWithNoGoLineIsRefusedByName(t *testing.T) {
 	t.Parallel()
 
 	_, err := rendercontroller.NewGo(existing(t, "/w/alpha-go/go.mod", "module example.com/old\n")).Render(input())
-	require.ErrorIs(t, err, rendercontroller.ErrGoMod)
-	assert.Contains(t, err.Error(), "/w/alpha-go/go.mod has no go line")
+	require.ErrorIs(t, err, gomod.ErrRefused)
+	assert.Contains(t, err.Error(), "editing /w/alpha-go/go.mod")
+	assert.Contains(t, err.Error(), "it has no go line")
 }
 
 func TestAGoModWithNoModuleLineIsRefusedByName(t *testing.T) {
 	t.Parallel()
 
 	_, err := rendercontroller.NewGo(existing(t, "/w/alpha-go/go.mod", "go 1.24\n")).Render(input())
-	require.ErrorIs(t, err, rendercontroller.ErrGoMod)
-	assert.Contains(t, err.Error(), "/w/alpha-go/go.mod has no module line")
+	require.ErrorIs(t, err, gomod.ErrRefused)
+	assert.Contains(t, err.Error(), "editing /w/alpha-go/go.mod")
+	assert.Contains(t, err.Error(), "it has no module line")
 }
 
 func TestAGoModThatCannotBeInspectedStopsTheRender(t *testing.T) {

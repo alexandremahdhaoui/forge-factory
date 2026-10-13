@@ -78,8 +78,6 @@ func sortedNames(deps map[string]string) []string {
 	return out
 }
 
-var ErrGoMod = errors.New("a member go.mod lacks a line the render sets")
-
 type Go struct{ fs fsadapter.FS }
 
 func NewGo(fs fsadapter.FS) Go { return Go{fs: fs} }
@@ -175,29 +173,25 @@ func (g Go) goMod(path, module, goVersion string, deps map[string]string) (strin
 		return "", fmt.Errorf("reading %s: %w", path, err)
 	}
 
-	lines := strings.Split(strings.TrimPrefix(string(raw), goHeader), "\n")
-	set := map[string]string{"module": "module " + module, "go": "go " + goVersion}
-	seen := map[string]bool{}
+	body := string(raw)
+	first, rest, _ := strings.Cut(body, "\n")
+	header, isCRLF := strings.CutSuffix(first, "\r")
 
-	for i, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-
-		if directive, ok := set[fields[0]]; ok {
-			lines[i] = directive
-			seen[fields[0]] = true
-		}
+	if header+"\n" == goHeader {
+		body = rest
 	}
 
-	for _, name := range []string{"module", "go"} {
-		if !seen[name] {
-			return "", fmt.Errorf("%w: %s has no %s line", ErrGoMod, path, name)
-		}
+	eol := "\n"
+	if isCRLF {
+		eol = "\r\n"
 	}
 
-	return goHeader + gomod.SetVersions(strings.Join(lines, "\n"), deps), nil
+	edited, err := gomod.Edit(body, module, goVersion, deps)
+	if err != nil {
+		return "", fmt.Errorf("editing %s: %w", path, err)
+	}
+
+	return strings.TrimSuffix(goHeader, "\n") + eol + edited, nil
 }
 
 func dependencyLock(root string, repos []rendertypes.Repo) []rendertypes.Command {

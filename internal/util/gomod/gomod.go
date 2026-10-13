@@ -1,59 +1,125 @@
 package gomod
 
-import "strings"
+import (
+	"errors"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+)
 
-func SetVersions(content string, versions map[string]string) string {
-	return eachRequire(content, func(module, version string) string {
-		if declared, ok := versions[module]; ok {
-			return declared
+var ErrRefused = errors.New("refusing to edit a go.mod")
+
+func Edit(content, module, goVersion string, versions map[string]string) (string, error) {
+	set := map[string]string{"module": module, "go": goVersion}
+	seen := map[string]bool{}
+
+	edited, err := eachStatement(content, func(verb string, args []string, line string) string {
+		if value, ok := set[verb]; ok {
+			seen[verb] = true
+
+			return replaceAfter(line, verb, args[0], value)
 		}
 
-		return version
+		if verb != "require" {
+			return line
+		}
+
+		if declared, ok := versions[args[0]]; ok {
+			return replaceAfter(line, args[0], args[1], declared)
+		}
+
+		return line
 	})
+	if err != nil {
+		return "", err
+	}
+
+	for _, verb := range []string{"module", "go"} {
+		if !seen[verb] {
+			return "", fmt.Errorf("%w: it has no %s line", ErrRefused, verb)
+		}
+	}
+
+	return edited, nil
 }
 
-func Requires(content string) map[string]bool {
+func Requires(content string) (map[string]bool, error) {
 	out := map[string]bool{}
 
-	eachRequire(content, func(module, version string) string {
-		out[module] = true
+	_, err := eachStatement(content, func(verb string, args []string, line string) string {
+		if verb == "require" {
+			out[args[0]] = true
+		}
 
-		return version
+		return line
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	return out
+	return out, nil
 }
 
-func eachRequire(content string, visit func(module, version string) string) string {
+var arity = map[string]int{"module": 1, "go": 1, "require": 2}
+
+func eachStatement(content string, visit func(verb string, args []string, line string) string) (string, error) {
 	lines := strings.Split(content, "\n")
-	inBlock := false
+	block := ""
 
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
+		fields := tokens(line)
+		verb, args := block, fields
 
 		switch {
-		case trimmed == "" || strings.HasPrefix(trimmed, "//"):
-		case inBlock && trimmed == ")":
-			inBlock = false
-		case inBlock:
-			lines[i] = rewriteRequire(line, strings.Fields(trimmed), visit)
-		case trimmed == "require (":
-			inBlock = true
-		case strings.HasPrefix(trimmed, "require "):
-			lines[i] = rewriteRequire(line, strings.Fields(trimmed)[1:], visit)
+		case len(fields) == 0:
+			continue
+		case block != "" && len(fields) == 1 && fields[0] == ")":
+			block = ""
+
+			continue
+		case block == "" && len(fields) == 2 && fields[1] == "(":
+			if fields[0] == "module" {
+				return "", fmt.Errorf("%w: line %d opens a factored module block: %s", ErrRefused, i+1, strings.TrimSpace(line))
+			}
+
+			block = fields[0]
+
+			continue
+		case block == "":
+			verb, args = fields[0], fields[1:]
+		}
+
+		if want, ok := arity[verb]; ok && !readable(args, want) {
+			return "", fmt.Errorf("%w: line %d cannot be read: %s", ErrRefused, i+1, strings.TrimSpace(line))
+		}
+
+		lines[i] = visit(verb, args, line)
+	}
+
+	return strings.Join(lines, "\n"), nil
+}
+
+func tokens(line string) []string {
+	code, _, _ := strings.Cut(line, "//")
+	fields := strings.Fields(strings.NewReplacer("(", " ( ", ")", " ) ").Replace(code))
+
+	for i, field := range fields {
+		if unquoted, err := strconv.Unquote(field); err == nil {
+			fields[i] = unquoted
 		}
 	}
 
-	return strings.Join(lines, "\n")
+	return fields
 }
 
-func rewriteRequire(line string, fields []string, visit func(module, version string) string) string {
-	if len(fields) < 2 {
-		return line
-	}
+func readable(args []string, want int) bool {
+	return len(args) == want && !slices.Contains(args, "(") && !slices.Contains(args, ")")
+}
 
-	module, version := fields[0], fields[1]
-	end := strings.Index(line, module) + len(module)
+func replaceAfter(line, anchor, old, value string) string {
+	start := strings.Index(line, anchor) + len(anchor)
+	at := start + strings.Index(line[start:], old)
 
-	return line[:end] + strings.Replace(line[end:], version, visit(module, version), 1)
+	return line[:at] + value + line[at+len(old):]
 }
