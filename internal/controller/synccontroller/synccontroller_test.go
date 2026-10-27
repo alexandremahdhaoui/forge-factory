@@ -1851,7 +1851,7 @@ func TestALockWithAMissingPackageNamesItEvenWhenARecordedFileWasEditedByHand(t *
 		Path: "FOLLOWUP.md", SHA256: synccontroller.Digest([]byte("as the bootstrap placed it\n")),
 	})
 	require.ErrorIs(t, err, resolvecontroller.ErrUnregistered)
-	require.NotErrorIs(t, err, synccontroller.ErrHandEdited)
+	require.NotErrorIs(t, err, synccontroller.ErrDiffersFromLastRender)
 }
 
 func TestALockWithAMissingPackageLeavesTheRecordAsItWas(t *testing.T) {

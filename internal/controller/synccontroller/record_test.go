@@ -98,7 +98,7 @@ func TestAFileThatDiffersFromItsLastRenderIsNotTouched(t *testing.T) {
 	h.goMods["/w/golden-go/go.mod"] = "a person edited this\n"
 
 	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
-	require.ErrorIs(t, err, synccontroller.ErrHandEdited)
+	require.ErrorIs(t, err, synccontroller.ErrDiffersFromLastRender)
 
 	_, written := h.wrote["/w/golden-go/go.mod"]
 	assert.False(t, written, "a refused render writes nothing")
@@ -500,7 +500,7 @@ func TestAHandEditMadeBeforeALockIsRefusedAndNoLockCommandRuns(t *testing.T) {
 	before := len(runner.Calls)
 
 	_, err := c.Lock(t.Context(), parse(t, factory), root, "")
-	require.ErrorIs(t, err, synccontroller.ErrHandEdited)
+	require.ErrorIs(t, err, synccontroller.ErrDiffersFromLastRender)
 	assert.Len(t, runner.Calls, before, "the refused lock adds no command to the ones the sync ran")
 }
 
@@ -512,5 +512,5 @@ func TestAHandEditMadeAfterALockIsStillRefused(t *testing.T) {
 		[]byte(tidiedGoMod+"\nrequire example.com/by-hand v1.0.0\n"), 0o600))
 
 	_, err := c.Sync(t.Context(), parse(t, factory), root, "")
-	require.ErrorIs(t, err, synccontroller.ErrHandEdited)
+	require.ErrorIs(t, err, synccontroller.ErrDiffersFromLastRender)
 }

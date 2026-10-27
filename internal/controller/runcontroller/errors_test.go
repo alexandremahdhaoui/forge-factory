@@ -165,13 +165,9 @@ func newRig(t *testing.T) *rig {
 	}
 	r.c = New(r.fs, r.git, r.exec, r.sync, nopLocker{}, r.out)
 
-	// The run context locks right after syncing; these tests are about
-	// other failure shapes, so the lock always resolves.
 	r.sync.EXPECT().Lock(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(synccontroller.Report{}, nil).Maybe()
 
-	// The exec boundary asks PATH for forge before picking a pinned go-run
-	// fallback; answering yes keeps the bare form every expectation pins.
 	r.exec.EXPECT().LookPath("forge").Return("/usr/bin/forge", true).Maybe()
 
 	return r
@@ -343,8 +339,6 @@ func TestRemoteDevRevMustResolve(t *testing.T) {
 	require.ErrorContains(t, err, "resolving v9.9.9 in example.com/org/tool")
 }
 
-// remoteToFactory drives a remote run up to the factory read and hands the
-// test the factory content to answer with.
 func (r *rig) remoteToFactory(factoryYaml string) {
 	r.git.EXPECT().Clone(mock.Anything, "git@example.com:org/tool.git", mock.Anything).Return(nil)
 	r.git.EXPECT().Show(mock.Anything, mock.Anything, shaA, "forge.yaml").
@@ -398,7 +392,6 @@ func TestRemoteFailsWhenTheRegisterRevisionDoesNotResolve(t *testing.T) {
 	require.ErrorContains(t, err, "resolving the register at v9")
 }
 
-// remoteToRegister continues past the factory to a resolved register clone.
 func (r *rig) remoteToRegister() {
 	r.remoteToFactory(registeredFactoryYaml)
 	r.git.EXPECT().Clone(mock.Anything, "git@example.com:org/register.git", mock.Anything).Return(nil)
@@ -446,10 +439,6 @@ func TestRemoteFailsWhenNothingPinsTheVersion(t *testing.T) {
 	r.git.EXPECT().Show(mock.Anything, mock.Anything, shaA, "index/internal/example.com/org/tool/1.json").
 		Return(`{"current":"v1.0.0"}`, true, nil)
 
-	// A track that names a version and no proving revision is not a run that
-	// can be pinned. Saying so here beats letting it fall through to "the
-	// revision names no sha", which names the symptom and sends the reader
-	// looking in the state repo instead of at the track.
 	_, err := r.c.Run(context.Background(), remoteReq(t, "example.com/org/tool"))
 	require.ErrorContains(t, err, "names v1.0.0 with no proving revision")
 }
@@ -585,8 +574,6 @@ func TestCloneOrFetchShapes(t *testing.T) {
 		cache := filepath.Join(t.TempDir(), "blocked")
 		require.NoError(t, os.WriteFile(cache, []byte(""), 0o600))
 
-		// The lock is the first thing to touch the blocked path now, and
-		// its failure names the same uncreatable directory.
 		_, err := r.c.cloneOrFetch(ctx, cache, "git@example.com:org/tool.git")
 		require.ErrorContains(t, err, "preparing the lock")
 	})
@@ -598,8 +585,6 @@ func TestCheckoutContextErrorShapes(t *testing.T) {
 	member := config.Repo{Name: "tool", URL: "git@example.com:org/tool.git"}
 	registerURL := "git@example.com:org/register.git"
 
-	// Directories, not decoration: a real adapter may reach these, and a
-	// literal "/clone" is only writable for root.
 	shared := t.TempDir()
 	clone := filepath.Join(shared, "clone")
 	register := filepath.Join(shared, "register")
@@ -681,8 +666,6 @@ func TestMaterialiseAndExecErrorShapes(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(cache, "git"), 0o750))
 		require.NoError(t, os.WriteFile(filepath.Join(cache, "run"), []byte(""), 0o600))
 
-		// The lock is the first thing to touch the blocked path now, and
-		// its failure names the same uncreatable directory.
 		_, err := r.c.materialiseAndExec(ctx, Request{Quiet: true, CacheDir: cache}, "/ws/tool", target, factoryURL, "", "")
 		require.ErrorContains(t, err, "preparing the lock")
 	})
@@ -921,7 +904,7 @@ func TestBootstrapProtectsThePlacedWorkspaceFiles(t *testing.T) {
 		_, _, err := r.c.Bootstrap(ctx, BootstrapRequest{
 			Factory: factoryURL, Dir: dir, CacheDir: t.TempDir(), Quiet: true,
 		})
-		require.ErrorIs(t, err, synccontroller.ErrHandEdited)
+		require.ErrorIs(t, err, synccontroller.ErrDiffersFromLastRender)
 		require.ErrorContains(t, err, "forge-factory.yaml")
 		require.ErrorContains(t, err, "forge-factory take forge-factory.yaml")
 
@@ -1022,19 +1005,10 @@ func TestBootstrapProtectsThePlacedWorkspaceFiles(t *testing.T) {
 	})
 }
 
-// nopLocker is what a unit rig locks with. The real lock writes a file
-// beside every directory a controller names, so wiring it by default made
-// unit tests depend on the privileges of whatever path a fixture invented
-// - literal "/clone" passed for years as an opaque name and then started
-// failing for everyone who is not root. Serialization is proved where it
-// is the subject (the lockadapter suite, and the concurrent
-// materialisation test), not incidentally everywhere else.
 type nopLocker struct{}
 
 func (nopLocker) Lock(string) (func(), error) { return func() {}, nil }
 
-// withRealLock swaps in the file lock for the subtests whose subject IS
-// the lock's failure on an unusable path.
 func (r *rig) withRealLock() {
 	r.c = New(r.fs, r.git, r.exec, r.sync, lockadapter.New(), r.out)
 }

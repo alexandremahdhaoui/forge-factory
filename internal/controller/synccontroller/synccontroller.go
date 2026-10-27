@@ -36,9 +36,9 @@ var (
 	ErrLanguage = errors.New("an engine speaks a different language than its alias claims")
 	ErrCommand  = errors.New("a command an engine asked for failed")
 
-	ErrHandEdited    = errors.New("a rendered file differs from the last render")
-	ErrNotRendered   = errors.New("forge-factory renders no such file")
-	ErrNothingToTake = errors.New("the file is not on disk")
+	ErrDiffersFromLastRender = errors.New("a rendered file differs from the last render")
+	ErrNotRendered           = errors.New("forge-factory renders no such file")
+	ErrNothingToTake         = errors.New("the file is not on disk")
 )
 
 func tail(s string) string {
@@ -582,11 +582,9 @@ func (r rendering) settledNotes(root string, settled Record) []string {
 			switch {
 			case !isRequired:
 			case after != declared:
-				if after != r.record[rel].Versions[module] {
-					notes = append(notes, fmt.Sprintf(
-						"%s: the declared version of %s is stale. forge-factory.yaml declares %s and the lock commands raised it to %s. Set %s to %s in forge-factory.yaml.",
-						rel, module, declared, after, module, after))
-				}
+				notes = append(notes, fmt.Sprintf(
+					"%s: the declared version of %s is stale. forge-factory.yaml declares %s and the tidy that settles %s raised it to %s. Set %s to %s in forge-factory.yaml.",
+					rel, module, declared, filepath.Base(path), after, module, after))
 			case wasRequired && before != after:
 				notes = append(notes, fmt.Sprintf("%s: the sync moved %s from %s on disk to %s, the version forge-factory declares",
 					rel, module, before, after))
@@ -623,7 +621,7 @@ func declaredVersionMovedError(root, path string, differing []string) error {
 			"Nothing was written.\n"+
 			"Raise the declaration of each module above in forge-factory.yaml to the version the copy on disk requires.\n"+
 			"Then run: forge-factory sync",
-		ErrHandEdited, relative(root, path), strings.Join(differing, "\n"))
+		ErrDiffersFromLastRender, relative(root, path), strings.Join(differing, "\n"))
 }
 
 func handEditedError(root, path string) error {
@@ -636,7 +634,7 @@ func handEditedError(root, path string) error {
 			"Two ways forward.\n"+
 			"  Keep the edit. Move it into the factory repo, under workspace/, then sync again.\n"+
 			"  Take the render, and keep the file on disk as %s.bak. Run: forge-factory take %s",
-		ErrHandEdited, rel, rel, rel)
+		ErrDiffersFromLastRender, rel, rel, rel)
 }
 
 func WriteRecord(fs fsadapter.FS, root string, paths []string, entries Record) (string, bool, error) {
@@ -930,7 +928,6 @@ func (c *Controller) renderMembers(
 		digests:  Record{},
 		declared: map[string]map[string]string{},
 		before:   map[string]map[string]string{},
-		record:   record,
 	}
 
 	for _, language := range f.Languages() {
@@ -1095,7 +1092,6 @@ type rendering struct {
 	digests   Record
 	declared  map[string]map[string]string
 	before    map[string]map[string]string
-	record    Record
 }
 
 func (r rendering) recorded() []string {

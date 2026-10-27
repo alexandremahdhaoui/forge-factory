@@ -325,7 +325,7 @@ const raiseTheDeclaration = "Raise the declaration of each module above in forge
 func assertTheRefusalSaysWhatHappenedAndToRaiseTheDeclaration(t *testing.T, err error) {
 	t.Helper()
 
-	require.ErrorIs(t, err, synccontroller.ErrHandEdited)
+	require.ErrorIs(t, err, synccontroller.ErrDiffersFromLastRender)
 	assert.Contains(t, err.Error(), "golden-go/go.mod")
 	assert.Contains(t, err.Error(), "sigs.k8s.io/yaml: the record holds v1.6.0, the copy on disk requires v1.6.1")
 	assert.Contains(t, err.Error(), raiseTheDeclaration)
@@ -399,7 +399,7 @@ func TestACargoTomlHandEditStillRefusesTheSyncAsAWholeFile(t *testing.T) {
 	w.write(t, cargo, renderedCargoToml+"\n[profile.release]\nlto = true\n")
 
 	err := w.sync(t)
-	require.ErrorIs(t, err, synccontroller.ErrHandEdited)
+	require.ErrorIs(t, err, synccontroller.ErrDiffersFromLastRender)
 	assert.Contains(t, err.Error(), "Cargo.toml")
 	assert.Contains(t, err.Error(), "not the one it last wrote")
 	assert.Contains(t, w.read(t, cargo), "lto = true")
@@ -452,7 +452,7 @@ func TestASyncAfterALockWhoseTidyRaisedADeclaredVersionStaysGreen(t *testing.T) 
 }
 
 const yamlPinIsStale = "golden-go/go.mod: the declared version of sigs.k8s.io/yaml is stale. " +
-	"forge-factory.yaml declares v1.6.0 and the lock commands raised it to v1.7.0. " +
+	"forge-factory.yaml declares v1.6.0 and the tidy that settles go.mod raised it to v1.7.0. " +
 	"Set sigs.k8s.io/yaml to v1.7.0 in forge-factory.yaml."
 
 func notesNaming(report synccontroller.Report, module string) []string {
@@ -478,39 +478,67 @@ func TestASyncWhoseTidyRaisesADeclaredVersionNamesTheStalePinWithTheVersionToSet
 	assert.Equal(t, []string{yamlPinIsStale}, notesNaming(report, "sigs.k8s.io/yaml"))
 }
 
-func TestASyncAfterTheSyncThatNamedAStalePinNamesNothingAndNeverReportsAMoveDown(t *testing.T) {
+func TestEverySyncNamesAStalePinNeverAsAMoveDownUntilTheDeclarationIsRaised(t *testing.T) {
 	t.Parallel()
 
 	w := newMergedWorkspace(t)
 	w.tidyRaises("sigs.k8s.io/yaml", "v1.6.0", "v1.7.0")
 	require.NoError(t, w.sync(t))
 
-	report, err := w.syncReport(t, "    sigs.k8s.io/yaml: v1.6.0\n")
+	for range 2 {
+		report, err := w.syncReport(t, "    sigs.k8s.io/yaml: v1.6.0\n")
+		require.NoError(t, err)
+		assert.Equal(t, []string{yamlPinIsStale}, notesNaming(report, "sigs.k8s.io/yaml"))
+		assert.Contains(t, w.read(t, w.goMod()), "sigs.k8s.io/yaml v1.7.0")
+	}
+
+	raised, err := w.syncReport(t, "    sigs.k8s.io/yaml: v1.7.0\n")
 	require.NoError(t, err)
-	assert.Empty(t, notesNaming(report, "sigs.k8s.io/yaml"))
-	assert.Contains(t, w.read(t, w.goMod()), "sigs.k8s.io/yaml v1.7.0")
+	assert.Empty(t, notesNaming(raised, "sigs.k8s.io/yaml"))
 }
 
-func TestANewlyDeclaredModuleBelowTheVersionOnDiskIsNamedAsAStalePinOnTheFirstSyncOnly(t *testing.T) {
+func TestANewlyDeclaredModuleBelowTheVersionOnDiskIsNamedAsAStalePinOnEverySync(t *testing.T) {
 	t.Parallel()
 
 	declaring := "    sigs.k8s.io/yaml: v1.6.0\n    go.yaml.in/yaml/v4: v4.0.0\n"
+	stale := "golden-go/go.mod: the declared version of go.yaml.in/yaml/v4 is stale. " +
+		"forge-factory.yaml declares v4.0.0 and the tidy that settles go.mod raised it to v4.1.0. " +
+		"Set go.yaml.in/yaml/v4 to v4.1.0 in forge-factory.yaml."
 
 	w := syncedMergedWorkspace(t)
 	w.replaceInGoMod(t, "go.yaml.in/yaml/v4 v4.0.0", "go.yaml.in/yaml/v4 v4.1.0")
 	w.tidyRaises("go.yaml.in/yaml/v4", "v4.0.0", "v4.1.0")
 
-	first, err := w.syncReport(t, declaring)
-	require.NoError(t, err)
-	assert.Equal(t, []string{
-		"golden-go/go.mod: the declared version of go.yaml.in/yaml/v4 is stale. " +
-			"forge-factory.yaml declares v4.0.0 and the lock commands raised it to v4.1.0. " +
-			"Set go.yaml.in/yaml/v4 to v4.1.0 in forge-factory.yaml.",
-	}, notesNaming(first, "go.yaml.in/yaml/v4"))
+	for range 2 {
+		report, err := w.syncReport(t, declaring)
+		require.NoError(t, err)
+		assert.Equal(t, []string{stale}, notesNaming(report, "go.yaml.in/yaml/v4"))
+	}
+}
 
-	second, err := w.syncReport(t, declaring)
+func TestASyncAfterALockWhoseTidyRaisedADeclaredVersionNamesTheStalePin(t *testing.T) {
+	t.Parallel()
+
+	w := syncedMergedWorkspace(t)
+	w.tidyRaises("sigs.k8s.io/yaml", "v1.6.0", "v1.7.0")
+	require.NoError(t, w.lock(t))
+
+	report, err := w.syncReport(t, "    sigs.k8s.io/yaml: v1.6.0\n")
 	require.NoError(t, err)
-	assert.Empty(t, notesNaming(second, "go.yaml.in/yaml/v4"))
+	assert.Equal(t, []string{yamlPinIsStale}, notesNaming(report, "sigs.k8s.io/yaml"))
+}
+
+func TestASyncAfterTheUserLoweredADeclarationBelowWhatTheTidyNeedsNamesTheStalePin(t *testing.T) {
+	t.Parallel()
+
+	w := newMergedWorkspace(t)
+	require.NoError(t, w.syncDeclaring(t, "    sigs.k8s.io/yaml: v1.7.0\n"))
+	require.Contains(t, w.read(t, w.goMod()), "sigs.k8s.io/yaml v1.7.0")
+	w.tidyRaises("sigs.k8s.io/yaml", "v1.6.0", "v1.7.0")
+
+	report, err := w.syncReport(t, "    sigs.k8s.io/yaml: v1.6.0\n")
+	require.NoError(t, err)
+	assert.Equal(t, []string{yamlPinIsStale}, notesNaming(report, "sigs.k8s.io/yaml"))
 }
 
 func TestASyncAfterASyncWhoseTidyRaisedADeclaredVersionStaysGreen(t *testing.T) {
