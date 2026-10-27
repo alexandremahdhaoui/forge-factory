@@ -121,10 +121,17 @@ func (w *mergedWorkspace) sync(t *testing.T) error {
 func (w *mergedWorkspace) syncDeclaring(t *testing.T, goDependencies string) error {
 	t.Helper()
 
-	factory := strings.Replace(mergedFactory, "    sigs.k8s.io/yaml: v1.6.0\n", goDependencies, 1)
-	_, err := w.c.Sync(t.Context(), parse(t, factory), w.root, "")
+	_, err := w.syncReport(t, goDependencies)
 
 	return err
+}
+
+func (w *mergedWorkspace) syncReport(t *testing.T, goDependencies string) (synccontroller.Report, error) {
+	t.Helper()
+
+	factory := strings.Replace(mergedFactory, "    sigs.k8s.io/yaml: v1.6.0\n", goDependencies, 1)
+
+	return w.c.Sync(t.Context(), parse(t, factory), w.root, "")
 }
 
 func (w *mergedWorkspace) lock(t *testing.T) error {
@@ -358,6 +365,23 @@ func TestAHandEditEqualToTheNewlyDeclaredVersionSyncsGreen(t *testing.T) {
 
 	require.NoError(t, w.syncDeclaring(t, "    sigs.k8s.io/yaml: v1.6.1\n"))
 	assert.Contains(t, w.read(t, w.goMod()), "sigs.k8s.io/yaml v1.6.1")
+}
+
+func TestASyncThatOverwritesADeclaredModuleReAddedByHandNamesBothVersionsInItsNotes(t *testing.T) {
+	t.Parallel()
+
+	declaring := "    sigs.k8s.io/yaml: v1.6.0\n    example.com/readded: v1.0.0\n"
+
+	w := newMergedWorkspace(t)
+	require.NoError(t, w.syncDeclaring(t, declaring))
+	require.Equal(t, map[string]string{"sigs.k8s.io/yaml": "v1.6.0"}, w.recorded(t, "golden-go/go.mod").Versions)
+	w.write(t, w.goMod(), w.read(t, w.goMod())+"\nrequire example.com/readded v0.9.0\n")
+
+	report, err := w.syncReport(t, declaring)
+	require.NoError(t, err)
+	assert.Contains(t, w.read(t, w.goMod()), "example.com/readded v1.0.0")
+	assert.Contains(t, report.Notes,
+		"golden-go/go.mod: the sync moved example.com/readded from v0.9.0 on disk to v1.0.0, the version forge-factory declares")
 }
 
 func TestACargoTomlHandEditStillRefusesTheSyncAsAWholeFile(t *testing.T) {
