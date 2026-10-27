@@ -497,9 +497,11 @@ func TestAHandEditMadeBeforeALockIsRefusedAndNoLockCommandRuns(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, "golden-go", "go.mod"),
 		[]byte(goMod+"\nrequire example.com/by-hand v1.0.0\n"), 0o600))
 
+	before := len(runner.Calls)
+
 	_, err := c.Lock(t.Context(), parse(t, factory), root, "")
 	require.ErrorIs(t, err, synccontroller.ErrHandEdited)
-	runner.AssertNumberOfCalls(t, "RunEnv", 1)
+	assert.Len(t, runner.Calls, before, "the refused lock adds no command to the ones the sync ran")
 }
 
 func TestAHandEditMadeAfterALockIsStillRefused(t *testing.T) {
