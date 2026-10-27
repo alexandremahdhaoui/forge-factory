@@ -157,24 +157,26 @@ func (d *Driver) runSync(ctx context.Context, f config.Factory, path, root strin
 		return err
 	}
 
-	if d.prune {
-		d.prune = false
-
-		updated, pruned, err := d.pruneDeadPins(path, report)
-		if err != nil {
-			return err
-		}
-
-		if pruned {
-			return d.runSync(ctx, updated, path, root)
-		}
-	}
-
 	if err := d.applyTooling(ctx, f, root, report); err != nil {
 		return err
 	}
 
-	return d.refuseUnlocked(report)
+	if err := d.refuseUnlocked(report); err != nil {
+		return err
+	}
+
+	if !d.prune {
+		return nil
+	}
+
+	d.prune = false
+
+	updated, pruned, err := d.pruneDeadPins(path, report)
+	if err != nil || !pruned {
+		return err
+	}
+
+	return d.runSync(ctx, updated, path, root)
 }
 
 func (d *Driver) runTake(ctx context.Context, f config.Factory, path, root string, rest []string) error {

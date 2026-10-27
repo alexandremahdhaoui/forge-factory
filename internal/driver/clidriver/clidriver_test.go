@@ -824,6 +824,44 @@ engines:
 	assert.Contains(t, h.wrote["forge-factory.yaml"], `{"track":"1"}`)
 }
 
+func TestASyncWithAnUnlockedCommandRefusesAndNeverPrunesADeadPin(t *testing.T) {
+	t.Parallel()
+
+	pinned := `version: "1"
+name: golden
+repos:
+  - name: golden-go
+    url: u
+    languages: [go]
+register:
+  url: git@example.com:golden-register.git
+dependencies:
+  go:
+    example.com/pkg: { track: "1", pin: v1.5.0, mode: soft, reason: dead }
+engines:
+  - alias: go
+    engine: forge://example.com/lang-go
+`
+
+	h := newHarness(t)
+	h.reads(pinned)
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		synccontroller.Report{
+			Root:     "/w",
+			Unlocked: []string{"go mod tidy in /w/golden-go: no network"},
+			Notes: []string{
+				"soft pin go:example.com/pkg v1.5.0 is behind track 1 (v1.6.0) - the register is newer; remove this pin",
+			},
+		}, nil).Once()
+
+	err := h.driver.Run(t.Context(), []string{"sync", "--root", "/w", "--prune-pins"})
+	require.ErrorIs(t, err, clidriver.ErrUnlocked)
+	assert.Contains(t, err.Error(), "go mod tidy in /w/golden-go")
+	assert.NotContains(t, h.out.String(), "pruned a dead pin")
+	h.sync.AssertNumberOfCalls(t, "Sync", 1)
+	h.fs.AssertNotCalled(t, "WriteFile", mock.Anything, mock.Anything)
+}
+
 func TestSyncPrunePinsWithNothingDeadSyncsOnce(t *testing.T) {
 	t.Parallel()
 
