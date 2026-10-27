@@ -497,7 +497,7 @@ func (t TypeScript) Render(in rendertypes.Input) (rendertypes.Output, error) {
 		DependencyLock: []rendertypes.Command{{
 			Dir:      in.Root,
 			Command:  "pnpm",
-			Args:     []string{"install"},
+			Args:     []string{"install", "--lockfile-only"},
 			Optional: true,
 		}},
 		Lockfiles: []string{filepath.Join(in.Root, "pnpm-lock.yaml")},
