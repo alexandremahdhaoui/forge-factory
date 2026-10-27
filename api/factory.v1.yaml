@@ -128,9 +128,13 @@ components:
             install --lockfile-only at the root, which writes pnpm-lock.yaml.
             No lock command installs a package, a virtual environment or a
             build output. Only a language engine knows these commands. Lock
-            runs every command. Sync runs only the commands whose dir is a
-            member directory holding a manifest that sync changed, and never a
-            command at the workspace root.
+            runs every command. Each rendered file whose bytes sync changed
+            belongs to the deepest command dir that holds the file. Sync runs
+            only the commands of those dirs, in the declared order. The
+            workspace root counts as a dir like any other. A changed go.work
+            runs go work sync. A changed Cargo.toml runs cargo update. A
+            changed member package.json runs pnpm install at the root, since
+            the TypeScript lock declares no member command.
         lockfiles:
           type: array
           items:

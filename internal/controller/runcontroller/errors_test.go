@@ -1009,6 +1009,12 @@ type nopLocker struct{}
 
 func (nopLocker) Lock(string) (func(), error) { return func() {}, nil }
 
+func TestTheUnitRigSkipsTheRealFileLockBecauseAFixturePathSuchAsCloneIsWritableOnlyByRoot(t *testing.T) {
+	t.Parallel()
+
+	require.IsType(t, nopLocker{}, newRig(t).c.lock)
+}
+
 func (r *rig) withRealLock() {
 	r.c = New(r.fs, r.git, r.exec, r.sync, lockadapter.New(), r.out)
 }

@@ -1019,8 +1019,6 @@ func (c *Controller) renderMembers(
 		changed := map[string]bool{}
 
 		if write {
-			members := memberDirs(engine.DependencyLock, resolved)
-
 			for _, file := range engine.Files {
 				if only != "" && !underMemberOrRoot(root, only, file.Path) {
 					continue
@@ -1028,7 +1026,7 @@ func (c *Controller) renderMembers(
 
 				data := []byte(file.Content)
 
-				if dir, ok := owner(members, file.Path); ok && c.differsOnDisk(file.Path, data) {
+				if dir, ok := deepestHolder(engine.DependencyLock, file.Path); ok && c.differsOnDisk(file.Path, data) {
 					changed[dir] = true
 				}
 
@@ -1112,26 +1110,16 @@ func (r rendering) readBack() []string {
 	return out
 }
 
-func memberDirs(commands []commandWire, repos []repoWire) []string {
-	out := []string{}
+func deepestHolder(commands []commandWire, path string) (string, bool) {
+	deepest := ""
 
 	for _, cmd := range commands {
-		if slices.ContainsFunc(repos, func(r repoWire) bool { return r.Path == cmd.Dir }) {
-			out = append(out, cmd.Dir)
+		if under(cmd.Dir, path) && len(cmd.Dir) > len(deepest) {
+			deepest = cmd.Dir
 		}
 	}
 
-	return out
-}
-
-func owner(dirs []string, path string) (string, bool) {
-	for _, dir := range dirs {
-		if under(dir, path) {
-			return dir, true
-		}
-	}
-
-	return "", false
+	return deepest, deepest != ""
 }
 
 func under(dir, path string) bool {

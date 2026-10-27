@@ -103,8 +103,18 @@ func workspace(t *testing.T) string {
 
 	write(t, filepath.Join(root, "sample-go", "main.go"), goSource)
 	write(t, filepath.Join(root, "sample-go", "go.mod"), sampleGoMod)
+	writeRustPackage(t, root, "sample-rust")
 
 	return root
+}
+
+func writeRustPackage(t *testing.T, root, name string) {
+	t.Helper()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(root, name, "src"), 0o755))
+	write(t, filepath.Join(root, name, "Cargo.toml"),
+		"[package]\nname = \""+name+"\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+	write(t, filepath.Join(root, name, "src", "lib.rs"), "")
 }
 
 const sampleGoMod = `module example.com/sample
@@ -183,6 +193,10 @@ func TestSyncMaterialisesEveryLanguage(t *testing.T) {
 		"a bare 1 is not a cargo version")
 	assert.Contains(t, read(t, filepath.Join(root, "sample-web", "package.json")), "neverthrow")
 	assert.Contains(t, read(t, filepath.Join(root, "pnpm-workspace.yaml")), `- "sample-web"`)
+
+	assert.Contains(t, out, "ran cargo update --workspace in "+root, out)
+	_, err := os.Stat(filepath.Join(root, "Cargo.lock"))
+	require.NoError(t, err, "a sync that changed Cargo.toml leaves Cargo.lock at the root")
 }
 
 func TestEverythingGeneratedIsGitignored(t *testing.T) {
@@ -267,6 +281,7 @@ func TestAddPutsANewMemberInEveryMembershipList(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "sample-two"), 0o755))
 	write(t, filepath.Join(root, "sample-two", "forge.yaml"),
 		"name: sample-two\nfactory:\n  module: example.com/two\n  goVersion: \"1.26\"\n")
+	writeRustPackage(t, root, "sample-two")
 
 	mustRun(t, root, "add", "sample-two",
 		"git@github.com:x/sample-two.git", "go", "rust", "typescript")

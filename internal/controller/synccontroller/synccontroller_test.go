@@ -86,6 +86,7 @@ type harness struct {
 	gitignoreContent string
 	gitignoreErr     error
 	goMods           map[string]string
+	disk             map[string]string
 	registry         []byte
 	record           []byte
 	recordWriteErr   error
@@ -101,6 +102,7 @@ func newHarness(t *testing.T) *harness {
 		runner: execadaptermock.NewMockRunner(t),
 		wrote:  map[string]string{},
 		goMods: map[string]string{},
+		disk:   map[string]string{},
 	}
 
 	h.c = synccontroller.New(h.caller, h.fs, h.repos, h.runner, passthrough{})
@@ -203,6 +205,22 @@ func (h *harness) recordWrites() {
 
 			return nil
 		}).Maybe()
+}
+
+func (h *harness) servesFromDisk(path string) {
+	h.fs.EXPECT().ReadFile(path).RunAndReturn(func(string) ([]byte, error) {
+		body, ok := h.disk[path]
+		if !ok {
+			return nil, errors.New("no file yet")
+		}
+
+		return []byte(body), nil
+	}).Maybe()
+	h.fs.EXPECT().Exists(path).RunAndReturn(func(string) (bool, error) {
+		_, ok := h.disk[path]
+
+		return ok, nil
+	}).Maybe()
 }
 
 func (h *harness) answers(uri, tool string, payload any) {
@@ -470,7 +488,7 @@ func syncingHarness(t *testing.T, onDisk string, commands ...map[string]any) *ha
 		},
 		"dependencyLock": commands,
 	})
-	h.fs.EXPECT().ReadFile("/w/go.work").Return(nil, errors.New("no workspace file yet")).Maybe()
+	h.servesFromDisk("/w/go.work")
 	h.fs.EXPECT().Exists("/w/golden-go/go.mod").Return(true, nil).Maybe()
 	h.goMods["/w/golden-go/go.mod"] = onDisk
 	h.recordWrites()
@@ -502,17 +520,183 @@ func TestASyncThatLeavesAMemberGoModAsItWasRunsNoCommand(t *testing.T) {
 	h.runner.AssertNotCalled(t, "RunEnv", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
-func TestASyncNeverRunsACommandWhoseDirIsTheWorkspaceRoot(t *testing.T) {
+var goWorkSync = map[string]any{
+	"dir": "/w", "command": "go", "args": []string{"work", "sync"}, "optional": true,
+}
+
+func TestASyncThatChangesGoWorkRunsGoWorkSyncBeforeTheMemberTidies(t *testing.T) {
 	t.Parallel()
 
-	h := syncingHarness(t, "module example.com/g\n", map[string]any{
-		"dir": "/w", "command": "go", "args": []string{"work", "sync"}, "optional": true,
-	})
+	h := syncingHarness(t, "module example.com/g\n", goWorkSync, memberTidy(true))
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "go", "work", "sync").
+		Return(execadapter.Result{}, nil).Once()
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", mock.Anything, "go", "mod", "tidy").
+		Return(execadapter.Result{}, nil).Once()
 
 	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
+	assert.Equal(t, []string{"go work sync in /w", "go mod tidy in /w/golden-go"}, report.Locked)
+}
+
+func TestASyncThatChangesOnlyAMemberGoModRunsOnlyThatMembersTidyAndNeverGoWorkSync(t *testing.T) {
+	t.Parallel()
+
+	h := syncingHarness(t, "module example.com/g\n", goWorkSync, memberTidy(true))
+	h.disk["/w/go.work"] = "use ./golden-go\n"
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", mock.Anything, "go", "mod", "tidy").
+		Return(execadapter.Result{}, nil).Once()
+
+	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"go mod tidy in /w/golden-go"}, report.Locked)
+}
+
+const rustFactory = `version: "1"
+name: golden
+repos:
+  - name: golden-rust
+    url: u
+    languages: [rust]
+engines:
+  - alias: rust
+    engine: forge://example.com/lang-rust
+`
+
+func cargoUpdate(optional bool) map[string]any {
+	return map[string]any{
+		"dir": "/w", "command": "cargo", "args": []string{"update", "--workspace"}, "optional": optional,
+	}
+}
+
+func rustSyncingHarness(t *testing.T, command map[string]any) *harness {
+	t.Helper()
+
+	h := newHarness(t)
+	h.envrcExists(t, true)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+	h.answers("forge://example.com/lang-rust", "language", map[string]any{"language": "rust"})
+	h.answers("forge://example.com/lang-rust", "render", map[string]any{
+		"files":          []map[string]any{{"path": "/w/Cargo.toml", "content": renderedCargoToml}},
+		"dependencyLock": []map[string]any{command},
+		"lockfiles":      []string{"/w/Cargo.lock"},
+	})
+	h.servesFromDisk("/w/Cargo.toml")
+	h.recordWrites()
+
+	return h
+}
+
+func TestASyncThatChangesCargoTomlRunsCargoUpdateAtTheWorkspaceRoot(t *testing.T) {
+	t.Parallel()
+
+	h := rustSyncingHarness(t, cargoUpdate(true))
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "cargo", "update", "--workspace").
+		Return(execadapter.Result{}, nil).Once()
+
+	report, err := h.c.Sync(t.Context(), parse(t, rustFactory), "/w", "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"cargo update --workspace in /w"}, report.Locked)
+	assert.Empty(t, report.Unlocked)
+}
+
+func TestASyncThatLeavesCargoTomlAsItWasRunsNoCommand(t *testing.T) {
+	t.Parallel()
+
+	h := rustSyncingHarness(t, cargoUpdate(true))
+	h.disk["/w/Cargo.toml"] = renderedCargoToml
+
+	report, err := h.c.Sync(t.Context(), parse(t, rustFactory), "/w", "")
+	require.NoError(t, err)
 	assert.Empty(t, report.Locked)
 	h.runner.AssertNotCalled(t, "RunEnv", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestASyncWhoseRequiredRootCommandFailsFailsAndNamesTheCommandAndTheRoot(t *testing.T) {
+	t.Parallel()
+
+	h := rustSyncingHarness(t, cargoUpdate(false))
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "cargo", "update", "--workspace").
+		Return(execadapter.Result{ExitCode: 101, Stderr: "failed to load manifest"}, nil).Once()
+
+	_, err := h.c.Sync(t.Context(), parse(t, rustFactory), "/w", "")
+	require.ErrorIs(t, err, synccontroller.ErrCommand)
+	assert.Contains(t, err.Error(), "running cargo update --workspace in /w")
+	assert.Contains(t, err.Error(), "failed to load manifest")
+}
+
+func TestASyncWhoseOptionalRootCommandFailsReportsTheCommandAndTheRootAsUnlocked(t *testing.T) {
+	t.Parallel()
+
+	h := rustSyncingHarness(t, cargoUpdate(true))
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "cargo", "update", "--workspace").
+		Return(execadapter.Result{ExitCode: 101, Stderr: "no network"}, nil).Once()
+
+	report, err := h.c.Sync(t.Context(), parse(t, rustFactory), "/w", "")
+	require.NoError(t, err)
+	require.Len(t, report.Unlocked, 1)
+	assert.Contains(t, report.Unlocked[0], "cargo update --workspace in /w")
+	assert.Contains(t, report.Unlocked[0], "no network")
+}
+
+func TestASyncRecordsCargoTomlAsTheRootCommandLeftItAndCargoLockWithNoDigest(t *testing.T) {
+	t.Parallel()
+
+	h := rustSyncingHarness(t, cargoUpdate(true))
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "cargo", "update", "--workspace").
+		RunAndReturn(func(context.Context, string, map[string]string, string, ...string) (execadapter.Result, error) {
+			h.disk["/w/Cargo.toml"] = "rewritten by cargo\n"
+
+			return execadapter.Result{}, nil
+		}).Once()
+
+	_, err := h.c.Sync(t.Context(), parse(t, rustFactory), "/w", "")
+	require.NoError(t, err)
+
+	sum := sha256.Sum256([]byte("rewritten by cargo\n"))
+	assert.JSONEq(t,
+		fmt.Sprintf(`{"version":1,"files":[{"path":"Cargo.lock"},{"path":"Cargo.toml","sha256":"%x"}]}`, sum),
+		h.wrote["/w/.forge/factory-generated.json"])
+}
+
+const typescriptFactory = `version: "1"
+name: golden
+repos:
+  - name: golden-web
+    url: u
+    languages: [typescript]
+engines:
+  - alias: typescript
+    engine: forge://example.com/lang-typescript
+`
+
+const renderedWorkspaceYaml = "packages:\n  - \"golden-web\"\n"
+
+func TestASyncThatChangesOnlyAMemberPackageJsonRunsTheRootPnpmInstall(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.envrcExists(t, true)
+	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
+	h.answers("forge://example.com/lang-typescript", "language", map[string]any{"language": "typescript"})
+	h.answers("forge://example.com/lang-typescript", "render", map[string]any{
+		"files": []map[string]any{
+			{"path": "/w/golden-web/package.json", "content": "{\"name\":\"golden-web\"}\n"},
+			{"path": "/w/pnpm-workspace.yaml", "content": renderedWorkspaceYaml},
+		},
+		"dependencyLock": []map[string]any{{
+			"dir": "/w", "command": "pnpm", "args": []string{"install", "--lockfile-only"}, "optional": true,
+		}},
+	})
+	h.servesFromDisk("/w/golden-web/package.json")
+	h.servesFromDisk("/w/pnpm-workspace.yaml")
+	h.disk["/w/pnpm-workspace.yaml"] = renderedWorkspaceYaml
+	h.recordWrites()
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "pnpm", "install", "--lockfile-only").
+		Return(execadapter.Result{}, nil).Once()
+
+	report, err := h.c.Sync(t.Context(), parse(t, typescriptFactory), "/w", "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"pnpm install --lockfile-only in /w"}, report.Locked)
 }
 
 func TestASyncWhoseRequiredCommandFailsFailsAndNamesTheMemberAndTheCommand(t *testing.T) {
@@ -787,13 +971,16 @@ func TestARunCacheSyncWhoseWorkspaceIsOneMemberRendersThatMemberAndTheRoot(t *te
 	})
 	h.recordWrites()
 	h.fs.EXPECT().Exists("/w/golden-go/go.mod").Return(false, nil).Once()
+	h.servesFromDisk("/w/go.work")
 	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", mock.Anything, "true").
+		Return(execadapter.Result{}, nil).Once()
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w", mock.Anything, "true").
 		Return(execadapter.Result{}, nil).Once()
 
 	report, err := h.c.Sync(t.Context(), parse(t, twoMemberFactory), "/w", "golden-go")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"true  in /w/golden-go"}, report.Locked,
-		"only the one member's command runs, because the root's never runs in a sync")
+	assert.Equal(t, []string{"true  in /w/golden-go", "true  in /w"}, report.Locked,
+		"the member's command and the root's command run because both files changed, and the absent member's never runs")
 
 	assert.Equal(t,
 		[]string{".forge/engines.yaml", "/w/.forge/factory-generated.json", "/w/go.work", "/w/golden-go/go.mod"},
