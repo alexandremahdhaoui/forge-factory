@@ -116,7 +116,9 @@ components:
             requires need. The Rust lock runs cargo update with the workspace
             flag, which moves only the workspace's own packages and adds a
             package only when Cargo.lock lacks it. Only a language engine
-            knows these commands, and only the build phase runs them.
+            knows these commands. Lock runs every command. Sync runs only the
+            commands whose dir is a member directory holding a manifest that
+            sync changed, and never a command at the workspace root.
         lockfiles:
           type: array
           items:
@@ -154,8 +156,10 @@ components:
         optional:
           type: boolean
           description: >-
-            When true a failure is reported and the sync still succeeds. A tidy
-            needs the network, and a sync must work offline.
+            When false a failure fails the sync or the lock that ran the
+            command. When true a failure is reported as unlocked, and the sync
+            and lock verbs refuse an unlocked command unless offline is set. A
+            tidy needs the network, and an offline run must still finish.
 
     LanguageOutput:
       type: object
