@@ -172,6 +172,8 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		return Report{}, err
 	}
 
+	report.Notes = append(report.Notes, rendered.settledNotes(root, settled)...)
+
 	maps.Copy(rendered.digests, settled)
 
 	if err := c.recordGenerated(root, rendered.recorded(), rendered.digests, &report); err != nil {
@@ -524,46 +526,36 @@ func guardDeclaredVersions(fs fsadapter.FS, root, path string, recorded, declare
 		return nil
 	}
 
-	existing, found, err := beforeRendering(fs, path)
-	if err != nil || !found {
+	onDisk, err := requiresBeforeRendering(fs, path)
+	if err != nil {
 		return err
 	}
 
-	onDisk, err := gomod.Requires(string(existing))
-	if err != nil {
-		return fmt.Errorf("reading the declared versions of %s before rendering over it: %w", path, err)
-	}
-
-	var moved []string
+	var differing []string
 
 	for _, module := range sortedKeys(recorded) {
-		if movedByHand(module, onDisk, recorded, declared) {
-			moved = append(moved, fmt.Sprintf("  %s: the record holds %s, the copy on disk requires %s",
+		if differsFromRecordAndDeclaration(module, onDisk, recorded, declared) {
+			differing = append(differing, fmt.Sprintf("  %s: the record holds %s, the copy on disk requires %s",
 				module, recorded[module], onDisk[module]))
 		}
 	}
 
-	if len(moved) == 0 {
+	if len(differing) == 0 {
 		return nil
 	}
 
-	return declaredVersionMovedError(root, path, moved)
+	return declaredVersionMovedError(root, path, differing)
 }
 
-func movedByHand(module string, onDisk, recorded, declared map[string]string) bool {
+func differsFromRecordAndDeclaration(module string, onDisk, recorded, declared map[string]string) bool {
 	version, required := onDisk[module]
 	now, stillDeclared := declared[module]
 
 	return stillDeclared && required && version != recorded[module] && version != now
 }
 
-func (c *Controller) declaredVersionsMoved(root, path string, data []byte, declared map[string]map[string]string) ([]string, error) {
-	modules, merged := declared[path]
-	if !merged {
-		return nil, nil
-	}
-
-	existing, found, err := beforeRendering(c.fs, path)
+func requiresBeforeRendering(fs fsadapter.FS, path string) (map[string]string, error) {
+	existing, found, err := beforeRendering(fs, path)
 	if err != nil || !found {
 		return nil, err
 	}
@@ -573,24 +565,36 @@ func (c *Controller) declaredVersionsMoved(root, path string, data []byte, decla
 		return nil, fmt.Errorf("reading the declared versions of %s before rendering over it: %w", path, err)
 	}
 
-	written, err := gomod.Requires(string(data))
-	if err != nil {
-		return nil, fmt.Errorf("reading the declared versions the render writes into %s: %w", path, err)
-	}
+	return onDisk, nil
+}
 
+func (r rendering) settledNotes(root string, settled Record) []string {
 	var notes []string
 
-	for _, module := range sortedKeys(modules) {
-		before, wasRequired := onDisk[module]
-		after, isRequired := written[module]
+	for _, path := range sortedKeys(r.before) {
+		rel := relative(root, path)
 
-		if wasRequired && isRequired && before != after {
-			notes = append(notes, fmt.Sprintf("%s: the sync moved %s from %s on disk to %s, the version forge-factory declares",
-				relative(root, path), module, before, after))
+		for _, module := range sortedKeys(r.declared[path]) {
+			declared := r.declared[path][module]
+			before, wasRequired := r.before[path][module]
+			after, isRequired := settled[rel].Versions[module]
+
+			switch {
+			case !isRequired:
+			case after != declared:
+				if after != r.record[rel].Versions[module] {
+					notes = append(notes, fmt.Sprintf(
+						"%s: the declared version of %s is stale. forge-factory.yaml declares %s and the lock commands raised it to %s. Set %s to %s in forge-factory.yaml.",
+						rel, module, declared, after, module, after))
+				}
+			case wasRequired && before != after:
+				notes = append(notes, fmt.Sprintf("%s: the sync moved %s from %s on disk to %s, the version forge-factory declares",
+					rel, module, before, after))
+			}
 		}
 	}
 
-	return notes, nil
+	return notes
 }
 
 func beforeRendering(fs fsadapter.FS, path string) ([]byte, bool, error) {
@@ -611,18 +615,14 @@ func beforeRendering(fs fsadapter.FS, path string) ([]byte, bool, error) {
 	return existing, true, nil
 }
 
-func declaredVersionMovedError(root, path string, moved []string) error {
-	rel := relative(root, path)
-
+func declaredVersionMovedError(root, path string, differing []string) error {
 	return fmt.Errorf(
 		"%w: %s\n"+
-			"forge-factory sets the version of every module it declares in this file, and a declared version on disk moved by hand.\n"+
+			"forge-factory declares the version of each module below. The copy on disk requires a version that is neither the recorded one nor the declared one.\n"+
 			"%s\n"+
-			"Writing the render would lose that edit, so nothing was written.\n"+
-			"Take keeps the file on disk as %s.bak, and the next sync sets every declared version again.\n"+
-			"To keep the edit, declare that version in forge-factory.yaml before you take the render.\n"+
-			"Run: forge-factory take %s",
-		ErrHandEdited, rel, strings.Join(moved, "\n"), rel, rel)
+			"Nothing was written.\n"+
+			"Raise the declaration of each module above in forge-factory.yaml to the version the copy on disk requires. Then run forge-factory sync again.",
+		ErrHandEdited, relative(root, path), strings.Join(differing, "\n"))
 }
 
 func handEditedError(root, path string) error {
@@ -925,7 +925,12 @@ func (c *Controller) renderMembers(
 		return rendering{}, err
 	}
 
-	out := rendering{digests: Record{}, declared: map[string]map[string]string{}}
+	out := rendering{
+		digests:  Record{},
+		declared: map[string]map[string]string{},
+		before:   map[string]map[string]string{},
+		record:   record,
+	}
 
 	for _, language := range f.Languages() {
 		uri, ok := f.EngineFor(language)
@@ -1029,12 +1034,14 @@ func (c *Controller) renderMembers(
 					changed[dir] = true
 				}
 
-				notes, err := c.declaredVersionsMoved(root, file.Path, data, out.declared)
-				if err != nil {
-					return rendering{}, err
-				}
+				if file.Merged {
+					onDisk, err := requiresBeforeRendering(c.fs, file.Path)
+					if err != nil {
+						return rendering{}, err
+					}
 
-				report.Notes = append(report.Notes, notes...)
+					out.before[file.Path] = onDisk
+				}
 
 				if err := writeGuarded(c.fs, root, file.Path, data, record, out.declared); err != nil {
 					return rendering{}, err
@@ -1086,6 +1093,8 @@ type rendering struct {
 	carried   []string
 	digests   Record
 	declared  map[string]map[string]string
+	before    map[string]map[string]string
+	record    Record
 }
 
 func (r rendering) recorded() []string {
