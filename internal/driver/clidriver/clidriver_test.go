@@ -650,6 +650,32 @@ func TestOfflineAllowsALockThatCouldNotReachTheNetwork(t *testing.T) {
 	require.NoError(t, h.driver.Run(t.Context(), []string{"lock", "--offline"}))
 }
 
+func TestASyncWhoseCommandCouldNotRunFailsAndNamesTheMemberAndTheCommand(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		synccontroller.Report{Root: "/w", Unlocked: []string{"go mod tidy in /w/a: unknown revision v1.99.0"}}, nil).Once()
+
+	err := h.driver.Run(t.Context(), []string{"sync"})
+	require.ErrorIs(t, err, clidriver.ErrUnlocked)
+	assert.Contains(t, err.Error(), "go mod tidy in /w/a")
+	assert.Contains(t, h.out.String(), "which a build will need")
+}
+
+func TestOfflineAllowsASyncWhoseCommandCouldNotReachTheNetwork(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		synccontroller.Report{Root: "/w", Unlocked: []string{"go mod tidy in /w/a: no network"}}, nil).Once()
+
+	require.NoError(t, h.driver.Run(t.Context(), []string{"sync", "--offline"}))
+	assert.Contains(t, h.out.String(), "could not run go mod tidy in /w/a: no network")
+}
+
 func TestCloneFetchesTheMembersThenSyncs(t *testing.T) {
 	t.Parallel()
 

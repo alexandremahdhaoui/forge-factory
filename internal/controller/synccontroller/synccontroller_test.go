@@ -447,26 +447,99 @@ func TestTheLanguageProbeNeverSendsNull(t *testing.T) {
 		"a nil slice or map travels as null and the engine's own schema refuses it")
 }
 
-func TestSyncNeverRunsTheDependencyLockCommands(t *testing.T) {
-	t.Parallel()
+const renderedGoMod = "module example.com/g\n\nrequire sigs.k8s.io/yaml v1.6.0\n"
+
+func memberTidy(optional bool) map[string]any {
+	return map[string]any{
+		"dir": "/w/golden-go", "command": "go", "args": []string{"mod", "tidy"},
+		"env": map[string]string{"GOWORK": "off"}, "optional": optional,
+	}
+}
+
+func syncingHarness(t *testing.T, onDisk string, commands ...map[string]any) *harness {
+	t.Helper()
 
 	h := newHarness(t)
 	h.envrcExists(t, true)
 	h.repos.EXPECT().Identity(mock.Anything).Return(map[string]string{}, nil).Once()
 	h.answers("forge://example.com/lang-go", "language", map[string]any{"language": "go"})
 	h.answers("forge://example.com/lang-go", "render", map[string]any{
-		"files": []map[string]any{{"path": "/w/golden-go/go.mod", "content": "x"}},
-		"dependencyLock": []map[string]any{{
-			"dir": "/w/golden-go", "command": "go", "args": []string{"mod", "tidy"},
-			"env": map[string]string{"GOWORK": "off"}, "optional": true,
-		}},
+		"files": []map[string]any{
+			{"path": "/w/golden-go/go.mod", "content": renderedGoMod},
+			{"path": "/w/go.work", "content": "use ./golden-go\n"},
+		},
+		"dependencyLock": commands,
 	})
+	h.fs.EXPECT().ReadFile("/w/go.work").Return(nil, errors.New("no workspace file yet")).Maybe()
+	h.fs.EXPECT().Exists("/w/golden-go/go.mod").Return(true, nil).Maybe()
+	h.goMods["/w/golden-go/go.mod"] = onDisk
 	h.recordWrites()
+
+	return h
+}
+
+func TestASyncThatChangesAMemberGoModRunsThatMembersCommand(t *testing.T) {
+	t.Parallel()
+
+	h := syncingHarness(t, "module example.com/g\n", memberTidy(true))
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", map[string]string{"GOWORK": "off"},
+		"go", "mod", "tidy").Return(execadapter.Result{}, nil).Once()
+
+	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"go mod tidy in /w/golden-go"}, report.Locked)
+	assert.Empty(t, report.Unlocked)
+}
+
+func TestASyncThatLeavesAMemberGoModAsItWasRunsNoCommand(t *testing.T) {
+	t.Parallel()
+
+	h := syncingHarness(t, renderedGoMod, memberTidy(true))
 
 	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
 	require.NoError(t, err)
 	assert.Empty(t, report.Locked)
-	assert.Empty(t, report.Unlocked)
+	h.runner.AssertNotCalled(t, "RunEnv", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestASyncNeverRunsACommandWhoseDirIsTheWorkspaceRoot(t *testing.T) {
+	t.Parallel()
+
+	h := syncingHarness(t, "module example.com/g\n", map[string]any{
+		"dir": "/w", "command": "go", "args": []string{"work", "sync"}, "optional": true,
+	})
+
+	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	require.NoError(t, err)
+	assert.Empty(t, report.Locked)
+	h.runner.AssertNotCalled(t, "RunEnv", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestASyncWhoseRequiredCommandFailsFailsAndNamesTheMemberAndTheCommand(t *testing.T) {
+	t.Parallel()
+
+	h := syncingHarness(t, "module example.com/g\n", memberTidy(false))
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", mock.Anything, "go", "mod", "tidy").
+		Return(execadapter.Result{ExitCode: 1, Stderr: "unknown revision v1.99.0"}, nil).Once()
+
+	_, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	require.ErrorIs(t, err, synccontroller.ErrCommand)
+	assert.Contains(t, err.Error(), "running go mod tidy in /w/golden-go")
+	assert.Contains(t, err.Error(), "unknown revision v1.99.0")
+}
+
+func TestASyncWhoseOptionalCommandFailsReportsTheMemberAndTheCommandAsUnlocked(t *testing.T) {
+	t.Parallel()
+
+	h := syncingHarness(t, "module example.com/g\n", memberTidy(true))
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", mock.Anything, "go", "mod", "tidy").
+		Return(execadapter.Result{ExitCode: 1, Stderr: "no network"}, nil).Once()
+
+	report, err := h.c.Sync(t.Context(), parse(t, factory), "/w", "")
+	require.NoError(t, err)
+	require.Len(t, report.Unlocked, 1)
+	assert.Contains(t, report.Unlocked[0], "go mod tidy in /w/golden-go")
+	assert.Contains(t, report.Unlocked[0], "no network")
 }
 
 func TestLockRunsWhatAnEngineDeclares(t *testing.T) {
@@ -713,9 +786,14 @@ func TestARunCacheSyncWhoseWorkspaceIsOneMemberRendersThatMemberAndTheRoot(t *te
 		},
 	})
 	h.recordWrites()
+	h.fs.EXPECT().Exists("/w/golden-go/go.mod").Return(false, nil).Once()
+	h.runner.EXPECT().RunEnv(mock.Anything, "/w/golden-go", mock.Anything, "true").
+		Return(execadapter.Result{}, nil).Once()
 
 	report, err := h.c.Sync(t.Context(), parse(t, twoMemberFactory), "/w", "golden-go")
 	require.NoError(t, err)
+	assert.Equal(t, []string{"true  in /w/golden-go"}, report.Locked,
+		"only the one member's command runs, because the root's never runs in a sync")
 
 	assert.Equal(t,
 		[]string{".forge/engines.yaml", "/w/.forge/factory-generated.json", "/w/go.work", "/w/golden-go/go.mod"},

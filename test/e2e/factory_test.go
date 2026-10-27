@@ -370,8 +370,10 @@ func TestAGeneratedGoModBuilds(t *testing.T) {
 	root := workspace(t)
 
 	out := mustRun(t, root, "sync")
-	require.NotContains(t, out, "ran go mod tidy",
-		"sync writes manifests and stops; cloning is not building")
+	require.Contains(t, out, "ran go mod tidy in "+filepath.Join(root, "sample-go"), out)
+
+	_, err := os.Stat(filepath.Join(root, "sample-go", "go.sum"))
+	require.NoError(t, err, "a sync that rewrote go.mod leaves the sums beside it")
 
 	out = mustRun(t, root, "lock", "--offline")
 	require.Contains(t, out, "ran go mod tidy", out)
@@ -379,7 +381,7 @@ func TestAGeneratedGoModBuilds(t *testing.T) {
 	mod := read(t, filepath.Join(root, "sample-go", "go.mod"))
 	assert.Contains(t, mod, "sigs.k8s.io/yaml v1.6.0")
 
-	_, err := os.Stat(filepath.Join(root, "sample-go", "go.sum"))
+	_, err = os.Stat(filepath.Join(root, "sample-go", "go.sum"))
 	require.NoError(t, err,
 		"the tidy runs with GOWORK=off, so the member gets the sums a build needs")
 

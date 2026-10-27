@@ -411,6 +411,11 @@ func synced(t *testing.T) (string, *synccontroller.Controller, *execadaptermock.
 			return json.Unmarshal(raw, out)
 		}).Maybe()
 
+	runner.EXPECT().RunEnv(mock.Anything, member, mock.Anything, "go", "mod", "tidy").
+		RunAndReturn(func(context.Context, string, map[string]string, string, ...string) (execadapter.Result, error) {
+			return execadapter.Result{}, os.WriteFile(filepath.Join(member, "go.mod"), []byte(tidiedGoMod), 0o600)
+		})
+
 	c := synccontroller.New(caller, fsadapter.New(), repos, runner, passthrough{})
 
 	_, err := c.Sync(t.Context(), parse(t, factory), root, "")
@@ -419,16 +424,25 @@ func synced(t *testing.T) (string, *synccontroller.Controller, *execadaptermock.
 	return root, c, runner
 }
 
+func TestASyncRightAfterASyncWhoseCommandRewroteGoModSucceeds(t *testing.T) {
+	t.Parallel()
+
+	root, c, _ := synced(t)
+
+	record, err := synccontroller.ReadRecord(fsadapter.New(), root)
+	require.NoError(t, err)
+	assert.Equal(t, synccontroller.Digest([]byte(tidiedGoMod)), record["golden-go/go.mod"],
+		"the record holds go.mod as the command left it, not as the render wrote it")
+
+	_, err = c.Sync(t.Context(), parse(t, factory), root, "")
+	require.NoError(t, err)
+}
+
 func syncedAndLocked(t *testing.T) (string, *synccontroller.Controller) {
 	t.Helper()
 
-	root, c, runner := synced(t)
+	root, c, _ := synced(t)
 	member := filepath.Join(root, "golden-go")
-
-	runner.EXPECT().RunEnv(mock.Anything, member, mock.Anything, "go", "mod", "tidy").
-		RunAndReturn(func(context.Context, string, map[string]string, string, ...string) (execadapter.Result, error) {
-			return execadapter.Result{}, os.WriteFile(filepath.Join(member, "go.mod"), []byte(tidiedGoMod), 0o600)
-		}).Once()
 
 	_, err := c.Lock(t.Context(), parse(t, factory), root, "")
 	require.NoError(t, err)
@@ -485,7 +499,7 @@ func TestAHandEditMadeBeforeALockIsRefusedAndNoLockCommandRuns(t *testing.T) {
 
 	_, err := c.Lock(t.Context(), parse(t, factory), root, "")
 	require.ErrorIs(t, err, synccontroller.ErrHandEdited)
-	runner.AssertNotCalled(t, "RunEnv", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	runner.AssertNumberOfCalls(t, "RunEnv", 1)
 }
 
 func TestAHandEditMadeAfterALockIsStillRefused(t *testing.T) {

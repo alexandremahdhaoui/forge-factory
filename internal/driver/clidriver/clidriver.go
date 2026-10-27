@@ -157,6 +157,10 @@ func (d *Driver) runSync(ctx context.Context, f config.Factory, path, root strin
 		return err
 	}
 
+	if err := d.refuseUnlocked(report); err != nil {
+		return err
+	}
+
 	if d.prune {
 		d.prune = false
 
@@ -209,6 +213,10 @@ func (d *Driver) runLock(ctx context.Context, f config.Factory, root string) err
 		return err
 	}
 
+	return d.refuseUnlocked(report)
+}
+
+func (d *Driver) refuseUnlocked(report synccontroller.Report) error {
 	if len(report.Unlocked) > 0 && !d.offline {
 		return fmt.Errorf("%w: %s", ErrUnlocked, report.Unlocked[0])
 	}

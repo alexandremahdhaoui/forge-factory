@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -163,6 +164,15 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		return Report{}, err
 	}
 
+	lockErr := c.lock(ctx, rendered.settling, &report)
+
+	settled, err := c.digestsOnDisk(root, rendered.settled())
+	if err != nil {
+		return Report{}, err
+	}
+
+	maps.Copy(rendered.digests, settled)
+
 	if err := c.recordGenerated(root, rendered.recorded(), rendered.digests, &report); err != nil {
 		return Report{}, err
 	}
@@ -193,6 +203,10 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 		if changed {
 			report.Ignored = append(report.Ignored, path)
 		}
+	}
+
+	if lockErr != nil {
+		return Report{}, lockErr
 	}
 
 	if err := missing.err(); err != nil {
@@ -851,13 +865,23 @@ func (c *Controller) renderMembers(
 			out.generated = append(out.generated, file.Path)
 		}
 
+		changed := map[string]bool{}
+
 		if write {
+			members := memberDirs(engine.DependencyLock, resolved)
+
 			for _, file := range engine.Files {
 				if only != "" && !underMemberOrRoot(root, only, file.Path) {
 					continue
 				}
 
-				digest, err := WriteRendered(c.fs, root, file.Path, []byte(file.Content), record)
+				data := []byte(file.Content)
+
+				if dir, ok := owner(members, file.Path); ok && c.differsOnDisk(file.Path, data) {
+					changed[dir] = true
+				}
+
+				digest, err := WriteRendered(c.fs, root, file.Path, data, record)
 				if err != nil {
 					return rendering{}, err
 				}
@@ -879,6 +903,10 @@ func (c *Controller) renderMembers(
 			}
 
 			out.commands = append(out.commands, cmd)
+
+			if changed[cmd.Dir] {
+				out.settling = append(out.settling, cmd)
+			}
 		}
 
 		for _, lf := range engine.Lockfiles {
@@ -895,6 +923,7 @@ func (c *Controller) renderMembers(
 
 type rendering struct {
 	commands  []commandWire
+	settling  []commandWire
 	lockfiles []string
 	generated []string
 	carried   []string
@@ -903,6 +932,50 @@ type rendering struct {
 
 func (r rendering) recorded() []string {
 	return slices.Concat(r.generated, r.lockfiles, r.carried)
+}
+
+func (r rendering) settled() []string {
+	out := []string{}
+
+	for _, path := range r.generated {
+		if slices.ContainsFunc(r.settling, func(cmd commandWire) bool { return under(cmd.Dir, path) }) {
+			out = append(out, path)
+		}
+	}
+
+	return out
+}
+
+func memberDirs(commands []commandWire, repos []repoWire) []string {
+	out := []string{}
+
+	for _, cmd := range commands {
+		if slices.ContainsFunc(repos, func(r repoWire) bool { return r.Path == cmd.Dir }) {
+			out = append(out, cmd.Dir)
+		}
+	}
+
+	return out
+}
+
+func owner(dirs []string, path string) (string, bool) {
+	for _, dir := range dirs {
+		if under(dir, path) {
+			return dir, true
+		}
+	}
+
+	return "", false
+}
+
+func under(dir, path string) bool {
+	return strings.HasPrefix(path, dir+string(filepath.Separator))
+}
+
+func (c *Controller) differsOnDisk(path string, data []byte) bool {
+	existing, err := c.fs.ReadFile(path)
+
+	return err != nil || !bytes.Equal(existing, data)
 }
 
 func recordedPaths(root string, record Record) []string {
@@ -915,7 +988,7 @@ func recordedPaths(root string, record Record) []string {
 }
 
 func underMemberOrRoot(root, only, path string) bool {
-	if strings.HasPrefix(path, filepath.Join(root, only)+string(filepath.Separator)) {
+	if under(filepath.Join(root, only), path) {
 		return true
 	}
 
