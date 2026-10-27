@@ -119,10 +119,11 @@ components:
             which moves only the workspace's own packages and adds a package
             only when Cargo.lock lacks it. The TypeScript lock runs pnpm
             install --lockfile-only at the root, which writes pnpm-lock.yaml.
-            No lock command installs anything. Only a language engine knows
-            these commands. Lock runs every command. Sync runs only the
-            commands whose dir is a member directory holding a manifest that
-            sync changed, and never a command at the workspace root.
+            No lock command installs a package, a virtual environment or a
+            build output. Only a language engine knows these commands. Lock
+            runs every command. Sync runs only the commands whose dir is a
+            member directory holding a manifest that sync changed, and never a
+            command at the workspace root.
         lockfiles:
           type: array
           items:
