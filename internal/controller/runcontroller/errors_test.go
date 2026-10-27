@@ -163,7 +163,7 @@ func newRig(t *testing.T) *rig {
 		sync: synccontrollermock.NewMockSyncer(t),
 		out:  &bytes.Buffer{},
 	}
-	r.c = New(r.fs, r.git, r.exec, r.sync, nopLocker{}, r.out)
+	r.c = New(r.fs, r.git, r.exec, r.sync, lockadapter.New(), r.out)
 
 	r.sync.EXPECT().Lock(mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(synccontroller.Report{}, nil).Maybe()
@@ -570,7 +570,6 @@ func TestCloneOrFetchShapes(t *testing.T) {
 
 	t.Run("an uncreatable cache fails", func(t *testing.T) {
 		r := newRig(t)
-		r.withRealLock()
 		cache := filepath.Join(t.TempDir(), "blocked")
 		require.NoError(t, os.WriteFile(cache, []byte(""), 0o600))
 
@@ -658,7 +657,6 @@ func TestMaterialiseAndExecErrorShapes(t *testing.T) {
 
 	t.Run("an uncreatable context root fails", func(t *testing.T) {
 		r := newRig(t)
-		r.withRealLock()
 		factoryFlow(r, claimingFactoryYaml)
 		r.git.EXPECT().ResolveRev(mock.Anything, mock.Anything, "origin/HEAD").Return(shaA, nil)
 
@@ -1003,18 +1001,4 @@ func TestBootstrapProtectsThePlacedWorkspaceFiles(t *testing.T) {
 		require.Contains(t, r.fs.writes[recordPath(dir)], "Cargo.toml")
 		require.Contains(t, r.fs.writes[recordPath(dir)], "deadbeef")
 	})
-}
-
-type nopLocker struct{}
-
-func (nopLocker) Lock(string) (func(), error) { return func() {}, nil }
-
-func TestTheUnitRigSkipsTheRealFileLockBecauseAFixturePathSuchAsCloneIsWritableOnlyByRoot(t *testing.T) {
-	t.Parallel()
-
-	require.IsType(t, nopLocker{}, newRig(t).c.lock)
-}
-
-func (r *rig) withRealLock() {
-	r.c = New(r.fs, r.git, r.exec, r.sync, lockadapter.New(), r.out)
 }
