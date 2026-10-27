@@ -563,7 +563,7 @@ func TestPythonAndTypeScriptDeclareTheirDependencyLock(t *testing.T) {
 
 	for _, cmd := range out.DependencyLock {
 		assert.Equal(t, "uv", cmd.Command)
-		assert.Equal(t, []string{"sync"}, cmd.Args, "one uv.lock per member, beside its pyproject.toml, and the environment it resolves")
+		assert.Equal(t, []string{"lock"}, cmd.Args, "one uv.lock per member, beside its pyproject.toml, and nothing installed")
 		assert.True(t, cmd.Optional)
 	}
 

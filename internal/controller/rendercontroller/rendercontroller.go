@@ -416,7 +416,7 @@ func (p Python) Render(in rendertypes.Input) (rendertypes.Output, error) {
 		locks = append(locks, rendertypes.Command{
 			Dir:      r.Path,
 			Command:  "uv",
-			Args:     []string{"sync"},
+			Args:     []string{"lock"},
 			Optional: true,
 		})
 		lockfiles = append(lockfiles, filepath.Join(r.Path, "uv.lock"))
