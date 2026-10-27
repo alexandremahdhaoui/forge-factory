@@ -473,15 +473,15 @@ func ReadRecord(fs fsadapter.FS, root string) (Record, error) {
 }
 
 func WriteRendered(fs fsadapter.FS, root, path string, data []byte, record Record) (string, error) {
-	if err := writeGuarded(fs, root, path, data, record, false); err != nil {
+	if err := writeGuarded(fs, root, path, data, record, nil); err != nil {
 		return "", err
 	}
 
 	return Digest(data), nil
 }
 
-func writeGuarded(fs fsadapter.FS, root, path string, data []byte, record Record, merged bool) error {
-	if err := guard(fs, root, path, record, merged); err != nil {
+func writeGuarded(fs fsadapter.FS, root, path string, data []byte, record Record, declared map[string]map[string]string) error {
+	if err := guard(fs, root, path, record, declared); err != nil {
 		return err
 	}
 
@@ -492,11 +492,11 @@ func writeGuarded(fs fsadapter.FS, root, path string, data []byte, record Record
 	return nil
 }
 
-func guard(fs fsadapter.FS, root, path string, record Record, merged bool) error {
+func guard(fs fsadapter.FS, root, path string, record Record, declared map[string]map[string]string) error {
 	recorded := record[relative(root, path)]
 
-	if merged {
-		return guardDeclaredVersions(fs, root, path, recorded.Versions)
+	if modules, merged := declared[path]; merged {
+		return guardDeclaredVersions(fs, root, path, recorded.Versions, modules)
 	}
 
 	return guardWholeFile(fs, root, path, recorded.SHA256)
@@ -519,7 +519,7 @@ func guardWholeFile(fs fsadapter.FS, root, path, recorded string) error {
 	return handEditedError(root, path)
 }
 
-func guardDeclaredVersions(fs fsadapter.FS, root, path string, recorded map[string]string) error {
+func guardDeclaredVersions(fs fsadapter.FS, root, path string, recorded, declared map[string]string) error {
 	if len(recorded) == 0 {
 		return nil
 	}
@@ -537,10 +537,9 @@ func guardDeclaredVersions(fs fsadapter.FS, root, path string, recorded map[stri
 	var moved []string
 
 	for _, module := range sortedKeys(recorded) {
-		version, required := onDisk[module]
-		if required && version != recorded[module] {
+		if movedByHand(module, onDisk, recorded, declared) {
 			moved = append(moved, fmt.Sprintf("  %s: the record holds %s, the copy on disk requires %s",
-				module, recorded[module], version))
+				module, recorded[module], onDisk[module]))
 		}
 	}
 
@@ -549,6 +548,13 @@ func guardDeclaredVersions(fs fsadapter.FS, root, path string, recorded map[stri
 	}
 
 	return declaredVersionMovedError(root, path, moved)
+}
+
+func movedByHand(module string, onDisk, recorded, declared map[string]string) bool {
+	version, required := onDisk[module]
+	now, stillDeclared := declared[module]
+
+	return stillDeclared && required && version != recorded[module] && version != now
 }
 
 func beforeRendering(fs fsadapter.FS, path string) ([]byte, bool, error) {
@@ -652,9 +658,7 @@ func (c *Controller) guardRendered(root string, rendered rendering) error {
 	}
 
 	for _, path := range rendered.generated {
-		_, merged := rendered.declared[path]
-
-		if err := guard(c.fs, root, path, record, merged); err != nil {
+		if err := guard(c.fs, root, path, record, rendered.declared); err != nil {
 			return err
 		}
 	}
@@ -989,7 +993,7 @@ func (c *Controller) renderMembers(
 					changed[dir] = true
 				}
 
-				if err := writeGuarded(c.fs, root, file.Path, data, record, file.Merged); err != nil {
+				if err := writeGuarded(c.fs, root, file.Path, data, record, out.declared); err != nil {
 					return rendering{}, err
 				}
 

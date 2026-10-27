@@ -115,7 +115,14 @@ func (w *mergedWorkspace) tidy() (execadapter.Result, error) {
 func (w *mergedWorkspace) sync(t *testing.T) error {
 	t.Helper()
 
-	_, err := w.c.Sync(t.Context(), parse(t, mergedFactory), w.root, "")
+	return w.syncDeclaring(t, "    sigs.k8s.io/yaml: v1.6.0\n")
+}
+
+func (w *mergedWorkspace) syncDeclaring(t *testing.T, goDependencies string) error {
+	t.Helper()
+
+	factory := strings.Replace(mergedFactory, "    sigs.k8s.io/yaml: v1.6.0\n", goDependencies, 1)
+	_, err := w.c.Sync(t.Context(), parse(t, factory), w.root, "")
 
 	return err
 }
@@ -328,6 +335,29 @@ func TestAMemberGoModWhoseDeclaredVersionWasHandEditedRefusesTheLockNamingTheMod
 	err := w.lock(t)
 	require.ErrorIs(t, err, synccontroller.ErrHandEdited)
 	assert.Contains(t, err.Error(), "sigs.k8s.io/yaml: the record holds v1.6.0, the copy on disk requires v1.6.1")
+}
+
+func TestAModuleTheFactoryNoLongerDeclaresEditedByHandSyncsGreenAndKeepsTheEdit(t *testing.T) {
+	t.Parallel()
+
+	w := newMergedWorkspace(t)
+	require.NoError(t, w.syncDeclaring(t, "    sigs.k8s.io/yaml: v1.6.0\n    go.yaml.in/yaml/v4: v4.0.0\n"))
+	require.Equal(t, map[string]string{"sigs.k8s.io/yaml": "v1.6.0", "go.yaml.in/yaml/v4": "v4.0.0"},
+		w.recorded(t, "golden-go/go.mod").Versions)
+	w.replaceInGoMod(t, "go.yaml.in/yaml/v4 v4.0.0", "go.yaml.in/yaml/v4 v4.0.1")
+
+	require.NoError(t, w.sync(t))
+	assert.Contains(t, w.read(t, w.goMod()), "go.yaml.in/yaml/v4 v4.0.1")
+}
+
+func TestAHandEditEqualToTheNewlyDeclaredVersionSyncsGreen(t *testing.T) {
+	t.Parallel()
+
+	w := syncedMergedWorkspace(t)
+	w.replaceInGoMod(t, "sigs.k8s.io/yaml v1.6.0", "sigs.k8s.io/yaml v1.6.1")
+
+	require.NoError(t, w.syncDeclaring(t, "    sigs.k8s.io/yaml: v1.6.1\n"))
+	assert.Contains(t, w.read(t, w.goMod()), "sigs.k8s.io/yaml v1.6.1")
 }
 
 func TestACargoTomlHandEditStillRefusesTheSyncAsAWholeFile(t *testing.T) {
