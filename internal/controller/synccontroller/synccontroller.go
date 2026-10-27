@@ -621,7 +621,8 @@ func declaredVersionMovedError(root, path string, differing []string) error {
 			"forge-factory declares the version of each module below. The copy on disk requires a version that is neither the recorded one nor the declared one.\n"+
 			"%s\n"+
 			"Nothing was written.\n"+
-			"Raise the declaration of each module above in forge-factory.yaml to the version the copy on disk requires. Then run forge-factory sync again.",
+			"Raise the declaration of each module above in forge-factory.yaml to the version the copy on disk requires.\n"+
+			"Then run: forge-factory sync",
 		ErrHandEdited, relative(root, path), strings.Join(differing, "\n"))
 }
 

@@ -319,7 +319,8 @@ func TestAMemberGoModEditedOutsideTheFactoryOnAnUndeclaredLineLocksGreen(t *test
 	}
 }
 
-const raiseTheDeclaration = "Raise the declaration of each module above in forge-factory.yaml to the version the copy on disk requires. Then run forge-factory sync again."
+const raiseTheDeclaration = "Raise the declaration of each module above in forge-factory.yaml to the version the copy on disk requires.\n" +
+	"Then run: forge-factory sync"
 
 func assertTheRefusalSaysWhatHappenedAndToRaiseTheDeclaration(t *testing.T, err error) {
 	t.Helper()
