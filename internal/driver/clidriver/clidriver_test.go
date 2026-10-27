@@ -676,6 +676,22 @@ func TestOfflineAllowsASyncWhoseCommandCouldNotReachTheNetwork(t *testing.T) {
 	assert.Contains(t, h.out.String(), "could not run go mod tidy in /w/a: no network")
 }
 
+func TestASyncWhoseCommandCouldNotRunStillLinksTheToolingAndThenRefuses(t *testing.T) {
+	t.Parallel()
+
+	h := newHarness(t)
+	h.reads(factory)
+	h.sync.EXPECT().Sync(mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		synccontroller.Report{Root: "/w", Unlocked: []string{"go mod tidy in /w/a: no network"}}, nil).Once()
+	h.tooling.EXPECT().Apply(mock.Anything).
+		Return(toolingcontroller.Report{Revision: "abc123def456", BinDir: "/w/.forge/bin"}, nil).Once()
+
+	err := h.driver.Run(t.Context(), []string{"sync", "--root", "/w", "--tooling-from", "/mirror"})
+	require.ErrorIs(t, err, clidriver.ErrUnlocked)
+	assert.Contains(t, err.Error(), "go mod tidy in /w/a")
+	assert.Contains(t, h.out.String(), "linked /w/.forge/bin")
+}
+
 func TestCloneFetchesTheMembersThenSyncs(t *testing.T) {
 	t.Parallel()
 

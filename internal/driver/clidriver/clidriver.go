@@ -157,10 +157,6 @@ func (d *Driver) runSync(ctx context.Context, f config.Factory, path, root strin
 		return err
 	}
 
-	if err := d.refuseUnlocked(report); err != nil {
-		return err
-	}
-
 	if d.prune {
 		d.prune = false
 
@@ -174,7 +170,11 @@ func (d *Driver) runSync(ctx context.Context, f config.Factory, path, root strin
 		}
 	}
 
-	return d.applyTooling(ctx, f, root, report)
+	if err := d.applyTooling(ctx, f, root, report); err != nil {
+		return err
+	}
+
+	return d.refuseUnlocked(report)
 }
 
 func (d *Driver) runTake(ctx context.Context, f config.Factory, path, root string, rest []string) error {
