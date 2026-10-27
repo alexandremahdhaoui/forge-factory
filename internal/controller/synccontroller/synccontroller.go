@@ -81,6 +81,7 @@ type fileWire struct {
 	Content    string   `json:"content"`
 	Gitignore  string   `json:"gitignore,omitempty"`
 	AlsoIgnore []string `json:"alsoIgnore,omitempty"`
+	Merged     bool     `json:"merged,omitempty"`
 }
 
 type commandWire struct {
@@ -166,7 +167,7 @@ func (c *Controller) Sync(ctx context.Context, f config.Factory, root, only stri
 
 	lockErr := c.lock(ctx, rendered.settling, &report)
 
-	settled, err := c.digestsOnDisk(root, rendered.settled())
+	settled, err := c.recordOnDisk(root, rendered.readBack(), rendered.declared)
 	if err != nil {
 		return Report{}, err
 	}
@@ -332,18 +333,18 @@ func (c *Controller) Lock(ctx context.Context, f config.Factory, root, only stri
 		return Report{}, err
 	}
 
-	if err := c.guardRendered(root, rendered.generated); err != nil {
+	if err := c.guardRendered(root, rendered); err != nil {
 		return Report{}, err
 	}
 
 	lockErr := c.lock(ctx, rendered.commands, &report)
 
-	digests, err := c.digestsOnDisk(root, rendered.generated)
+	entries, err := c.recordOnDisk(root, rendered.generated, rendered.declared)
 	if err != nil {
 		return Report{}, err
 	}
 
-	if err := c.recordGenerated(root, rendered.recorded(), digests, &report); err != nil {
+	if err := c.recordGenerated(root, rendered.recorded(), entries, &report); err != nil {
 		return Report{}, err
 	}
 
@@ -408,8 +409,9 @@ type generatedManifest struct {
 }
 
 type RenderedFile struct {
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256,omitempty"`
+	Path     string            `json:"path"`
+	SHA256   string            `json:"sha256,omitempty"`
+	Versions map[string]string `json:"versions,omitempty"`
 }
 
 func (f *RenderedFile) UnmarshalJSON(raw []byte) error {
@@ -432,7 +434,7 @@ func (f *RenderedFile) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-type Record map[string]string
+type Record map[string]RenderedFile
 
 func Digest(data []byte) string {
 	sum := sha256.Sum256(data)
@@ -464,42 +466,50 @@ func ReadRecord(fs fsadapter.FS, root string) (Record, error) {
 
 	out := make(Record, len(manifest.Files))
 	for _, entry := range manifest.Files {
-		out[entry.Path] = entry.SHA256
+		out[entry.Path] = entry
 	}
 
 	return out, nil
 }
 
 func WriteRendered(fs fsadapter.FS, root, path string, data []byte, record Record) (string, error) {
-	if err := guard(fs, root, path, record); err != nil {
+	if err := writeGuarded(fs, root, path, data, record, false); err != nil {
 		return "", err
-	}
-
-	if err := fs.WriteFile(path, data); err != nil {
-		return "", fmt.Errorf("writing %s: %w", path, err)
 	}
 
 	return Digest(data), nil
 }
 
-func guard(fs fsadapter.FS, root, path string, record Record) error {
-	recorded, known := record[relative(root, path)]
-	if !known || recorded == "" {
+func writeGuarded(fs fsadapter.FS, root, path string, data []byte, record Record, merged bool) error {
+	if err := guard(fs, root, path, record, merged); err != nil {
+		return err
+	}
+
+	if err := fs.WriteFile(path, data); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+
+	return nil
+}
+
+func guard(fs fsadapter.FS, root, path string, record Record, merged bool) error {
+	recorded := record[relative(root, path)]
+
+	if merged {
+		return guardDeclaredVersions(fs, root, path, recorded.Versions)
+	}
+
+	return guardWholeFile(fs, root, path, recorded.SHA256)
+}
+
+func guardWholeFile(fs fsadapter.FS, root, path, recorded string) error {
+	if recorded == "" {
 		return nil
 	}
 
-	exists, err := fs.Exists(path)
-	if err != nil {
-		return fmt.Errorf("inspecting %s before rendering over it: %w", path, err)
-	}
-
-	if !exists {
-		return nil
-	}
-
-	existing, err := fs.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("reading %s before rendering over it: %w", path, err)
+	existing, found, err := beforeRendering(fs, path)
+	if err != nil || !found {
+		return err
 	}
 
 	if Digest(existing) == recorded {
@@ -507,6 +517,70 @@ func guard(fs fsadapter.FS, root, path string, record Record) error {
 	}
 
 	return handEditedError(root, path)
+}
+
+func guardDeclaredVersions(fs fsadapter.FS, root, path string, recorded map[string]string) error {
+	if len(recorded) == 0 {
+		return nil
+	}
+
+	existing, found, err := beforeRendering(fs, path)
+	if err != nil || !found {
+		return err
+	}
+
+	onDisk, err := gomod.Requires(string(existing))
+	if err != nil {
+		return fmt.Errorf("reading the declared versions of %s before rendering over it: %w", path, err)
+	}
+
+	var moved []string
+
+	for _, module := range sortedKeys(recorded) {
+		version, required := onDisk[module]
+		if required && version != recorded[module] {
+			moved = append(moved, fmt.Sprintf("  %s: the record holds %s, the copy on disk requires %s",
+				module, recorded[module], version))
+		}
+	}
+
+	if len(moved) == 0 {
+		return nil
+	}
+
+	return declaredVersionMovedError(root, path, moved)
+}
+
+func beforeRendering(fs fsadapter.FS, path string) ([]byte, bool, error) {
+	exists, err := fs.Exists(path)
+	if err != nil {
+		return nil, false, fmt.Errorf("inspecting %s before rendering over it: %w", path, err)
+	}
+
+	if !exists {
+		return nil, false, nil
+	}
+
+	existing, err := fs.ReadFile(path)
+	if err != nil {
+		return nil, false, fmt.Errorf("reading %s before rendering over it: %w", path, err)
+	}
+
+	return existing, true, nil
+}
+
+func declaredVersionMovedError(root, path string, moved []string) error {
+	rel := relative(root, path)
+
+	return fmt.Errorf(
+		"%w: %s\n"+
+			"forge-factory sets the version of every module it declares in this file, and a declared version on disk moved by hand.\n"+
+			"%s\n"+
+			"Writing the render would lose that edit, so nothing was written.\n"+
+			"Take keeps the file on disk as %s.bak, and the next sync sets every declared version again.\n"+
+			"To keep the edit, declare that version in forge-factory.yaml before you take the render.\n"+
+			"Run: forge-factory take %s",
+		ErrHandEdited, rel, strings.Join(moved, "\n"), rel, rel)
 }
 
 func handEditedError(root, path string) error {
@@ -522,7 +596,7 @@ func handEditedError(root, path string) error {
 		ErrHandEdited, rel, rel, rel)
 }
 
-func WriteRecord(fs fsadapter.FS, root string, paths []string, digests Record) (string, bool, error) {
+func WriteRecord(fs fsadapter.FS, root string, paths []string, entries Record) (string, bool, error) {
 	previous, err := ReadRecord(fs, root)
 	if err != nil {
 		return "", false, err
@@ -539,12 +613,13 @@ func WriteRecord(fs fsadapter.FS, root string, paths []string, digests Record) (
 
 		seen[rel] = true
 
-		sha := digests[rel]
-		if sha == "" {
-			sha = previous[rel]
+		entry, known := entries[rel]
+		if !known {
+			entry = previous[rel]
 		}
 
-		manifest.Files = append(manifest.Files, RenderedFile{Path: rel, SHA256: sha})
+		entry.Path = rel
+		manifest.Files = append(manifest.Files, entry)
 	}
 
 	sort.Slice(manifest.Files, func(i, j int) bool {
@@ -570,14 +645,16 @@ func WriteRecord(fs fsadapter.FS, root string, paths []string, digests Record) (
 	return target, true, nil
 }
 
-func (c *Controller) guardRendered(root string, paths []string) error {
+func (c *Controller) guardRendered(root string, rendered rendering) error {
 	record, err := ReadRecord(c.fs, root)
 	if err != nil {
 		return err
 	}
 
-	for _, path := range paths {
-		if err := guard(c.fs, root, path, record); err != nil {
+	for _, path := range rendered.generated {
+		_, merged := rendered.declared[path]
+
+		if err := guard(c.fs, root, path, record, merged); err != nil {
 			return err
 		}
 	}
@@ -585,7 +662,7 @@ func (c *Controller) guardRendered(root string, paths []string) error {
 	return nil
 }
 
-func (c *Controller) digestsOnDisk(root string, paths []string) (Record, error) {
+func (c *Controller) recordOnDisk(root string, paths []string, declared map[string]map[string]string) (Record, error) {
 	out := Record{}
 
 	for _, path := range paths {
@@ -603,14 +680,41 @@ func (c *Controller) digestsOnDisk(root string, paths []string) (Record, error) 
 			return nil, fmt.Errorf("reading %s as the lock left it: %w", path, err)
 		}
 
-		out[relative(root, path)] = Digest(raw)
+		entry, err := entryOf(path, raw, declared)
+		if err != nil {
+			return nil, err
+		}
+
+		out[relative(root, path)] = entry
 	}
 
 	return out, nil
 }
 
-func (c *Controller) recordGenerated(root string, paths []string, digests Record, report *Report) error {
-	target, changed, err := WriteRecord(c.fs, root, paths, digests)
+func entryOf(path string, raw []byte, declared map[string]map[string]string) (RenderedFile, error) {
+	modules, merged := declared[path]
+	if !merged {
+		return RenderedFile{SHA256: Digest(raw)}, nil
+	}
+
+	requires, err := gomod.Requires(string(raw))
+	if err != nil {
+		return RenderedFile{}, fmt.Errorf("reading the declared versions of %s as the lock left it: %w", path, err)
+	}
+
+	versions := map[string]string{}
+
+	for module := range modules {
+		if version, required := requires[module]; required {
+			versions[module] = version
+		}
+	}
+
+	return RenderedFile{Versions: versions}, nil
+}
+
+func (c *Controller) recordGenerated(root string, paths []string, entries Record, report *Report) error {
+	target, changed, err := WriteRecord(c.fs, root, paths, entries)
 	if err != nil {
 		return err
 	}
@@ -781,7 +885,7 @@ func (c *Controller) renderMembers(
 		return rendering{}, err
 	}
 
-	out := rendering{digests: Record{}}
+	out := rendering{digests: Record{}, declared: map[string]map[string]string{}}
 
 	for _, language := range f.Languages() {
 		uri, ok := f.EngineFor(language)
@@ -863,6 +967,10 @@ func (c *Controller) renderMembers(
 			}
 
 			out.generated = append(out.generated, file.Path)
+
+			if file.Merged {
+				out.declared[file.Path] = deps
+			}
 		}
 
 		changed := map[string]bool{}
@@ -881,12 +989,14 @@ func (c *Controller) renderMembers(
 					changed[dir] = true
 				}
 
-				digest, err := WriteRendered(c.fs, root, file.Path, data, record)
-				if err != nil {
+				if err := writeGuarded(c.fs, root, file.Path, data, record, file.Merged); err != nil {
 					return rendering{}, err
 				}
 
-				out.digests[relative(root, file.Path)] = digest
+				if !file.Merged {
+					out.digests[relative(root, file.Path)] = RenderedFile{SHA256: Digest(data)}
+				}
+
 				report.Written = append(report.Written, file.Path)
 
 				if file.Gitignore != "" {
@@ -928,17 +1038,20 @@ type rendering struct {
 	generated []string
 	carried   []string
 	digests   Record
+	declared  map[string]map[string]string
 }
 
 func (r rendering) recorded() []string {
 	return slices.Concat(r.generated, r.lockfiles, r.carried)
 }
 
-func (r rendering) settled() []string {
+func (r rendering) readBack() []string {
 	out := []string{}
 
 	for _, path := range r.generated {
-		if slices.ContainsFunc(r.settling, func(cmd commandWire) bool { return under(cmd.Dir, path) }) {
+		_, merged := r.declared[path]
+
+		if merged || slices.ContainsFunc(r.settling, func(cmd commandWire) bool { return under(cmd.Dir, path) }) {
 			out = append(out, path)
 		}
 	}

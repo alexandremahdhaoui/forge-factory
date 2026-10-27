@@ -1148,7 +1148,7 @@ func (c *Controller) Bootstrap(ctx context.Context, req BootstrapRequest) (confi
 			return config.Factory{}, "", err
 		}
 
-		digests[name] = digest
+		digests[name] = synccontroller.RenderedFile{SHA256: digest}
 		paths = append(paths, name)
 	}
 

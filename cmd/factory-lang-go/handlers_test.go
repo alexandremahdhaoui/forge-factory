@@ -125,6 +125,22 @@ replace example.com/declared => ../declared
 `, goModOf(t, out, filepath.Join(root, "member", "go.mod")))
 }
 
+func TestTheGoEngineMarksTheMemberGoModMergedAndTheGoWorkItWritesWholeUnmarked(t *testing.T) {
+	t.Parallel()
+
+	root, out := renderMember(t, memberGoMod)
+
+	merged := map[string]bool{}
+	for _, f := range out.Files {
+		merged[f.Path] = f.Merged
+	}
+
+	assert.Equal(t, map[string]bool{
+		filepath.Join(root, "member", "go.mod"): true,
+		filepath.Join(root, "go.work"):          false,
+	}, merged)
+}
+
 func TestTheGoEngineWritesOnlyTheHeaderModuleAndGoLineForAMemberWithNoGoMod(t *testing.T) {
 	t.Parallel()
 

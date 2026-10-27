@@ -94,6 +94,13 @@ components:
           description: >-
             More names to ignore in the same repo. A tidy writes go.sum beside
             the generated go.mod, and a derived file is never committed either.
+        merged:
+          type: boolean
+          description: >-
+            True when the engine renders this file by editing the member's own
+            file and sets only the versions of the dependencies it was given.
+            The factory then guards only those versions as the file holds them,
+            and any other line may change between two syncs.
 
     RenderOutput:
       type: object

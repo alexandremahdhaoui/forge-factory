@@ -135,6 +135,7 @@ func (g Go) Render(in rendertypes.Input) (rendertypes.Output, error) {
 			Content:    content,
 			Gitignore:  r.Name,
 			AlsoIgnore: []string{"go.sum"},
+			Merged:     true,
 		}
 
 		if commitsItsManifest(r) {

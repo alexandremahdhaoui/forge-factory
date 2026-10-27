@@ -64,17 +64,17 @@ exclude (
 `, got)
 }
 
-func TestRequiresNamesEverySingleAndBlockRequire(t *testing.T) {
+func TestRequiresNamesEverySingleAndBlockRequireWithItsVersion(t *testing.T) {
 	t.Parallel()
 
 	got, err := gomod.Requires(member)
 	require.NoError(t, err)
 
-	assert.Equal(t, map[string]bool{
-		"example.com/single":     true,
-		"example.com/declared":   true,
-		"example.com/undeclared": true,
-		"example.com/indirect":   true,
+	assert.Equal(t, map[string]string{
+		"example.com/single":     "v1.0.0",
+		"example.com/declared":   "v1.1.0",
+		"example.com/undeclared": "v2.0.0",
+		"example.com/indirect":   "v0.3.0",
 	}, got)
 }
 
@@ -111,12 +111,12 @@ func TestRequiresReadsARequireWrittenWithAnySpacingOrATrailingComment(t *testing
 	got, err := gomod.Requires(spaced)
 	require.NoError(t, err)
 
-	assert.Equal(t, map[string]bool{
-		"example.com/a": true,
-		"example.com/b": true,
-		"example.com/c": true,
-		"example.com/d": true,
-		"example.com/e": true,
+	assert.Equal(t, map[string]string{
+		"example.com/a": "v1.0.0",
+		"example.com/b": "v1.0.0",
+		"example.com/c": "v1.0.0",
+		"example.com/d": "v1.0.0",
+		"example.com/e": "v1.0.0",
 	}, got)
 }
 

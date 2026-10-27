@@ -78,6 +78,7 @@ func fromFiles(files []rendertypes.File) []File {
 			Content:    f.Content,
 			Gitignore:  f.Gitignore,
 			AlsoIgnore: f.AlsoIgnore,
+			Merged:     f.Merged,
 		})
 	}
 

@@ -76,12 +76,12 @@ func GoVersion(content string) (string, error) {
 	return version, nil
 }
 
-func Requires(content string) (map[string]bool, error) {
-	out := map[string]bool{}
+func Requires(content string) (map[string]string, error) {
+	out := map[string]string{}
 
 	_, err := eachStatement(content, func(verb string, args []string, line string) (string, error) {
 		if verb == "require" {
-			out[args[0]] = true
+			out[args[0]] = args[1]
 		}
 
 		return line, nil

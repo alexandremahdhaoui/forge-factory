@@ -33,6 +33,7 @@ type File struct {
 	Content    string
 	Gitignore  string
 	AlsoIgnore []string
+	Merged     bool
 }
 
 func (r Repo) Speaks(language string) bool {

@@ -431,7 +431,7 @@ func TestASyncRightAfterASyncWhoseCommandRewroteGoModSucceeds(t *testing.T) {
 
 	record, err := synccontroller.ReadRecord(fsadapter.New(), root)
 	require.NoError(t, err)
-	assert.Equal(t, synccontroller.Digest([]byte(tidiedGoMod)), record["golden-go/go.mod"],
+	assert.Equal(t, synccontroller.Digest([]byte(tidiedGoMod)), record["golden-go/go.mod"].SHA256,
 		"the record holds go.mod as the command left it, not as the render wrote it")
 
 	_, err = c.Sync(t.Context(), parse(t, factory), root, "")
