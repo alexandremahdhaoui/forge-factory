@@ -1,8 +1,3 @@
-// Package runcontroller materialises the dependency context a runnable needs
-// and hands execution to forge. It decides WHAT context a run resolves in -
-// the enclosing workspace, the runnable's own factory, or an explicit
-// override - and never learns HOW a target executes: the boundary is one
-// attached exec of `forge run` inside the materialised repo.
 package runcontroller
 
 import (
@@ -29,32 +24,18 @@ import (
 )
 
 var (
-	// ErrNoTarget means nothing in reach matches what the caller named.
-	ErrNoTarget = errors.New("no runnable matches")
-	// ErrNoFactory means a runnable declares no factory and no override was
-	// given. A runnable without a factory fails forge.yaml validation, so
-	// meeting this means the repo's forge.yaml predates the contract.
-	ErrNoFactory = errors.New("no factory to resolve from")
-	// ErrNotAMember means the factory's repos list does not carry the repo.
-	// The factory is the trust boundary in every mode.
-	ErrNotAMember = errors.New("not a member of the factory")
-	// ErrUnpublished means the register's internal track has no entry for
-	// the repo, so a no-version run has no version to pick.
-	ErrUnpublished = errors.New("not published in the register's internal track")
-	// ErrMissingInput means the runnable's generated inputs name something
-	// the environment does not provide.
+	ErrNoTarget     = errors.New("no runnable matches")
+	ErrNoFactory    = errors.New("no factory to resolve from")
+	ErrNotAMember   = errors.New("not a member of the factory")
+	ErrUnpublished  = errors.New("not published in the register's internal track")
 	ErrMissingInput = errors.New("missing runnable input")
 )
 
-// Runner materialises and delegates one run, and stands workspaces up. It is
-// what a driver accepts, declared in the package that implements it.
 type Runner interface {
 	Run(ctx context.Context, req Request) (int, error)
 	Bootstrap(ctx context.Context, req BootstrapRequest) (config.Factory, string, error)
 }
 
-// Request is one run, already split by the driver: the target, the program's
-// own args, and the flags.
 type Request struct {
 	Target   string
 	Name     string
@@ -88,9 +69,6 @@ func New(
 	return &Controller{fs: fs, git: git, runner: runner, sync: sync, lock: lock, progress: progress}
 }
 
-// runnableFile is the slice of a repo's forge.yaml this controller reads.
-// forge owns the file; this parse is lenient on purpose and takes only what
-// context determination needs.
 type runnableFile struct {
 	Name string `json:"name"`
 	Run  []struct {
@@ -121,18 +99,11 @@ func (c *Controller) say(quiet bool, format string, args ...interface{}) {
 	_, _ = fmt.Fprintf(c.progress, "forge-factory run: "+format+"\n", args...)
 }
 
-// warn is for self-heal actions the user should know about. It ignores
-// quiet: a heal changed cache state, and silence there breeds mistrust.
 func (c *Controller) warn(format string, args ...interface{}) {
 	_, _ = fmt.Fprintf(c.progress, "WARN: "+format+"\n", args...)
 }
 
-// worktreeAdd registers a worktree, healing the one wound git names but
-// never fixes on its own: a registration whose directory was removed by
-// hand. The registration points at nothing, so prune-and-retry is safe.
 func (c *Controller) worktreeAdd(ctx context.Context, clone, sha, dest string) error {
-	// Worktree registrations live inside the clone: serialize against any
-	// other process touching the same clone.
 	release, lerr := c.lock.Lock(clone)
 	if lerr != nil {
 		return lerr
@@ -153,9 +124,6 @@ func (c *Controller) worktreeAdd(ctx context.Context, clone, sha, dest string) e
 	return c.git.WorktreeAdd(ctx, clone, sha, dest)
 }
 
-// materialisedMarker is the proof a run context was built to the end. A
-// root without it is a checkout that died halfway - resuming it fails
-// later and deeper, so it is discarded and rebuilt instead.
 const materialisedMarker = ".forge-materialised"
 
 func (c *Controller) Run(ctx context.Context, req Request) (int, error) {
@@ -175,9 +143,6 @@ func (c *Controller) Run(ctx context.Context, req Request) (int, error) {
 	return c.runLocal(ctx, req)
 }
 
-// isModulePath reports whether a target names a repo rather than something
-// in the current one: a URL-ish module path whose first segment is a host
-// with a dot in it, or an absolute path to a repo.
 func isModulePath(target string) bool {
 	if strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../") {
 		return false
@@ -191,8 +156,6 @@ func isModulePath(target string) bool {
 
 	return found && strings.Contains(first, ".")
 }
-
-// --- local -----------------------------------------------------------------
 
 func (c *Controller) runLocal(ctx context.Context, req Request) (int, error) {
 	repoRoot, err := c.walkUpFor(req.WorkDir, "forge.yaml")
@@ -237,10 +200,6 @@ func (c *Controller) runLocal(ctx context.Context, req Request) (int, error) {
 	return c.materialiseAndExec(ctx, req, repoRoot, target, target.Factory, target.FactoryRevision, "")
 }
 
-// enclosingWorkspaceClaims walks up for a forge-factory.yaml whose repos list
-// carries this repo by directory name. Only a claiming workspace wins:
-// a checkout that merely sits inside someone else's workspace resolves
-// through its own factory instead.
 func (c *Controller) enclosingWorkspaceClaims(repoRoot string) (string, bool) {
 	wsRoot, err := c.walkUpFor(filepath.Dir(repoRoot), "forge-factory.yaml")
 	if err != nil {
@@ -282,10 +241,6 @@ func (c *Controller) syncWorkspace(ctx context.Context, wsRoot, only string) (in
 		return 0, fmt.Errorf("syncing %s: %w", wsRoot, err)
 	}
 
-	// Sync writes manifests and stops. This context is about to build, so
-	// the closure must resolve here - and a lock that could not resolve is
-	// this run's failure, loud and at the cause, not a compile error three
-	// steps later.
 	report, err := c.sync.Lock(ctx, f, wsRoot, only)
 	if err != nil {
 		return 0, fmt.Errorf("locking %s: %w", wsRoot, err)
@@ -298,17 +253,9 @@ func (c *Controller) syncWorkspace(ctx context.Context, wsRoot, only string) (in
 	return 0, nil
 }
 
-// --- remote ----------------------------------------------------------------
-
 func (c *Controller) runRemote(ctx context.Context, req Request) (int, error) {
 	module, sub, rev := splitTarget(req.Target)
 
-	// The tuple-keyed early entry: a request that pins everything itself -
-	// a full sha on the target and a full sha on --factory - names its run
-	// context with no resolution, so a warm one enters at the inputs step
-	// with no clone, fetch or register lookup. Anything that floats (a
-	// branch, a tag, the internal track, the factory's head) keeps
-	// resolving, because floating is the point of those forms.
 	if key := warmTupleKey(req); key != "" && !req.Force {
 		if code, err, hit := c.enterWarmTuple(ctx, req, key); hit {
 			return code, err
@@ -427,23 +374,12 @@ func (c *Controller) materialiseRemote(
 			return 0, fmt.Errorf("pinning %s: the revision names no sha and the tag %s is not in the clone", module, version)
 		}
 
-		// The register is deliberately NOT pinned by provenance: provenance
-		// answers what a repo's build inputs were when proven, and members
-		// above are pinned for exactly that. The register is the catalog of
-		// what exists - and the pipeline records repo heads before its own
-		// publish stage writes into the register, so a provenance-pinned
-		// register predates its own run's admissions by construction. Pin
-		// the answers, never the phonebook: the catalog reads at the
-		// resolved head (or the factory's explicit register.revision).
 	}
 
 	root := filepath.Join(req.CacheDir, "run",
 		sanitize(module)+"@"+shortSha(repoSha)+"+"+sanitize(factoryURL)+"@"+shortSha(factorySha))
 	repoDir := filepath.Join(root, member.Name)
 
-	// The whole examine-and-build of the run root sits under its lock, so
-	// a second process materialising the same tuple waits and then finds
-	// the finished root instead of half of one.
 	if code, err := func() (int, error) {
 		release, err := c.lock.Lock(root)
 		if err != nil {
@@ -454,9 +390,6 @@ func (c *Controller) materialiseRemote(
 		warm, _ := c.fs.IsDir(repoDir)
 
 		if marked, _ := c.fs.Exists(filepath.Join(root, materialisedMarker)); warm && !marked {
-			// The root exists but its materialisation never finished: a partial
-			// checkout half-trusted here fails later and deeper (a missing
-			// .envrc, a manifest with no workspace root), with no trace back.
 			c.warn("healed the run cache: %s was an incomplete checkout - discarded and rebuilt", root)
 
 			if err := os.RemoveAll(root); err != nil {
@@ -501,10 +434,6 @@ func (c *Controller) materialiseRemote(
 
 	code, err := c.exec(ctx, repoDir, target.Name, req.Args)
 	if (err != nil || code != 0) && pinnedVersion != "" {
-		// The run executed the tuple the register last proved, which may
-		// be older than the repo's head: a failure here is often the
-		// register's staleness, not the operator's mistake. One line
-		// names the check and the cure.
 		c.say(req.Quiet,
 			"note: this ran %s at %s, the tuple the register last proved; `forge-register status` marks stale internal tracks, and a green workspace pipeline republishes them",
 			module, pinnedVersion)
@@ -513,10 +442,6 @@ func (c *Controller) materialiseRemote(
 	return code, err
 }
 
-// staleTupleHint wraps a failure inside a register-resolved run context
-// with the one likely cause the raw error never names: the proven tuple
-// is older than the repo's head. Runs pinned by the caller pass through
-// untouched.
 func staleTupleHint(err error, module, pinnedVersion string) error {
 	if err == nil || pinnedVersion == "" {
 		return err
@@ -527,8 +452,6 @@ func staleTupleHint(err error, module, pinnedVersion string) error {
 		err, module, pinnedVersion)
 }
 
-// warmTuple is the marker a fully pinned run leaves behind: enough to
-// re-enter at the inputs step with no resolution.
 type warmTuple struct {
 	RepoDir string `json:"repoDir"`
 	Target  struct {
@@ -539,9 +462,6 @@ type warmTuple struct {
 	} `json:"target"`
 }
 
-// warmTupleKey names the request's tuple, or answers "" when anything
-// floats. Only a full 40-hex sha pins immutably - a branch or tag can
-// move under the cache and the internal track advances by design.
 func warmTupleKey(req Request) string {
 	module, sub, rev := splitTarget(req.Target)
 	if !isFullSha(rev) {
@@ -581,9 +501,6 @@ func warmTuplePath(cacheDir, key string) string {
 	return filepath.Join(cacheDir, "run", ".ready", key+".json")
 }
 
-// enterWarmTuple re-enters a marked run context at the inputs step. A
-// missing or unreadable marker, or a context that is gone, is a miss and
-// the run resolves normally; the marker is convenience, never authority.
 func (c *Controller) enterWarmTuple(ctx context.Context, req Request, key string) (int, error, bool) {
 	raw, err := c.fs.ReadFile(warmTuplePath(req.CacheDir, key))
 	if err != nil {
@@ -613,8 +530,6 @@ func (c *Controller) enterWarmTuple(ctx context.Context, req Request, key string
 	return code, err, true
 }
 
-// writeWarmTuple records a successful materialisation. Failing to write
-// it costs the next run a resolution, nothing more, so it stays quiet.
 func (c *Controller) writeWarmTuple(cacheDir, key, repoDir string, target runnable) {
 	var mark warmTuple
 	mark.RepoDir = repoDir
@@ -672,8 +587,6 @@ func (c *Controller) checkoutContext(
 		}
 	}
 
-	// forge sources the repo's envFile and the file is gitignored, so a
-	// fresh worktree lacks it.
 	envrc := filepath.Join(repoDir, ".envrc")
 	if ok, _ := c.fs.Exists(envrc); !ok {
 		if err := c.fs.WriteFile(envrc, []byte("")); err != nil {
@@ -684,8 +597,6 @@ func (c *Controller) checkoutContext(
 	return nil
 }
 
-// materialiseAndExec is the local rule 3 and rule 1 path: the checkout in
-// place is the code, and only the dependency context is ephemeral.
 func (c *Controller) materialiseAndExec(
 	ctx context.Context,
 	req Request,
@@ -713,8 +624,6 @@ func (c *Controller) materialiseAndExec(
 	root := filepath.Join(req.CacheDir, "run",
 		"local-"+sanitize(repoRoot)+"+"+sanitize(factoryURL)+"@"+shortSha(factorySha))
 
-	// The local run context is shared state too: hold its lock while
-	// building it, so a concurrent run of the same checkout queues.
 	release, err := c.lock.Lock(root)
 	if err != nil {
 		return 0, err
@@ -773,8 +682,6 @@ func (c *Controller) materialiseAndExec(
 	return c.exec(ctx, repoRoot, target.Name, req.Args)
 }
 
-// --- shared ----------------------------------------------------------------
-
 func (c *Controller) exec(ctx context.Context, repoDir, name string, args []string) (int, error) {
 	full := append([]string{"run", name}, "--")
 	full = append(full, args...)
@@ -785,10 +692,6 @@ func (c *Controller) exec(ctx context.Context, repoDir, name string, args []stri
 		map[string]string{"FORGE_RUN_MATERIALIZED": "1"}, bin, append(pre, full...)...)
 }
 
-// forgeCommand answers how to exec forge at the boundary: PATH when
-// installed, else go run pinned to the forge this binary was built against -
-// never latest. A workspace build records no dependency version and keeps
-// the bare name, whose failure names the missing install.
 func (c *Controller) forgeCommand() (string, []string) {
 	if _, ok := c.runner.LookPath("forge"); ok {
 		return "forge", nil
@@ -801,8 +704,6 @@ func (c *Controller) forgeCommand() (string, []string) {
 	return "forge", nil
 }
 
-// forgeDepVersion answers the forge version this binary was built against,
-// from build info; "" for workspace builds, which carry "(devel)".
 func forgeDepVersion() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -812,9 +713,6 @@ func forgeDepVersion() string {
 	return depVersion(info.Deps)
 }
 
-// depVersion is the reading, split from the reading of build info so it can
-// be driven over the shapes that matter: a replace directive, a workspace
-// build, and forge absent altogether.
 func depVersion(deps []*debug.Module) string {
 	for _, dep := range deps {
 		if dep == nil || dep.Path != "github.com/alexandremahdhaoui/forge" {
@@ -908,15 +806,11 @@ func matchRunnable(raw []byte, target string) (runnable, error) {
 	return runnable{}, fmt.Errorf("%w %q; declared runnables: %s", ErrNoTarget, target, list)
 }
 
-// materialFactory is a parsed factory plus the raw bytes it was read from,
-// so the placed file is byte-identical to the one the factory repo carries.
 type materialFactory struct {
 	config.Factory
 	raw []byte
 }
 
-// factoryAt clones the factory repo and reads workspace/forge-factory.yaml at
-// the asked rev, or the default branch head.
 func (c *Controller) factoryAt(ctx context.Context, cacheDir, url, rev string) (materialFactory, string, error) {
 	clone, err := c.cloneOrFetch(ctx, cacheDir, url)
 	if err != nil {
@@ -949,15 +843,9 @@ func (c *Controller) factoryAt(ctx context.Context, cacheDir, url, rev string) (
 	return materialFactory{Factory: f, raw: []byte(raw)}, sha, nil
 }
 
-// cloneOrFetch keeps one full clone per repo URL, forever. Every rev
-// materialises from it as a worktree; nothing is ever shallow.
 func (c *Controller) cloneOrFetch(ctx context.Context, cacheDir, url string) (string, error) {
 	dir := filepath.Join(cacheDir, "git", sanitize(url))
 
-	// The mirror is shared machine state: another process - this
-	// workspace's, a second workspace's, an orphaned child's - may be
-	// fetching or reading it right now. The lock turns the race into a
-	// queue.
 	release, err := c.lock.Lock(dir)
 	if err != nil {
 		return "", err
@@ -966,8 +854,6 @@ func (c *Controller) cloneOrFetch(ctx context.Context, cacheDir, url string) (st
 
 	if ok, _ := c.fs.IsDir(dir); ok {
 		if err := c.git.Fetch(ctx, dir); err != nil {
-			// A broken mirror is cache state, not the user's work: name
-			// the directory and the way out instead of the raw git error.
 			return "", fmt.Errorf("refreshing the cached mirror %s: %w (try: forge-factory cache clean)", dir, err)
 		}
 
@@ -985,8 +871,6 @@ func (c *Controller) cloneOrFetch(ctx context.Context, cacheDir, url string) (st
 	return dir, nil
 }
 
-// internalCurrent reads the register's internal track for a module at one
-// rev: the highest track's current version and the revision that proved it.
 func (c *Controller) internalCurrent(ctx context.Context, registerClone, sha, module string) (string, string, error) {
 	rel := path.Join("index", "internal", module)
 
@@ -1019,11 +903,6 @@ func (c *Controller) internalCurrent(ctx context.Context, registerClone, sha, mo
 		return "", "", fmt.Errorf("reading the internal track of %s: %w", module, err)
 	}
 
-	// Provenance belongs to current, beside it. It used to be a row in a
-	// history array, and reading it from there kept compiling after the
-	// array was deleted: every remote run then pinned nothing and failed
-	// with "the revision names no sha", which names the symptom and not
-	// this.
 	var track struct {
 		Current    string `json:"current"`
 		Provenance string `json:"provenance"`
@@ -1042,9 +921,6 @@ func (c *Controller) internalCurrent(ctx context.Context, registerClone, sha, mo
 	return track.Current, track.Provenance, nil
 }
 
-// provenancePins reads the proving revision's record from the factory's
-// state repo and answers the member shas it pinned. Members the record does
-// not name fall back elsewhere; the caller says what floated.
 func (c *Controller) provenancePins(ctx context.Context, req Request, factory config.Factory, provenance string) map[string]string {
 	if provenance == "" || factory.State == nil {
 		return nil
@@ -1088,8 +964,6 @@ func (c *Controller) provenancePins(ctx context.Context, req Request, factory co
 	return record.Repos
 }
 
-// checkInputs enforces the runnable's generated contract before any build:
-// the env vars set and the files present, or one line naming what is not.
 func (c *Controller) checkInputs(repoDir string, target runnable) error {
 	manifest := filepath.Join(repoDir, filepath.FromSlash(strings.TrimPrefix(target.Src, "./")), "zz_generated.runnable.yaml")
 
@@ -1140,9 +1014,6 @@ func memberByName(f config.Factory, name string) (config.Repo, bool) {
 	return config.Repo{}, false
 }
 
-// splitTarget cuts a remote target into module, optional sub path or name,
-// and optional rev: github.com/x/repo/cmd/tool@v1 or github.com/x/repo. An
-// absolute path finds its repo boundary by walking up to a .git directory.
 func splitTarget(target string) (module, sub, rev string) {
 	bare := target
 	if i := strings.LastIndex(bare, "@"); i > 0 && !strings.ContainsAny(bare[i+1:], "/:") {
@@ -1173,8 +1044,6 @@ func splitTarget(target string) (module, sub, rev string) {
 	return strings.Join(parts[:3], "/"), strings.Join(parts[3:], "/"), rev
 }
 
-// splitRev cuts a trailing @rev off a URL. The rev part carries no slash and
-// no colon, which is what separates it from the @ in an ssh URL.
 func splitRev(s string) (string, string) {
 	i := strings.LastIndex(s, "@")
 	if i < 0 {
@@ -1216,7 +1085,6 @@ func shortSha(sha string) string {
 	return sha
 }
 
-// BootstrapRequest names a factory to stand a workspace up from.
 type BootstrapRequest struct {
 	Factory  string
 	Dir      string
@@ -1224,9 +1092,6 @@ type BootstrapRequest struct {
 	Quiet    bool
 }
 
-// Bootstrap places a factory's workspace files into a directory, so the
-// driver's clone verb can fetch every member and sync. One command from
-// nothing to a working workspace.
 func (c *Controller) Bootstrap(ctx context.Context, req BootstrapRequest) (config.Factory, string, error) {
 	if req.CacheDir == "" {
 		base, err := os.UserCacheDir()
